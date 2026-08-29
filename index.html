@@ -1,0 +1,62 @@
+<!-- 声明文档类型为HTML5，告诉浏览器使用HTML5标准来解析此页面 -->
+<!DOCTYPE html>
+<!-- html根元素，lang="zh-CN"设置页面主要语言为简体中文，有助于搜索引擎优化和屏幕阅读器 -->
+<html lang="zh-CN">
+<!-- head元素包含页面的元数据（metadata），不会直接显示在页面上 -->
+<head>
+    <!-- meta设置字符编码为UTF-8，支持全球各种语言的字符显示，防止中文乱码 -->
+    <meta charset="UTF-8">
+    <!-- meta设置视口，使页面宽度跟随设备宽度，初始缩放比例为1，实现移动端响应式适配 -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <!-- title设置浏览器标签页显示的标题，也用于搜索引擎结果和书签 -->
+    <title>Document</title>
+    <!-- link引入外部CSS样式表，rel指定关系为stylesheet，href指定样式文件路径 -->
+    <link rel="stylesheet" href="main.css">
+<!-- head结束标签 -->
+</head>
+<!-- body元素包含所有可见的页面内容，是用户实际看到的部分 -->
+<body>
+    <!-- div是块级容器元素，class="rectangle"用于CSS样式定位，作为页面上方的矩形 -->
+    <div class="rectangle">
+        <!-- div是块级容器元素，class="rounded-square"用于CSS样式定位，作为相对于导航栏定位的圆角正方形 -->
+        <div class="rounded-square">
+            <!-- img是图片元素，src指定图片路径，alt提供替代文本用于无障碍访问 -->
+            <img src="image/avatar.png" alt="头像" class="avatar">
+        <!-- 圆角正方形容器结束标签 -->
+        </div>
+        <!-- div是块级容器，class="nav-items"用于包含9个导航矩形项 -->
+        <div class="nav-items">
+            <!-- div是第一个导航矩形项，class="nav-rect"用于样式定位，data-page属性指定要加载的HTML文件名 -->
+            <div class="nav-rect" data-page="pages/chinese.html">语文</div>
+            <!-- div是第二个导航矩形项，data-page属性指定要加载的HTML文件名 -->
+            <div class="nav-rect" data-page="pages/math.html">数学</div>
+            <!-- div是第三个导航矩形项 -->
+            <div class="nav-rect" data-page="pages/english.html">英语</div>
+            <!-- div是第四个导航矩形项 -->
+            <div class="nav-rect" data-page="pages/physics.html">物理</div>
+            <!-- div是第五个导航矩形项 -->
+            <div class="nav-rect" data-page="pages/chemistry.html">化学</div>
+            <!-- div是第六个导航矩形项 -->
+            <div class="nav-rect" data-page="pages/biology.html">生物</div>
+            <!-- div是第七个导航矩形项 -->
+            <div class="nav-rect" data-page="pages/history.html">历史</div>
+            <!-- div是第八个导航矩形项 -->
+            <div class="nav-rect" data-page="pages/politics.html">政治</div>
+            <!-- div是第九个导航矩形项 -->
+            <div class="nav-rect" data-page="pages/geography.html">地理</div>
+        <!-- 导航矩形项容器结束标签 -->
+        </div>
+    <!-- 导航栏矩形结束标签 -->
+    </div>
+    <!-- div是块级容器，class="content-container"用于显示加载的HTML内容 -->
+    <div class="content-container" id="contentContainer">
+        <!-- p是段落元素，class="placeholder-text"用于显示占位提示文字 -->
+        <p class="placeholder-text">请选择一个科目查看内容</p>
+    <!-- 内容容器结束标签 -->
+    </div>
+    <!-- script引入外部JavaScript文件，放在body底部确保DOM加载完成后再执行脚本 -->
+    <script src="main.js"></script>
+<!-- body结束标签 -->
+</body>
+<!-- html根元素结束标签 -->
+</html>
