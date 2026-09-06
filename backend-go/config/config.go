@@ -6,18 +6,20 @@ import (
 
 // Config 服务器配置结构体
 type Config struct {
-	Host string
-	Port string
-	Env  string // 运行环境：development 或 production
+	Host   string
+	Port   string
+	Env    string // 运行环境：development 或 production
+	DBPath string // SQLite 数据库文件路径
 }
 
 // LoadConfig 加载配置
 // 优先从环境变量读取，如果没有则使用默认值
 func LoadConfig() *Config {
 	cfg := &Config{
-		Host: getEnv("SERVER_HOST", "0.0.0.0"),
-		Port: getEnv("SERVER_PORT", "8080"),
-		Env:  getEnv("APP_ENV", "development"),
+		Host:   getEnv("SERVER_HOST", "0.0.0.0"),
+		Port:   getEnv("SERVER_PORT", "8080"),
+		Env:    getEnv("APP_ENV", "development"),
+		DBPath: getEnv("DB_PATH", "guangxue.db"),
 	}
 	return cfg
 }

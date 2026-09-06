@@ -158,3 +158,92 @@ body {
     /* 设置上内边距为100像素，使提示文字垂直居中显示 */
     padding-top: 100px;
 }
+
+/* ===================== 单词间隔复习（FSRS）简单版样式 ===================== */
+
+/* 复习应用整体容器 */
+.review-app {
+    /* 设置最大宽度，避免卡片在宽屏上过宽 */
+    max-width: 640px;
+    /* 水平居中 */
+    margin: 0 auto;
+}
+
+/* 复习头部：标题 + 状态 */
+.review-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 4px;
+}
+
+/* 复习标题 */
+.review-title {
+    font-size: 20px;
+    font-weight: bold;
+}
+
+/* 复习状态文字 */
+.review-status {
+    color: #888;
+    font-size: 14px;
+}
+
+/* 单词卡片 */
+.review-card {
+    border: 1px solid #e0e0e0;
+    border-radius: 12px;
+    padding: 24px;
+    margin: 12px 0;
+    text-align: center;
+    background-color: #fafafa;
+}
+
+/* 音标 */
+.review-phonetic {
+    color: #777;
+    font-size: 14px;
+}
+
+/* 释义 */
+.review-meaning {
+    font-size: 18px;
+    margin: 10px 0;
+}
+
+/* 例句 */
+.review-example {
+    color: #555;
+    font-style: italic;
+    font-size: 14px;
+}
+
+/* 评分按钮行 */
+.review-buttons {
+    display: flex;
+    gap: 12px;
+    justify-content: center;
+    margin-top: 12px;
+}
+
+/* 评分按钮 */
+.review-btn {
+    padding: 10px 22px;
+    border: none;
+    border-radius: 8px;
+    background-color: #e0e0e0;
+    color: #333;
+    font-size: 15px;
+    cursor: pointer;
+    transition: background-color 0.2s;
+}
+
+.review-btn:hover {
+    background-color: #cfcfcf;
+}
+
+/* 不同评分按钮的区分色 */
+.review-btn[data-rating="1"] { background-color: #f4c7c3; }
+.review-btn[data-rating="2"] { background-color: #f0d9b5; }
+.review-btn[data-rating="3"] { background-color: #c8e6c9; }
+.review-btn[data-rating="4"] { background-color: #b3e5fc; }

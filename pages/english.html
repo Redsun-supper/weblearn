@@ -1,2 +1,22 @@
 <h1>英语</h1>
 <p>英语科目内容</p>
+
+<!-- 单词间隔复习（FSRS）简单版：由 main.js 中的 reviewApp 逻辑驱动 -->
+<div class="review-app" id="reviewApp">
+    <div class="review-header">
+        <span class="review-title">单词复习</span>
+        <span class="review-status" id="reviewStatus">正在加载复习内容...</span>
+    </div>
+    <div class="review-card" id="reviewCard" style="display:none;">
+        <h2 id="reviewWord"></h2>
+        <p id="reviewPhonetic" class="review-phonetic"></p>
+        <p id="reviewMeaning" class="review-meaning"></p>
+        <p id="reviewExample" class="review-example"></p>
+    </div>
+    <div class="review-buttons" id="reviewButtons" style="display:none;">
+        <button class="review-btn" data-rating="1">忘记</button>
+        <button class="review-btn" data-rating="2">困难</button>
+        <button class="review-btn" data-rating="3">良好</button>
+        <button class="review-btn" data-rating="4">简单</button>
+    </div>
+</div>

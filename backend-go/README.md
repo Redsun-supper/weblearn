@@ -53,6 +53,34 @@ go build -o server main.go
 | POST | /api/user/update | 更新用户信息 |
 | GET | /api/data/list | 获取数据列表 |
 | POST | /api/data/submit | 提交数据 |
+| GET | /api/words | 单词列表（limit/offset/subject） |
+| POST | /api/words | 批量添加单词 |
+| GET | /api/reviews/due | 到期复习卡列表（limit/now） |
+| GET | /api/reviews/new | 尚未加入复习的新词 |
+| POST | /api/reviews/submit | 提交复习结果（FSRS 状态持久化） |
+| GET | /api/reviews/stats | 复习统计 |
+
+## 数据库（SQLite）
+
+- 使用 [GORM](https://gorm.io) + [glebarez/sqlite](https://github.com/glebarez/sqlite)（纯 Go，无需 CGO）。
+- 首次启动自动建表：`words`（词条）、`word_reviews`（每词 FSRS 记忆状态）、`review_logs`（复习日志）。
+- 数据文件路径由环境变量 `DB_PATH` 控制，默认 `guangxue.db`。
+
+### 词条示例
+
+```bash
+curl -X POST http://localhost:8080/api/words -H "Content-Type: application/json" -d '{
+  "words": [
+    {"word":"apple","phonetic":"/ˈæp.əl/","meaning":"n. 苹果","example":"I eat an apple."}
+  ]
+}'
+```
+
+### 复习流程
+
+1. 前端调 `GET /api/reviews/due` 拿到期卡，`GET /api/reviews/new` 拿新词（用随机器抽批次）。
+2. 用户评分后，前端 Rust/WASM 引擎用 `fsrs_next_states` 计算新记忆状态。
+3. 前端调 `POST /api/reviews/submit` 持久化（服务端换算 due_at 并写日志）。
 
 ## 环境变量
 
@@ -61,6 +89,7 @@ go build -o server main.go
 | SERVER_HOST | 服务器监听地址 | 0.0.0.0 |
 | SERVER_PORT | 服务器端口 | 8080 |
 | APP_ENV | 运行环境 | development |
+| DB_PATH | SQLite 数据库文件路径 | guangxue.db |
 
 ## Nginx反向代理配置
 

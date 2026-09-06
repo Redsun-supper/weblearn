@@ -14,6 +14,145 @@ document.addEventListener('DOMContentLoaded', function() {
     // 该容器位于导航栏下方，用于展示用户选择的学科内容
     const contentContainer = document.getElementById('contentContainer');
     
+    // ===================== 单词间隔复习（FSRS 引擎）简单版 =====================
+    // 依赖 frontend-rust/pkg/guangxue_wasm.js（wasm-bindgen 生成的 ES 模块）
+    // 流程：取到期卡+新词 → WASM 随机器排队列 → 用户评分 → WASM 引擎算下一状态 → 提交后端 SQL
+    var reviewAppState = {
+        queue: [],      // 待复习队列 [{source:'due'|'new', item:...}]
+        cursor: 0,
+        wasm: null
+    };
+
+    // 动态加载 WASM 引擎模块（浏览器原生 import()）
+    function loadReviewWasm() {
+        return import('frontend-rust/pkg/guangxue_wasm.js');
+    }
+
+    // 加载今日复习队列：到期卡（洗牌打乱顺序）+ 新词（随机器无放回抽 5 个）
+    function loadReviewQueue(wasm) {
+        return Promise.all([
+            fetch('/api/reviews/due?limit=50').then(function(res) { return res.json(); }),
+            fetch('/api/reviews/new?limit=50').then(function(res) { return res.json(); }),
+            fetch('/api/reviews/stats').then(function(res) { return res.json(); })
+        ]).then(function(results) {
+            var dueItems = results[0].data.items || [];
+            var newItems = results[1].data.items || [];
+            var seed = wasm.random_seed();
+            var queue = [];
+            var dueOrder = wasm.random_indices(dueItems.length, seed);
+            for (var i = 0; i < dueOrder.length; i++) {
+                queue.push({ source: 'due', item: dueItems[dueOrder[i]] });
+            }
+            var newCount = Math.min(5, newItems.length);
+            var newOrder = wasm.random_sample(newItems.length, newCount, seed ^ 0x9E3779B9);
+            for (var j = 0; j < newOrder.length; j++) {
+                queue.push({ source: 'new', item: newItems[newOrder[j]] });
+            }
+            reviewAppState.queue = queue;
+            reviewAppState.cursor = 0;
+            return queue;
+        });
+    }
+
+    // 计算当前卡片的记忆状态 JSON 与距上次复习天数
+    function reviewCardContext(entry) {
+        if (entry.source === 'new') {
+            return { stateJson: null, daysElapsed: 0 };
+        }
+        var item = entry.item;
+        var last = item.last_review_at || item.due_at;
+        var days = Math.floor((Date.now() - new Date(last).getTime()) / 86400000);
+        if (days < 0) days = 0;
+        return {
+            stateJson: JSON.stringify({ stability: item.stability, difficulty: item.difficulty }),
+            daysElapsed: days
+        };
+    }
+
+    // 渲染当前卡片
+    function renderReviewCard() {
+        var statusEl = document.getElementById('reviewStatus');
+        var cardEl = document.getElementById('reviewCard');
+        var btnEl = document.getElementById('reviewButtons');
+        if (!statusEl || !cardEl || !btnEl) return;
+
+        var total = reviewAppState.queue.length;
+        if (reviewAppState.cursor >= total) {
+            cardEl.style.display = 'none';
+            btnEl.style.display = 'none';
+            statusEl.innerHTML = '今日完成 ✨ 共 ' + total + ' 张';
+            return;
+        }
+        var entry = reviewAppState.queue[reviewAppState.cursor];
+        var item = entry.item;
+        document.getElementById('reviewWord').innerHTML = item.word || '';
+        document.getElementById('reviewPhonetic').innerHTML = item.phonetic || '';
+        document.getElementById('reviewMeaning').innerHTML = item.meaning || '';
+        document.getElementById('reviewExample').innerHTML = item.example || '';
+        cardEl.style.display = 'block';
+        btnEl.style.display = 'flex';
+        var label = entry.source === 'new' ? '新词' : '到期';
+        statusEl.innerHTML = '第 ' + (reviewAppState.cursor + 1) + ' / ' + total + ' 张（' + label + '）';
+    }
+
+    // 用户点击评分：WASM 引擎计算下一状态 → 提交后端持久化
+    function handleReviewRating(rating) {
+        var entry = reviewAppState.queue[reviewAppState.cursor];
+        if (!entry || !reviewAppState.wasm) return;
+        var ctx = reviewCardContext(entry);
+        var next;
+        try {
+            next = JSON.parse(reviewAppState.wasm.fsrs_next_states(ctx.stateJson, 0.9, ctx.daysElapsed));
+        } catch (e) {
+            var errEl = document.getElementById('reviewStatus');
+            if (errEl) errEl.innerHTML = '引擎计算失败: ' + e;
+            return;
+        }
+        var names = { 1: 'again', 2: 'hard', 3: 'good', 4: 'easy' };
+        var chosen = next[names[rating]];
+        reviewAppState.cursor++;
+        renderReviewCard();
+
+        fetch('/api/reviews/submit', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                word_id: entry.item.id,
+                rating: rating,
+                stability: chosen.memory.stability,
+                difficulty: chosen.memory.difficulty,
+                interval_days: chosen.interval_days
+            })
+        }).catch(function(err) {
+            console.error('提交复习失败:', err);
+        });
+    }
+
+    // 初始化复习应用（英语页内容加载完成后调用；其他学科页无 #reviewStatus 自动跳过）
+    function initReviewApp() {
+        var statusEl = document.getElementById('reviewStatus');
+        if (!statusEl) return; // 非英语页，跳过
+        statusEl.innerHTML = '正在加载复习内容...';
+
+        loadReviewWasm().then(function(wasm) {
+            reviewAppState.wasm = wasm;
+            return loadReviewQueue(wasm);
+        }).then(function() {
+            renderReviewCard();
+            var buttons = document.querySelectorAll('.review-btn');
+            for (var k = 0; k < buttons.length; k++) {
+                buttons[k].addEventListener('click', function() {
+                    handleReviewRating(parseInt(this.getAttribute('data-rating'), 10));
+                });
+            }
+        }).catch(function(err) {
+            statusEl.innerHTML = '复习功能加载失败（需通过服务器访问，并确认已生成 frontend-rust/pkg）: ' + err;
+            console.error('复习功能初始化失败:', err);
+        });
+    }
+    // ===================== 复习逻辑结束 =====================
+    
+    
     // 缓存配置常量定义
     // CACHE_EXPIRY: 缓存过期时间，设置为30天（30天 × 24小时 × 60分钟 × 60秒 × 1000毫秒）
     // 超过30天未访问的缓存将被自动清理，释放存储空间
@@ -163,6 +302,8 @@ document.addEventListener('DOMContentLoaded', function() {
         contentContainer.innerHTML = defaultCachedHtml;
         // 输出日志表明使用了缓存加载
         console.log('默认加载英语（缓存）:', defaultPage);
+        // 初始化英语页的单词复习应用
+        initReviewApp();
     } else {
         // 如果缓存中不存在，先显示加载中的提示文字
         contentContainer.innerHTML = '<p class="placeholder-text">正在加载内容...</p>';
@@ -186,6 +327,8 @@ document.addEventListener('DOMContentLoaded', function() {
                 contentContainer.innerHTML = html;
                 // 输出日志表明首次加载并缓存成功
                 console.log('默认加载英语（首次）:', defaultPage);
+                // 初始化英语页的单词复习应用
+                initReviewApp();
             })
             // 捕获并处理加载过程中的错误
             .catch(function(error) {
@@ -229,6 +372,8 @@ document.addEventListener('DOMContentLoaded', function() {
                 contentContainer.innerHTML = cachedHtml;
                 // 输出日志表明使用了本地缓存
                 console.log('使用本地缓存加载:', pageName);
+                // 若为英语页则初始化单词复习应用
+                initReviewApp();
             } else {
                 // 如果缓存中不存在，先显示加载中的提示文字
                 contentContainer.innerHTML = '<p class="placeholder-text">正在加载内容...</p>';
@@ -254,6 +399,8 @@ document.addEventListener('DOMContentLoaded', function() {
                         contentContainer.innerHTML = html;
                         // 输出日志表明首次加载并缓存成功
                         console.log('首次加载并永久缓存:', pageName);
+                        // 若为英语页则初始化单词复习应用
+                        initReviewApp();
                     })
                     // 捕获并处理加载过程中发生的错误
                     .catch(function(error) {

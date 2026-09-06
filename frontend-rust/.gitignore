@@ -1,0 +1,6 @@
+# Rust / cargo 构建产物
+/target
+
+# wasm-bindgen / wasm-pack 生成的 JS 胶水与 npm 产物
+/pkg
+node_modules

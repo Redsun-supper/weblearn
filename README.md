@@ -79,15 +79,26 @@ e:\porject\4/
 │   ├── go.mod                   # Go模块定义
 │   ├── config/
 │   │   └── config.go            # 配置管理
+│   ├── database/
+│   │   └── database.go          # SQLite 连接与自动迁移
 │   ├── routes/
 │   │   └── routes.go            # 路由定义
 │   ├── handlers/
-│   │   └── handlers.go          # 请求处理器
+│   │   ├── handlers.go          # 请求处理器
+│   │   └── review_handlers.go   # 词汇复习（FSRS）处理器
 │   ├── models/
-│   │   └── models.go            # 数据模型
+│   │   └── models.go            # 数据模型（含 Word/WordReview/ReviewLog）
 │   ├── utils/
 │   │   └── utils.go             # 工具函数
 │   └── README.md                # 后端说明文档
+│
+├── frontend-rust/               # 前端 Rust/WASM 模块（间隔复习引擎）
+│   ├── Cargo.toml               # cdylib + wasm-bindgen + fsrs
+│   ├── src/
+│   │   ├── lib.rs               # 模块导出
+│   │   ├── fsrs_engine.rs       # FSRS 调度引擎
+│   │   └── randomizer.rs        # 随机器（洗牌/抽样）
+│   └── README.md                # 引擎说明文档
 │
 └── README.md                    # 项目总说明（本文件）
 ```
@@ -110,7 +121,15 @@ e:\porject\4/
 |------|------|
 | Go 1.21 | 后端语言 |
 | Gin | Web框架 |
+| GORM + SQLite (glebarez) | 数据持久化（纯 Go，无 CGO） |
 | Nginx | 反向代理与静态文件服务 |
+
+### 复习引擎
+| 技术 | 用途 |
+|------|------|
+| Rust + wasm-bindgen | 前端 WASM 模块（在浏览器中运行） |
+| fsrs v6 (fsrs-rs) | FSRS 间隔复习调度算法 |
+| serde / serde_json | 引擎 JSON 数据交换 |
 
 ---
 
@@ -162,6 +181,12 @@ e:\porject\4/
 | POST | `/api/user/update` | 更新用户信息 | 🔄 待实现 |
 | GET | `/api/data/list` | 获取数据列表 | 🔄 待实现 |
 | POST | `/api/data/submit` | 提交数据 | 🔄 待实现 |
+| GET | `/api/words` | 单词列表 | ✅ 可用 |
+| POST | `/api/words` | 批量添加单词 | ✅ 可用 |
+| GET | `/api/reviews/due` | 到期复习卡列表 | ✅ 可用 |
+| GET | `/api/reviews/new` | 未加入复习的新词 | ✅ 可用 |
+| POST | `/api/reviews/submit` | 提交复习结果（持久化 FSRS 状态） | ✅ 可用 |
+| GET | `/api/reviews/stats` | 复习统计 | ✅ 可用 |
 
 ---
 
@@ -265,10 +290,14 @@ go build -o server main.go
 - [x] localStorage缓存机制
 - [x] 30天自动清理
 - [x] Go后端基础框架
-- [ ] 数据库集成（MySQL/SQLite）
+- [x] 词汇间隔复习引擎（Rust/WASM：FSRS 调度 + 随机器）
+- [x] 数据库集成（SQLite + GORM，自动迁移完成）
 - [ ] 用户认证系统
 - [ ] 学科内容完善
 - [ ] 响应式优化
+- [x] 复习页面 UI（简单版：pages/english.html + main.js 集成 WASM 引擎）
+- [ ] 复习页面 UI（进阶：完整词义卡交互、发音、统计图表等）
+- [ ] FSRS 参数优化（基于 review_logs 的 compute_parameters）
 
 ---
 
