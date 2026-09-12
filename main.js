@@ -20,12 +20,26 @@ document.addEventListener('DOMContentLoaded', function() {
     var reviewAppState = {
         queue: [],      // 待复习队列 [{source:'due'|'new', item:...}]
         cursor: 0,
-        wasm: null
+        wasm: null,
+        revealed: false, // 当前卡片是否已揭晓答案（主动回忆：揭晓前不允许评分）
+        stats: null      // 最近一次 /api/reviews/stats 返回的数据
     };
 
+    // 自动朗读开关在 localStorage 中的键名
+    var AUTO_SPEAK_KEY = 'reviewAutoSpeak';
+
     // 动态加载 WASM 引擎模块（浏览器原生 import()）
+    // 两个关键点：
+    // 1. 相对路径必须写成 './xxx'：'frontend-rust/...' 会被当作 bare specifier（npm 包名）而解析失败；
+    // 2. wasm-bindgen 的 --target web 产物必须先 await 默认导出（__wbg_init）完成实例化，
+    //    否则模块内部变量 wasm 仍是 undefined，调用任何导出函数都会抛 TypeError。
+    //    不传参时 __wbg_init 会自动 fetch 同目录下的 guangxue_wasm_bg.wasm。
     function loadReviewWasm() {
-        return import('frontend-rust/pkg/guangxue_wasm.js');
+        return import('./frontend-rust/pkg/guangxue_wasm.js').then(function(mod) {
+            return mod.default().then(function() {
+                return mod;
+            });
+        });
     }
 
     // 加载今日复习队列：到期卡（洗牌打乱顺序）+ 新词（随机器无放回抽 5 个）
@@ -35,8 +49,13 @@ document.addEventListener('DOMContentLoaded', function() {
             fetch('/api/reviews/new?limit=50').then(function(res) { return res.json(); }),
             fetch('/api/reviews/stats').then(function(res) { return res.json(); })
         ]).then(function(results) {
-            var dueItems = results[0].data.items || [];
-            var newItems = results[1].data.items || [];
+            var dueItems = (results[0].data && results[0].data.items) || [];
+            var newItems = (results[1].data && results[1].data.items) || [];
+            // 统计面板先渲染，进入页面即可看到今日进度
+            if (results[2] && results[2].code === 200 && results[2].data) {
+                reviewAppState.stats = results[2].data;
+                renderStats(reviewAppState.stats);
+            }
             var seed = wasm.random_seed();
             var queue = [];
             var dueOrder = wasm.random_indices(dueItems.length, seed);
@@ -69,47 +88,105 @@ document.addEventListener('DOMContentLoaded', function() {
         };
     }
 
-    // 渲染当前卡片
+    // 渲染当前卡片（主动回忆：只显示单词与音标，答案区保持隐藏）
     function renderReviewCard() {
         var statusEl = document.getElementById('reviewStatus');
         var cardEl = document.getElementById('reviewCard');
         var btnEl = document.getElementById('reviewButtons');
+        var revealEl = document.getElementById('reviewReveal');
+        var answerEl = document.getElementById('reviewAnswer');
         if (!statusEl || !cardEl || !btnEl) return;
+
+        // 换卡即重置揭示状态：新卡一律先隐藏答案与评分按钮
+        reviewAppState.revealed = false;
+        if (answerEl) answerEl.style.display = 'none';
+        if (btnEl) btnEl.style.display = 'none';
 
         var total = reviewAppState.queue.length;
         if (reviewAppState.cursor >= total) {
             cardEl.style.display = 'none';
-            btnEl.style.display = 'none';
-            statusEl.innerHTML = '今日完成 ✨ 共 ' + total + ' 张';
+            if (revealEl) revealEl.style.display = 'none';
+            var stats = reviewAppState.stats;
+            if (total > 0) {
+                statusEl.textContent = '今日完成 ✨ 共 ' + total + ' 张';
+            } else if (stats && stats.total_words === 0) {
+                statusEl.textContent = '词库为空：请在 backend-go 目录执行 go run ./cmd/seed 导入单词';
+            } else {
+                statusEl.textContent = '暂无需要复习的单词，明天再来 👋';
+            }
+            renderProgress();
             return;
         }
+
         var entry = reviewAppState.queue[reviewAppState.cursor];
         var item = entry.item;
-        document.getElementById('reviewWord').innerHTML = item.word || '';
-        document.getElementById('reviewPhonetic').innerHTML = item.phonetic || '';
-        document.getElementById('reviewMeaning').innerHTML = item.meaning || '';
-        document.getElementById('reviewExample').innerHTML = item.example || '';
+        // 使用 textContent 渲染词条数据，避免词条内容被当作 HTML 解析
+        setTextContent('reviewWord', item.word || '');
+        setTextContent('reviewPhonetic', item.phonetic || '');
+        setTextContent('reviewMeaning', item.meaning || '');
+        setTextContent('reviewExample', item.example || '');
         cardEl.style.display = 'block';
-        btnEl.style.display = 'flex';
+        if (revealEl) revealEl.style.display = 'block';
         var label = entry.source === 'new' ? '新词' : '到期';
-        statusEl.innerHTML = '第 ' + (reviewAppState.cursor + 1) + ' / ' + total + ' 张（' + label + '）';
+        statusEl.textContent = '第 ' + (reviewAppState.cursor + 1) + ' / ' + total +
+            ' 张（' + label + '）· 先回想，再显示答案';
+        // 开启自动朗读时，每张新卡出现即朗读单词
+        if (isAutoSpeakOn()) speakCurrent('word');
+        renderProgress();
+    }
+
+    // 揭晓答案：显示释义与例句，并放出评分按钮
+    // 只有揭晓后才允许评分，否则「看着答案打分」会让 FSRS 的记忆状态失真
+    function revealAnswer() {
+        if (reviewAppState.revealed) return;
+        var entry = reviewAppState.queue[reviewAppState.cursor];
+        if (!entry) return;
+        reviewAppState.revealed = true;
+
+        var answerEl = document.getElementById('reviewAnswer');
+        var revealEl = document.getElementById('reviewReveal');
+        var btnEl = document.getElementById('reviewButtons');
+        if (answerEl) answerEl.style.display = 'block';
+        if (revealEl) revealEl.style.display = 'none';
+        if (btnEl) btnEl.style.display = 'flex';
+
+        var statusEl = document.getElementById('reviewStatus');
+        if (statusEl) {
+            var label = entry.source === 'new' ? '新词' : '到期';
+            statusEl.textContent = '第 ' + (reviewAppState.cursor + 1) + ' / ' +
+                reviewAppState.queue.length + ' 张（' + label + '）· 请根据回忆情况评分';
+        }
     }
 
     // 用户点击评分：WASM 引擎计算下一状态 → 提交后端持久化
+    // 前置条件：必须已揭晓答案（否则视为误触，先帮用户揭晓）
     function handleReviewRating(rating) {
         var entry = reviewAppState.queue[reviewAppState.cursor];
         if (!entry || !reviewAppState.wasm) return;
+        if (!reviewAppState.revealed) {
+            // 未揭晓答案时忽略评分：既避免误按数字键泄漏答案，也避免凭猜测打分
+            var hintEl = document.getElementById('reviewStatus');
+            if (hintEl) hintEl.textContent = '请先按空格（或点「显示答案」）揭晓答案，再评分';
+            return;
+        }
         var ctx = reviewCardContext(entry);
         var next;
         try {
             next = JSON.parse(reviewAppState.wasm.fsrs_next_states(ctx.stateJson, 0.9, ctx.daysElapsed));
         } catch (e) {
             var errEl = document.getElementById('reviewStatus');
-            if (errEl) errEl.innerHTML = '引擎计算失败: ' + e;
+            if (errEl) errEl.textContent = '引擎计算失败: ' + e;
             return;
         }
         var names = { 1: 'again', 2: 'hard', 3: 'good', 4: 'easy' };
         var chosen = next[names[rating]];
+        if (!chosen || !chosen.memory) {
+            var badEl = document.getElementById('reviewStatus');
+            if (badEl) badEl.textContent = '引擎返回数据异常，已跳过本张';
+            reviewAppState.cursor++;
+            renderReviewCard();
+            return;
+        }
         reviewAppState.cursor++;
         renderReviewCard();
 
@@ -123,30 +200,194 @@ document.addEventListener('DOMContentLoaded', function() {
                 difficulty: chosen.memory.difficulty,
                 interval_days: chosen.interval_days
             })
+        }).then(function(res) {
+            return res.json();
+        }).then(function(data) {
+            if (data && data.code === 200) {
+                // 提交成功后刷新统计（今日已复习 / 到期数 / 连续天数）
+                loadReviewStats();
+            } else {
+                console.error('提交复习失败:', data);
+            }
         }).catch(function(err) {
             console.error('提交复习失败:', err);
         });
+    }
+
+    // ---- 通用小工具 ----
+    // 设置元素文本（不解析 HTML），元素不存在时静默跳过
+    function setTextContent(id, value) {
+        var el = document.getElementById(id);
+        if (el) el.textContent = (value === null || value === undefined) ? '' : String(value);
+    }
+
+    // 绑定点击事件（元素不存在时静默跳过）
+    function bindClick(id, handler) {
+        var el = document.getElementById(id);
+        if (el) el.addEventListener('click', handler);
+    }
+
+    // ---- 统计面板（数据来自 GET /api/reviews/stats）----
+    // 渲染今日进度、词库概览、连续天数与记忆保持率
+    function renderStats(stats) {
+        var panel = document.getElementById('reviewStats');
+        if (!panel || !stats) return;
+        setTextContent('statToday', stats.today_reviewed || 0);
+        setTextContent('statDue', stats.due_cards || 0);
+        setTextContent('statNew', stats.new_words || 0);
+        setTextContent('statStreak', stats.streak_days || 0);
+        var rate = '—';
+        if (stats.total_reviews > 0 && typeof stats.retention_rate === 'number') {
+            rate = Math.round(stats.retention_rate * 100) + '%';
+        }
+        setTextContent('statRetention', rate);
+        setTextContent('statTotal', '词库共 ' + (stats.total_words || 0) + ' 词 · 已学 ' +
+            (stats.reviewed_words || 0) + ' 词 · 累计复习 ' + (stats.total_reviews || 0) + ' 次');
+        panel.style.display = 'flex';
+        renderProgress();
+    }
+
+    // 刷新统计（每次提交复习成功后调用）
+    function loadReviewStats() {
+        return fetch('/api/reviews/stats')
+            .then(function(res) { return res.json(); })
+            .then(function(data) {
+                if (data && data.code === 200 && data.data) {
+                    reviewAppState.stats = data.data;
+                    renderStats(data.data);
+                }
+                return data;
+            })
+            .catch(function(err) {
+                console.error('加载复习统计失败:', err);
+                return null;
+            });
+    }
+
+    // 渲染本轮队列进度条（已完成张数 / 队列总张数）
+    function renderProgress() {
+        var bar = document.getElementById('statProgressBar');
+        if (!bar) return;
+        var total = reviewAppState.queue.length;
+        var done = Math.min(reviewAppState.cursor, total);
+        bar.style.width = (total > 0 ? Math.round(done / total * 100) : 0) + '%';
+    }
+
+    // ---- 单词与例句发音（浏览器 Web Speech API，无需额外音频资源）----
+    // 读取「自动朗读」开关（持久化在 localStorage）
+    function isAutoSpeakOn() {
+        try {
+            return localStorage.getItem(AUTO_SPEAK_KEY) === '1';
+        } catch (e) {
+            return false;
+        }
+    }
+
+    // 保存「自动朗读」开关
+    function setAutoSpeak(on) {
+        try {
+            localStorage.setItem(AUTO_SPEAK_KEY, on ? '1' : '0');
+        } catch (e) {
+            console.error('保存自动朗读设置失败:', e);
+        }
+    }
+
+    // 朗读一段英文文本（lang 默认美式英语）
+    function speakText(text, lang) {
+        if (!text) return;
+        if (!window.speechSynthesis || typeof window.SpeechSynthesisUtterance !== 'function') {
+            return; // 浏览器不支持语音合成时静默跳过
+        }
+        try {
+            window.speechSynthesis.cancel(); // 打断上一条，避免叠读
+            var utter = new window.SpeechSynthesisUtterance(text);
+            utter.lang = lang || 'en-US';
+            utter.rate = 0.9;
+            window.speechSynthesis.speak(utter);
+        } catch (e) {
+            console.error('朗读失败:', e);
+        }
+    }
+
+    // 朗读当前卡片上的单词或例句（kind: 'word' | 'example'）
+    function speakCurrent(kind) {
+        var el = document.getElementById(kind === 'example' ? 'reviewExample' : 'reviewWord');
+        if (el) speakText(el.textContent);
+    }
+
+    // ---- 键盘快捷键 ----
+    // 空格/回车：显示答案；1~4：评分（仅揭晓后生效）；P：朗读单词；E：朗读例句
+    function handleReviewKey(e) {
+        // 不在英语复习页时直接忽略
+        if (!document.getElementById('reviewStatus')) return;
+        var target = e.target;
+        if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
+            return; // 正在操作输入控件时不拦截按键
+        }
+        var cardEl = document.getElementById('reviewCard');
+        if (!cardEl || cardEl.style.display === 'none') return;
+
+        var key = e.key;
+        if (key === ' ' || key === 'Spacebar' || key === 'Enter') {
+            e.preventDefault(); // 阻止空格滚动页面
+            revealAnswer();
+            return;
+        }
+        if (key.length === 1 && key >= '1' && key <= '4') {
+            handleReviewRating(parseInt(key, 10));
+            return;
+        }
+        if (key === 'p' || key === 'P') {
+            speakCurrent('word');
+            return;
+        }
+        if (key === 'e' || key === 'E') {
+            speakCurrent('example');
+        }
     }
 
     // 初始化复习应用（英语页内容加载完成后调用；其他学科页无 #reviewStatus 自动跳过）
     function initReviewApp() {
         var statusEl = document.getElementById('reviewStatus');
         if (!statusEl) return; // 非英语页，跳过
-        statusEl.innerHTML = '正在加载复习内容...';
+        statusEl.textContent = '正在加载复习内容...';
+
+        // 键盘快捷键只绑定一次：同一页面内反复切换学科不会重复注册
+        if (!window.__guangxueReviewKeysBound) {
+            window.__guangxueReviewKeysBound = true;
+            document.addEventListener('keydown', handleReviewKey);
+        }
+
+        // 恢复「自动朗读」开关状态
+        var autoEl = document.getElementById('reviewAutoSpeak');
+        if (autoEl) {
+            autoEl.checked = isAutoSpeakOn();
+            autoEl.addEventListener('change', function() {
+                setAutoSpeak(this.checked);
+            });
+        }
+
+        // 显示答案按钮与发音按钮
+        bindClick('reviewRevealBtn', function() { revealAnswer(); });
+        bindClick('reviewSpeakWordBtn', function() { speakCurrent('word'); });
+        bindClick('reviewSpeakExampleBtn', function() { speakCurrent('example'); });
+
+        // 评分按钮（学科页每次加载都会重建这些元素，直接绑定即可）
+        var buttons = document.querySelectorAll('.review-btn');
+        for (var k = 0; k < buttons.length; k++) {
+            buttons[k].addEventListener('click', function() {
+                this.blur(); // 主动失焦，避免回车键被按钮重复触发
+                handleReviewRating(parseInt(this.getAttribute('data-rating'), 10));
+            });
+        }
 
         loadReviewWasm().then(function(wasm) {
             reviewAppState.wasm = wasm;
-            return loadReviewQueue(wasm);
+            return loadReviewQueue(wasm); // 队列加载时已顺带渲染统计面板
         }).then(function() {
             renderReviewCard();
-            var buttons = document.querySelectorAll('.review-btn');
-            for (var k = 0; k < buttons.length; k++) {
-                buttons[k].addEventListener('click', function() {
-                    handleReviewRating(parseInt(this.getAttribute('data-rating'), 10));
-                });
-            }
         }).catch(function(err) {
-            statusEl.innerHTML = '复习功能加载失败（需通过服务器访问，并确认已生成 frontend-rust/pkg）: ' + err;
+            statusEl.textContent = '复习功能加载失败（需通过服务器访问，并确认已生成 frontend-rust/pkg）: ' + err;
             console.error('复习功能初始化失败:', err);
         });
     }
@@ -161,6 +402,13 @@ document.addEventListener('DOMContentLoaded', function() {
     const CACHE_PREFIX = 'pageCache_';
     // CACHE_META_KEY: 缓存元数据的键名，用于存储每个页面的最后访问时间
     const CACHE_META_KEY = 'pageCache_meta';
+    // CACHE_VERSION: 页面缓存结构版本号
+    // 用途：当学科页的结构发生不兼容改动时（例如英语页新增「显示答案」按钮），
+    // 把版本号 +1，老用户 localStorage 里的旧页面缓存会在启动时被整体清除，
+    // 避免出现「新脚本 + 旧页面结构」导致功能不可用
+    const CACHE_VERSION = 2;
+    // CACHE_VERSION_KEY: 记录当前缓存版本的键名
+    const CACHE_VERSION_KEY = 'pageCache_version';
     
     // 获取缓存元数据函数
     // 用途：从localStorage中读取缓存元数据（记录每个页面的最后访问时间）
@@ -280,8 +528,36 @@ document.addEventListener('DOMContentLoaded', function() {
         saveCacheMeta(meta);
     }
     
-    // 页面加载时执行过期缓存清理
+    // 缓存版本检查函数
+    // 用途：缓存结构升级后，一次性清除所有旧版本缓存（含旧版遗留键），
+    // 保证用户拿到的学科页结构与当前脚本匹配
+    function purgeCacheIfOutdated() {
+        try {
+            // 版本一致则无需处理
+            if (localStorage.getItem(CACHE_VERSION_KEY) === String(CACHE_VERSION)) {
+                return;
+            }
+            // 收集所有本应用写入的缓存键（前缀 pageCache，含 pageCache_meta / pageCache_version）
+            const staleKeys = [];
+            for (let i = 0; i < localStorage.length; i++) {
+                const key = localStorage.key(i);
+                if (key && key.indexOf('pageCache') === 0) {
+                    staleKeys.push(key);
+                }
+            }
+            for (let j = 0; j < staleKeys.length; j++) {
+                localStorage.removeItem(staleKeys[j]);
+            }
+            localStorage.setItem(CACHE_VERSION_KEY, String(CACHE_VERSION));
+            console.log('缓存版本已升级到 v' + CACHE_VERSION + '，清除旧缓存 ' + staleKeys.length + ' 项');
+        } catch (e) {
+            console.error('缓存版本检查失败:', e);
+        }
+    }
+    
+    // 页面加载时先做缓存版本检查，再执行过期缓存清理
     // 确保每次打开页面时都会检查并清理超过30天未访问的缓存
+    purgeCacheIfOutdated();
     cleanExpiredCache();
     
     // 默认加载英语页面

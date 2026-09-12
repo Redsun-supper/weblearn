@@ -1,0 +1,15 @@
+# SQLite 数据库（本地开发数据，不入库）
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Go 编译产物
+backend-go/server
+backend-go/server.exe
+
+# 操作系统 / 编辑器
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

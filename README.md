@@ -81,6 +81,11 @@ e:\porject\4/
 │   │   └── config.go            # 配置管理
 │   ├── database/
 │   │   └── database.go          # SQLite 连接与自动迁移
+│   ├── cmd/
+│   │   └── seed/
+│   │       └── main.go          # 词表导入命令（JSON → words 表）
+│   ├── seed/
+│   │   └── words_english.json   # 英语种子词表（100 词）
 │   ├── routes/
 │   │   └── routes.go            # 路由定义
 │   ├── handlers/
@@ -186,7 +191,7 @@ e:\porject\4/
 | GET | `/api/reviews/due` | 到期复习卡列表 | ✅ 可用 |
 | GET | `/api/reviews/new` | 未加入复习的新词 | ✅ 可用 |
 | POST | `/api/reviews/submit` | 提交复习结果（持久化 FSRS 状态） | ✅ 可用 |
-| GET | `/api/reviews/stats` | 复习统计 | ✅ 可用 |
+| GET | `/api/reviews/stats` | 复习统计（词库概览 / 今日进度 / 连续天数 / 记忆保持率） | ✅ 可用 |
 
 ---
 
@@ -216,6 +221,59 @@ e:\porject\4/
 |------|------|
 | `pageCache_pages/xxx.html` | 存储页面HTML内容 |
 | `pageCache_meta` | 存储各页面最后访问时间 |
+| `pageCache_version` | 缓存结构版本号；版本升级时一次性清除所有旧页面缓存 |
+
+> ⚠️ 修改学科页结构（例如给英语页新增按钮）后，必须把 `main.js` 里的 `CACHE_VERSION` +1，
+> 否则老用户会继续用 localStorage 中的旧页面结构，导致新脚本找不到对应元素、功能不可用。
+
+---
+
+## 单词表导入（本地开发）
+
+英语复习依赖 `words` 表中的词条。首次跑复习功能前，先导入词表：
+
+```bash
+cd backend-go
+
+# 使用仓库自带的英语种子词表（100 词，seed/words_english.json）
+go run ./cmd/seed
+
+# 或指定自己的词表与数据库
+go run ./cmd/seed -file my_words.json -db guangxue.db
+```
+
+词表 JSON 结构：
+
+```json
+{
+  "words": [
+    {"word": "apple", "phonetic": "/ˈæp.əl/", "meaning": "n. 苹果", "example": "I eat an apple.", "subject": "english"}
+  ]
+}
+```
+
+- `subject` 省略时默认为 `english`，为将来其他学科的词汇留出扩展位。
+- `words.word` 是唯一索引，重复单词自动跳过，因此命令**可反复执行**（幂等）。
+- 换成自己的词表（中考 / 高考 / 四六级等）时，保持同样的 JSON 结构即可。
+- SQLite 文件与词表都是本地数据：`*.db` 已在 `.gitignore` 中忽略，词表 JSON 则在版本控制内。
+
+---
+
+## 复习页交互（英语）
+
+| 操作 | 说明 |
+|------|------|
+| 空格 / 回车 | 显示答案（揭晓释义与例句，并放出评分按钮） |
+| `1` / `2` / `3` / `4` | 评分：忘记 / 困难 / 良好 / 简单（**仅在显示答案之后生效**） |
+| `P` | 朗读当前单词 |
+| `E` | 朗读当前例句 |
+| 自动朗读 | 卡片右上角开关，选择状态保存在 localStorage（`reviewAutoSpeak`） |
+
+> **设计要点：为什么答案默认隐藏？**
+> 进入卡片时只显示单词与音标，释义/例句保持隐藏，评分必须发生在揭晓之后。
+> 因为 FSRS 的 `stability` / `difficulty` 依赖「是否真的想起来」这一真实信号：
+> 若一边看着答案一边打分，评分会系统性偏高，记忆状态随之失真，
+> `review_logs` 也就失去了后续参数优化（`compute_parameters`）的价值。
 
 ---
 
@@ -249,8 +307,10 @@ server {
     }
 
     # Go后端API
+    # 注意：proxy_pass 末尾不要带 / —— 带斜杠时 nginx 会把匹配到的 /api/ 前缀替换掉，
+    # /api/health 会被转发成 /health，与后端注册的 /api/health 不匹配而 404
     location /api/ {
-        proxy_pass http://localhost:8080/;
+        proxy_pass http://localhost:8080;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -296,7 +356,11 @@ go build -o server main.go
 - [ ] 学科内容完善
 - [ ] 响应式优化
 - [x] 复习页面 UI（简单版：pages/english.html + main.js 集成 WASM 引擎）
-- [ ] 复习页面 UI（进阶：完整词义卡交互、发音、统计图表等）
+- [x] 主动回忆流程（先回想 → 显示答案 → 评分，避免「看着答案打分」污染 FSRS 状态）
+- [x] 单词 / 例句发音（Web Speech API）与键盘快捷键（空格、1~4、P、E）
+- [x] 复习统计面板（今日进度、连续天数、记忆保持率、本轮进度条）
+- [x] 英语种子词表与导入命令（`backend-go/cmd/seed`，100 词）
+- [ ] 复习页面 UI（进阶：完整词义卡交互、统计曲线图表等）
 - [ ] FSRS 参数优化（基于 review_logs 的 compute_parameters）
 
 ---

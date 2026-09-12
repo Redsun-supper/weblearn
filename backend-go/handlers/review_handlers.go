@@ -311,8 +311,11 @@ func (h *ReviewHandler) SubmitReview(c *gin.Context) {
 
 // ReviewStats 复习统计
 // GET /api/reviews/stats
+// 返回：词库总览（总词数/未学/到期/已学）+ 今日进度（今日已复习）+ 习惯指标（连续天数、记忆保持率）
 func (h *ReviewHandler) ReviewStats(c *gin.Context) {
 	now := time.Now()
+	// 今日零点（服务器本地时区），用于统计「今日已复习」
+	startOfToday := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 
 	var totalWords int64
 	h.db.Model(&models.Word{}).Count(&totalWords)
@@ -331,10 +334,65 @@ func (h *ReviewHandler) ReviewStats(c *gin.Context) {
 	var reviewedCount int64
 	h.db.Model(&models.WordReview{}).Count(&reviewedCount)
 
+	// ---- 复习日志统计（今日进度 / 连续天数 / 记忆保持率）----
+	var totalReviews int64
+	h.db.Model(&models.ReviewLog{}).Count(&totalReviews)
+
+	var todayReviewed int64
+	h.db.Model(&models.ReviewLog{}).
+		Where("reviewed_at >= ?", startOfToday).
+		Count(&todayReviewed)
+
+	var againTotal int64
+	h.db.Model(&models.ReviewLog{}).Where("rating = ?", 1).Count(&againTotal)
+
+	// 记忆保持率 = 非「忘记」评分所占比例（0~1，保留三位小数）
+	retentionRate := 0.0
+	if totalReviews > 0 {
+		retentionRate = math.Round(float64(totalReviews-againTotal)/float64(totalReviews)*1000) / 1000
+	}
+
 	c.JSON(http.StatusOK, gin.H{"code": 200, "message": "获取成功", "data": gin.H{
 		"total_words":    totalWords,
 		"new_words":      newWords,
 		"due_cards":      dueCount,
 		"reviewed_words": reviewedCount,
+		"total_reviews":  totalReviews,
+		"today_reviewed": todayReviewed,
+		"streak_days":    h.calcStreakDays(startOfToday),
+		"retention_rate": retentionRate,
 	}})
+}
+
+// calcStreakDays 计算连续复习天数
+// 说明：以「本地自然日」为单位向前累计连续有复习记录的天数；
+// 若今天还没有复习记录，则从昨天起算（这样当天刚开始时不会立刻显示断签）。
+// 为避免依赖 SQLite 的日期函数与时区差异，这里只取回原始时间点，在 Go 侧换算自然日。
+func (h *ReviewHandler) calcStreakDays(startOfToday time.Time) int {
+	// 最多回溯 400 天，足够覆盖任意真实连续记录
+	var reviewedAt []time.Time
+	if err := h.db.Model(&models.ReviewLog{}).
+		Where("reviewed_at >= ?", startOfToday.AddDate(0, 0, -400)).
+		Pluck("reviewed_at", &reviewedAt).Error; err != nil {
+		return 0
+	}
+	if len(reviewedAt) == 0 {
+		return 0
+	}
+
+	days := make(map[string]bool, len(reviewedAt))
+	for _, t := range reviewedAt {
+		days[t.In(startOfToday.Location()).Format("2006-01-02")] = true
+	}
+
+	cursor := startOfToday
+	if !days[cursor.Format("2006-01-02")] {
+		cursor = cursor.AddDate(0, 0, -1)
+	}
+	streak := 0
+	for days[cursor.Format("2006-01-02")] {
+		streak++
+		cursor = cursor.AddDate(0, 0, -1)
+	}
+	return streak
 }

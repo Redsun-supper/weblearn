@@ -1,22 +1,71 @@
 <h1>英语</h1>
 <p>英语科目内容</p>
 
-<!-- 单词间隔复习（FSRS）简单版：由 main.js 中的 reviewApp 逻辑驱动 -->
+<!-- 单词间隔复习（FSRS）：主动回忆流程，由 main.js 中的 initReviewApp() 驱动 -->
+<!-- 关键设计：进入卡片时只显示单词与音标，点「显示答案」后才揭晓释义/例句并出现评分按钮， -->
+<!-- 保证评分基于真实回忆结果，避免「看着答案打分」污染 FSRS 记忆状态。 -->
 <div class="review-app" id="reviewApp">
     <div class="review-header">
         <span class="review-title">单词复习</span>
         <span class="review-status" id="reviewStatus">正在加载复习内容...</span>
     </div>
+
+    <!-- 复习统计面板（数据来自 GET /api/reviews/stats） -->
+    <div class="review-stats" id="reviewStats" style="display:none;">
+        <div class="review-stat">
+            <span class="review-stat-value" id="statToday">0</span>
+            <span class="review-stat-label">今日已复习</span>
+        </div>
+        <div class="review-stat">
+            <span class="review-stat-value" id="statDue">0</span>
+            <span class="review-stat-label">到期待复习</span>
+        </div>
+        <div class="review-stat">
+            <span class="review-stat-value" id="statNew">0</span>
+            <span class="review-stat-label">未学新词</span>
+        </div>
+        <div class="review-stat">
+            <span class="review-stat-value" id="statStreak">0</span>
+            <span class="review-stat-label">连续天数</span>
+        </div>
+        <div class="review-stat">
+            <span class="review-stat-value" id="statRetention">—</span>
+            <span class="review-stat-label">记忆保持率</span>
+        </div>
+        <!-- 本轮队列进度条 -->
+        <div class="review-progress" title="本轮复习进度">
+            <div class="review-progress-bar" id="statProgressBar"></div>
+        </div>
+        <div class="review-stat-total" id="statTotal">词库共 0 词</div>
+    </div>
+
+    <!-- 单词卡片：答案区默认隐藏 -->
     <div class="review-card" id="reviewCard" style="display:none;">
         <h2 id="reviewWord"></h2>
+        <div class="review-pronounce-row">
+            <button class="review-pronounce-btn" id="reviewSpeakWordBtn" title="朗读单词（快捷键 P）">🔊 单词</button>
+            <button class="review-pronounce-btn" id="reviewSpeakExampleBtn" title="朗读例句（快捷键 E）">🔊 例句</button>
+            <label class="review-autospeak" title="出现新卡片时自动朗读单词">
+                <input type="checkbox" id="reviewAutoSpeak"> 自动朗读
+            </label>
+        </div>
         <p id="reviewPhonetic" class="review-phonetic"></p>
-        <p id="reviewMeaning" class="review-meaning"></p>
-        <p id="reviewExample" class="review-example"></p>
+        <div class="review-answer" id="reviewAnswer" style="display:none;">
+            <p id="reviewMeaning" class="review-meaning"></p>
+            <p id="reviewExample" class="review-example"></p>
+        </div>
     </div>
+
+    <!-- 显示答案按钮：揭晓前唯一可点的操作 -->
+    <div class="review-reveal" id="reviewReveal" style="display:none;">
+        <button class="review-reveal-btn" id="reviewRevealBtn">显示答案（空格）</button>
+    </div>
+
+    <!-- 评分按钮：揭晓答案后才出现 -->
     <div class="review-buttons" id="reviewButtons" style="display:none;">
-        <button class="review-btn" data-rating="1">忘记</button>
-        <button class="review-btn" data-rating="2">困难</button>
-        <button class="review-btn" data-rating="3">良好</button>
-        <button class="review-btn" data-rating="4">简单</button>
+        <button class="review-btn" data-rating="1" title="快捷键 1">忘记</button>
+        <button class="review-btn" data-rating="2" title="快捷键 2">困难</button>
+        <button class="review-btn" data-rating="3" title="快捷键 3">良好</button>
+        <button class="review-btn" data-rating="4" title="快捷键 4">简单</button>
     </div>
 </div>

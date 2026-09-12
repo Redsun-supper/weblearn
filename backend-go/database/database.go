@@ -2,6 +2,8 @@ package database
 
 import (
 	"log"
+	"os"
+	"time"
 
 	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
@@ -17,7 +19,17 @@ var DB *gorm.DB
 // dsn 为数据库文件路径，例如 "guangxue.db"
 func Init(dsn string) *gorm.DB {
 	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{
-		Logger: logger.Default.LogMode(logger.Warn),
+		Logger: logger.New(
+			log.New(os.Stdout, "\r\n", log.LstdFlags),
+			logger.Config{
+				SlowThreshold: 200 * time.Millisecond,
+				LogLevel:      logger.Warn,
+				// ErrRecordNotFound 在本项目中是正常控制流（判断「新词 / 未加入复习的卡」，
+				// 以及导入词表时判断单词是否已存在），不作为错误打印，避免刷日志
+				IgnoreRecordNotFoundError: true,
+				Colorful:                  true,
+			},
+		),
 	})
 	if err != nil {
 		log.Fatalf("打开数据库失败 (%s): %v", dsn, err)

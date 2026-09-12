@@ -9,10 +9,18 @@ backend-go/
 ── go.sum               ← 依赖校验文件
 ├── config/              ← 配置管理
 │   └── config.go
+├── database/            ← SQLite 连接与自动迁移
+│   └── database.go
+├── cmd/
+│   └── seed/            ← 词表导入命令（JSON → words 表）
+│       └── main.go
+├── seed/
+│   └── words_english.json  ← 英语种子词表（100 词）
 ── routes/              ← 路由定义
 │   └── routes.go
 ├── handlers/            ← 请求处理器
-│   └── handlers.go
+│   ├── handlers.go
+│   └── review_handlers.go  ← 词汇复习（FSRS）处理器
 ├── models/              ← 数据模型
 │   └── models.go
 ── utils/               ← 工具函数
@@ -60,6 +68,41 @@ go build -o server main.go
 | POST | /api/reviews/submit | 提交复习结果（FSRS 状态持久化） |
 | GET | /api/reviews/stats | 复习统计 |
 
+### `/api/reviews/stats` 返回字段
+
+| 字段 | 说明 |
+|------|------|
+| `total_words` | 词库总词数 |
+| `new_words` | 尚未加入复习的新词数 |
+| `due_cards` | 当前到期待复习数 |
+| `reviewed_words` | 已加入复习（有记忆状态）的词数 |
+| `total_reviews` | 累计复习次数（`review_logs` 行数） |
+| `today_reviewed` | 今日已复习次数（服务器本地时区当天零点起算） |
+| `streak_days` | 连续复习天数；今日尚未复习时从昨天起算，避免当天开始即显示断签 |
+| `retention_rate` | 记忆保持率 = 非「忘记」评分占比（0~1，三位小数） |
+
+## 词表导入
+
+复习功能需要 `words` 表中有词条。用 `cmd/seed` 从 JSON 词表导入：
+
+```bash
+cd backend-go
+
+# 默认使用 seed/words_english.json，数据库取环境变量 DB_PATH（默认 guangxue.db）
+go run ./cmd/seed
+
+# 指定词表与数据库
+go run ./cmd/seed -file seed/my_words.json -db guangxue.db
+```
+
+词表 JSON 结构（`subject` 可省略，默认 `english`）：
+
+```json
+{"words":[{"word":"apple","phonetic":"/ˈæp.əl/","meaning":"n. 苹果","example":"I eat an apple.","subject":"english"}]}
+```
+
+`words.word` 为唯一索引，重复词条自动跳过，因此该命令可反复执行。
+
 ## 数据库（SQLite）
 
 - 使用 [GORM](https://gorm.io) + [glebarez/sqlite](https://github.com/glebarez/sqlite)（纯 Go，无需 CGO）。
@@ -94,8 +137,9 @@ curl -X POST http://localhost:8080/api/words -H "Content-Type: application/json"
 ## Nginx反向代理配置
 
 ```nginx
+# 注意：proxy_pass 末尾不要带 /，否则 /api/xxx 会被改写成 /xxx 而 404
 location /api/ {
-    proxy_pass http://localhost:8080/;
+    proxy_pass http://localhost:8080;
     proxy_set_header Host $host;
     proxy_set_header X-Real-IP $remote_addr;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
