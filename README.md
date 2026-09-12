@@ -74,6 +74,8 @@ e:\porject\4/
 │       ├── politics.html        # 政治（敬请期待）
 │       └── geography.html       # 地理（敬请期待）
 │
+├── dev-server.js                # 本地开发服务器（静态文件 + /api 反向代理，仅开发用）
+│
 ├── backend-go/                  # Go后端服务
 │   ├── main.go                  # 程序入口
 │   ├── go.mod                   # Go模块定义
@@ -225,6 +227,55 @@ e:\porject\4/
 
 > ⚠️ 修改学科页结构（例如给英语页新增按钮）后，必须把 `main.js` 里的 `CACHE_VERSION` +1，
 > 否则老用户会继续用 localStorage 中的旧页面结构，导致新脚本找不到对应元素、功能不可用。
+
+---
+
+## 本地启动测试
+
+前端使用**绝对路径**请求 `/api/*`（线上由 Nginx 反向代理），因此**不能直接双击 `index.html` 打开**：
+`file://` 协议下 `/api` 请求会失败，WASM 的 ES 模块加载也会被浏览器拦截。
+本地必须让「静态文件」与「API」处于**同一个 origin**，仓库根目录的 `dev-server.js` 就是为此准备的
+（只用 Node 内置模块，无需 `npm install`）。
+
+### 1. 导入词库（首次，否则英语复习没有词）
+
+```bash
+cd backend-go
+go run ./cmd/seed
+```
+
+### 2. 启动后端
+
+```bash
+cd backend-go
+go run main.go        # 监听 0.0.0.0:8080
+```
+
+### 3. 启动前端服务器
+
+```bash
+# 在仓库根目录执行
+node dev-server.js                   # 默认 http://127.0.0.1:8899
+node dev-server.js --port 9000        # 前端端口被占用时换一个
+node dev-server.js --api-port 8081    # 后端换了端口时对齐
+```
+
+### 4. 打开浏览器
+
+访问 **http://127.0.0.1:8899** 即可。首页默认加载英语页，下拉即是「单词复习」。
+
+### 常见问题
+
+| 现象 | 原因与处理 |
+|------|-----------|
+| 页面提示「复习功能加载失败」 | 后端没启动或端口不是 8080；`dev-server.js` 控制台会打印 `[proxy error]` 说明具体原因 |
+| 提示「词库为空」或「暂无需要复习的单词」 | 还没导入词表，执行 `go run ./cmd/seed`（见上一步） |
+| 改了 `pages/*.html` 却不生效 | 学科页被 **localStorage 缓存了 30 天**：DevTools → Application → Local Storage 删除 `pageCache_*` 键，或在 Console 执行 `localStorage.clear()` 后刷新；也可以把 `main.js` 里的 `CACHE_VERSION` +1 强制全体用户失效 |
+| 改了 `main.js` / `main.css` 却不生效 | 浏览器 HTTP 缓存。`dev-server.js` 已发送 `Cache-Control: no-store`；若仍异常请硬刷新（Ctrl+F5） |
+| 端口 8080 / 8899 被占用 | 后端用环境变量换端口（如 `SERVER_PORT=8081`），前端用 `--api-port 8081` 对齐；前端自身用 `--port` 换 |
+| 想要与线上完全一致的形态 | 用 Nginx 反向代理：`root` 指向仓库根目录、`proxy_pass` 指向 `127.0.0.1:8080`（见「部署说明」） |
+
+> 💡 `dev-server.js` 仅用于本地开发，部署时无需上传（线上由 Nginx 承担同样的职责）。
 
 ---
 
