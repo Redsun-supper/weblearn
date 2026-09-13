@@ -13,3 +13,6 @@ backend-go/server.exe
 Thumbs.db
 .idea/
 .vscode/
+
+# 存档备份（只读，永不提交）
+备份/
