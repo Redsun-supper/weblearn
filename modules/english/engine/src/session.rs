@@ -38,8 +38,8 @@ use crate::randomizer::{random_indices, random_sample, random_seed};
 /// 期望记忆保持率（与原前端一致，固定 0.9）
 const DESIRED_RETENTION: f32 = 0.9;
 
-/// 今日新词默认上限（与原前端一致）
-const DEFAULT_NEW_LIMIT: u32 = 5;
+/// 每次抽取新词的默认批量（**不是每日上限**：队列抽干后前端会再抽一批，直到词库没有未学词）
+const DEFAULT_NEW_BATCH: u32 = 20;
 
 /// 一天的毫秒数
 const MS_PER_DAY: f64 = 86_400_000.0;
@@ -216,7 +216,50 @@ pub fn plan_session(
     cards
 }
 
-/// 距上次复习的天数：`floor((now - last) / 86400000)`，负值归零。
+/// 把接口返回的卡片转成计划输入：时间串 → epoch 毫秒
+/// （`last_review_at` 优先，缺失时回退 `due_at`，与原 JS 一致）
+fn to_due_inputs(cards: Vec<ApiCard>) -> Vec<(ApiCard, Option<f64>)> {
+    cards
+        .into_iter()
+        .map(|card| {
+            let last_ms = card
+                .last_review_at
+                .as_deref()
+                .or(card.due_at.as_deref())
+                .and_then(parse_time_ms);
+            (card, last_ms)
+        })
+        .collect()
+}
+
+/// 把新一批卡片追加到队列尾部（**游标不动**），只返回**新增**的部分。
+///
+/// 去重规则：跳过 id 已经出现在「待办区」（`existing[cursor..]`，即还没评分的部分）里的卡片。
+/// 游标之前已经评完的卡**不算重复**——它到期后再次被抽到属于正常复习。
+/// 这样即使前端补词请求与提交存在竞态，也不会让同一张卡在待办队列里出现两次。
+pub fn append_plan(
+    existing: &[PlannedCard],
+    cursor: usize,
+    due: Vec<(ApiCard, Option<f64>)>,
+    new: Vec<ApiCard>,
+    new_limit: u32,
+    seed: u32,
+) -> Vec<PlannedCard> {
+    use std::collections::HashSet;
+
+    let mut pending: HashSet<u32> = HashSet::new();
+    for card in existing.iter().skip(cursor) {
+        pending.insert(card.card.id);
+    }
+
+    // insert 返回 false 说明该 id 已在待办区（或本次批次里已经出现过），直接丢弃
+    plan_session(due, new, seed, new_limit)
+        .into_iter()
+        .filter(|card| pending.insert(card.card.id))
+        .collect()
+}
+
+/// 距离上次复习的天数：`floor((now - last) / 86400000)`，负值归零。
 ///
 /// 与改动前 JS 的 `Math.floor((Date.now() - new Date(last).getTime()) / 86400000)`
 /// 后接 `if (days < 0) days = 0` 完全等价；同时把 NaN/Inf 一并归零，
@@ -359,7 +402,7 @@ impl ReviewSession {
         seed: u32,
     ) -> ReviewSession {
         let limit = if new_limit == 0 {
-            DEFAULT_NEW_LIMIT
+            DEFAULT_NEW_BATCH
         } else {
             new_limit
         };
@@ -418,14 +461,14 @@ impl ReviewSession {
     /// 建立会话：内部取一次系统随机种子。
     ///
     /// - `due_json` / `new_json`：`GET /api/reviews/due`、`GET /api/reviews/new` 的响应体原文
-    /// - `new_limit`：今日新词上限（传 0 表示使用默认值 5）
+    /// - `new_limit`：本次抽取的新词批量（传 0 表示使用默认值 20）；**不是每日上限**
     #[wasm_bindgen(constructor)]
     pub fn new(due_json: &str, new_json: &str, new_limit: u32) -> Result<ReviewSession, JsValue> {
         let seed = random_seed().map_err(|e| js_err(format!("获取随机种子失败: {e:?}")))?;
         Self::with_seed(due_json, new_json, new_limit, seed)
     }
 
-    /// 建立会话（显式种子）：便于复现与测试，也为将来「按自然日固定今日新词」留出入口。
+    /// 建立会话（显式种子）：便于复现与测试。
     #[wasm_bindgen]
     pub fn with_seed(
         due_json: &str,
@@ -435,21 +478,42 @@ impl ReviewSession {
     ) -> Result<ReviewSession, JsValue> {
         let due_cards = parse_items(due_json).map_err(js_err)?;
         let new_cards = parse_items(new_json).map_err(js_err)?;
-
-        // 时间字符串 → epoch 毫秒（last_review_at 优先，缺失时回退 due_at，与原 JS 一致）
-        let due: Vec<(ApiCard, Option<f64>)> = due_cards
-            .into_iter()
-            .map(|card| {
-                let last_ms = card
-                    .last_review_at
-                    .as_deref()
-                    .or(card.due_at.as_deref())
-                    .and_then(parse_time_ms);
-                (card, last_ms)
-            })
-            .collect();
+        let due = to_due_inputs(due_cards);
 
         Ok(Self::build(due, new_cards, new_limit, seed))
+    }
+
+    /// 追加一批卡片到队列尾部（**游标不动**），返回实际追加的数量。
+    ///
+    /// 用于「不限制每日新词、连续抽取」：队列走完后前端再取一批交进来即可。
+    /// 返回 0 表示这批没有可追加的卡片（词库已无未学词）。
+    pub fn append(&mut self, due_json: &str, new_json: &str, new_limit: u32) -> Result<u32, JsValue> {
+        let seed = random_seed().map_err(|e| js_err(format!("获取随机种子失败: {e:?}")))?;
+        self.append_with_seed(due_json, new_json, new_limit, seed)
+    }
+
+    /// 追加一批卡片（显式种子）：便于复现与单元测试。
+    #[wasm_bindgen]
+    pub fn append_with_seed(
+        &mut self,
+        due_json: &str,
+        new_json: &str,
+        new_limit: u32,
+        seed: u32,
+    ) -> Result<u32, JsValue> {
+        let due_cards = parse_items(due_json).map_err(js_err)?;
+        let new_cards = parse_items(new_json).map_err(js_err)?;
+        let due = to_due_inputs(due_cards);
+
+        let limit = if new_limit == 0 {
+            DEFAULT_NEW_BATCH
+        } else {
+            new_limit
+        };
+        let added = append_plan(&self.cards, self.cursor, due, new_cards, limit, seed);
+        let count = added.len() as u32;
+        self.cards.extend(added);
+        Ok(count)
     }
 
     /// 队列总张数
@@ -704,7 +768,7 @@ mod tests {
             0,
             5,
         );
-        assert_eq!(s.total(), 1, "默认新词上限 5，但只有一个新词");
+        assert_eq!(s.total(), 1, "默认批量 20，但只有一个新词");
         assert_eq!(s.current_word_id(), 9);
         assert!(s.current_json(0.0).contains("decide"));
         assert!(s.current_json(0.0).contains(r#""source":"new""#));
@@ -803,5 +867,110 @@ mod tests {
         assert_ne!(ia, ib, "last_ms 必须影响结果");
         // FSRS 语义：逾期越久（复习时可提取率越低），同一评分的下次间隔越长
         assert!(ia > ib, "逾期更久应得到更长间隔：{ia} vs {ib}");
+    }
+
+    // ---------- 追加卡片（连续抽词，不限制每日新词） ----------
+
+    /// 构造一个会话：待办队列里有 n 张新词
+    fn session_with_new(n: u32, batch: u32) -> ReviewSession {
+        let new: Vec<ApiCard> = (1..=n).map(|i| card(i, "n")).collect();
+        ReviewSession::build(Vec::new(), new, batch, 42)
+    }
+
+    #[test]
+    fn append_adds_cards_without_moving_cursor() {
+        let s = session_with_new(3, 3);
+        assert_eq!(s.total(), 3);
+        assert_eq!(s.done(), 0);
+
+        let more: Vec<ApiCard> = (100..110).map(|i| card(i, "m")).collect();
+        let added = append_plan(&s.cards, s.cursor, Vec::new(), more, 5, 7);
+        assert_eq!(added.len(), 5, "应按批量追加 5 张");
+        assert_eq!(s.done(), 0, "追加不应推进游标");
+        assert_eq!(s.total(), 3, "append_plan 只计算，不改动原队列");
+    }
+
+    #[test]
+    fn append_skips_ids_already_pending() {
+        // 待办区已有 id=1 → 同一张卡不应被重复追加进待办队列
+        let mut s = session_with_new(1, 1);
+        assert_eq!(s.total(), 1);
+        let dup = vec![card(1, "n")];
+        assert!(
+            append_plan(&s.cards, s.cursor, Vec::new(), dup, 5, 7).is_empty(),
+            "待办区已有的卡不能再追加一份"
+        );
+
+        // 评完之后（越过游标）再抽到同一 id 属于正常复习，应允许追加
+        s.try_rate(3, 0.0).unwrap();
+        let again = append_plan(&s.cards, s.cursor, Vec::new(), vec![card(1, "n")], 5, 7);
+        assert_eq!(again.len(), 1, "已评完的卡到期后再次抽到应允许");
+    }
+
+    #[test]
+    fn append_dedups_within_batch() {
+        let s = session_with_new(1, 1);
+        let dup = vec![card(9, "x"), card(9, "x")];
+        assert_eq!(
+            append_plan(&s.cards, s.cursor, Vec::new(), dup, 5, 7).len(),
+            1,
+            "同一批里重复的 id 只保留一张"
+        );
+    }
+
+    #[test]
+    fn append_does_not_limit_due_cards() {
+        // 批量参数只限制新词；到期卡与 plan_session 一致是全量洗牌
+        let s = session_with_new(1, 1);
+        let due: Vec<(ApiCard, Option<f64>)> = (200..208)
+            .map(|i| (due_card(i, "d", 1.0, 5.0), Some(0.0)))
+            .collect();
+        let added = append_plan(&s.cards, s.cursor, due, Vec::new(), 1, 7);
+        assert_eq!(added.len(), 8, "到期卡应全部追加");
+    }
+
+    #[test]
+    fn append_is_empty_for_empty_input() {
+        let s = session_with_new(2, 2);
+        assert!(append_plan(&s.cards, s.cursor, Vec::new(), Vec::new(), 5, 7).is_empty());
+    }
+
+    #[test]
+    fn append_is_deterministic_for_same_seed() {
+        let s = session_with_new(1, 1);
+        let more: Vec<ApiCard> = (300..320).map(|i| card(i, "m")).collect();
+        let a: Vec<u32> = append_plan(&s.cards, s.cursor, Vec::new(), more.clone(), 5, 99)
+            .iter()
+            .map(|c| c.card.id)
+            .collect();
+        let b: Vec<u32> = append_plan(&s.cards, s.cursor, Vec::new(), more, 5, 99)
+            .iter()
+            .map(|c| c.card.id)
+            .collect();
+        assert_eq!(a, b, "同种子应得到同一批");
+    }
+
+    #[test]
+    fn append_with_seed_grows_queue_and_keeps_rating() {
+        // 走 wasm 边界那条路径（成功路径不碰 JsValue，所以宿主上可以测）
+        let mut s = session_with_new(2, 2);
+        assert_eq!(s.total(), 2);
+
+        let more: Vec<ApiCard> = (100..110).map(|i| card(i, "m")).collect();
+        let added = s.append_with_seed("[]", &json_of(&more), 5, 3).unwrap();
+        assert_eq!(added, 5);
+        assert_eq!(s.total(), 7, "队列应增长到 2 + 5");
+
+        // 追加之后评分流程照旧
+        s.try_rate(3, 0.0).unwrap();
+        assert_eq!(s.done(), 1);
+        assert_eq!(s.progress_percent(), 14); // 1/7 ≈ 14%
+    }
+
+    #[test]
+    fn append_returns_zero_when_nothing_available() {
+        let mut s = session_with_new(1, 1);
+        assert_eq!(s.append_with_seed("[]", "[]", 5, 3).unwrap(), 0);
+        assert_eq!(s.total(), 1);
     }
 }

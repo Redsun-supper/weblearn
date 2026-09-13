@@ -7,6 +7,35 @@
  * 全站通用样式（导航栏、内容容器等）在根目录 main.css。
  * ========================================================================== */
 
+/* ===================== 过渡动效 ===================== */
+
+/* 换卡：旧卡淡出上移 → 新卡淡入下移 */
+@keyframes studyOut {
+    from { opacity: 1; transform: none; }
+    to   { opacity: 0; transform: translateY(-10px); }
+}
+
+@keyframes studyIn {
+    from { opacity: 0; transform: translateY(10px); }
+    to   { opacity: 1; transform: none; }
+}
+
+/* 时长与 english.js 里的 TRANSITION_MS / 收尾定时器保持一致 */
+.study-stage.is-out { animation: studyOut 150ms ease-in forwards; }
+.study-stage.is-in  { animation: studyIn 240ms ease-out; }
+
+/* 揭晓答案时的淡入 */
+.study-answer.is-in { animation: studyIn 220ms ease-out; }
+
+/* 无障碍：系统开启「减少动态效果」时全部关掉（业务逻辑不受影响） */
+@media (prefers-reduced-motion: reduce) {
+    .study-stage.is-out,
+    .study-stage.is-in,
+    .study-answer.is-in {
+        animation: none;
+    }
+}
+
 /* ===================== 整体：纵向撑满内容区 ===================== */
 
 .study {

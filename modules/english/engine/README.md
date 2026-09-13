@@ -25,25 +25,36 @@ import init, { ReviewSession } from './engine/pkg/guangxue_wasm.js';
 await init(); // wasm-bindgen --target web 产物必须先实例化
 
 // 直接用接口返回的 JSON 原文建会话（内部完成洗牌、抽新词、时间解析）
-const session = new ReviewSession(dueJsonText, newJsonText, 5); // 5 = 今日新词上限
+// 第三个参数是**本次抽取的新词批量**（默认 20），不是每日上限
+const session = new ReviewSession(dueJsonText, newJsonText, 20);
 
-session.total();             // 队列总张数
+session.total();             // 队列总张数（会随 append 增长）
 session.done();              // 已完成张数
-session.is_finished();       // 是否已全部完成
+session.is_finished();       // 当前队列是否已走完
 session.progress_percent();  // 0~100
 session.current_word_id();   // 当前词条 id（无卡时 0）
-session.current_json();      // 当前卡片展示数据（word/phonetic/meaning/example/source/index）
+session.current_json(Date.now());
+// 当前卡片展示数据：word/phonetic/meaning/example/source/index，
+// 外加 pos（词性）、meaning_text（去掉词性前缀的释义）、
+// example_parts（例句按目标词切分，供高亮）、meta（难度/稳定性/复习次数/预计记住）
 
 // 评分：1=Again 2=Hard 3=Good 4=Easy；now_ms 传 Date.now()
 const body = session.rate(3, Date.now());
 // body 就是 POST /api/reviews/submit 的请求体：
 // {"word_id":42,"rating":3,"stability":2.3065,"difficulty":2.1181,"interval_days":2.3065}
 
+// 队列走完后继续抽：追加一批（游标不动），返回实际追加数量；0 表示没得抽了
+const added = session.append(dueJsonText, newJsonText, 20);
+// 「不限制每日新词」就是靠它实现：前端在 is_finished() 时再取一批交进来即可
+
 session.free();  // 离开英语页时释放（wasm-bindgen 生成）
 ```
 
-另有 `ReviewSession.with_seed(dueJson, newJson, newLimit, seed)`：显式指定随机种子，
-便于复现与测试（也为将来做「按自然日固定今日新词」留出入口）。
+`append` 的去重规则：跳过 id 已经在**待办区**（尚未评分的部分）里的卡片；
+游标之前已评完的卡不算重复——到期后再次抽到属于正常复习。
+
+另有 `ReviewSession.with_seed(dueJson, newJson, newLimit, seed)` 与
+`append_with_seed(..., seed)`：显式指定随机种子，便于复现与测试。
 
 ### 低层 API（仍在导出，供引擎复用与调试）
 

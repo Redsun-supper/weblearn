@@ -131,13 +131,72 @@ fn find_ci(haystack: &str, needle: &str) -> Option<(usize, usize)> {
     fallback
 }
 
+/// 生成目标词在例句里可能出现的变形。
+///
+/// 英文例句经常用变形而不是原形（`apply` → `applied`、`study` → `studies`），
+/// 而 `applied` 里并不含 `apply` 这个子串，只按原形匹配会漏掉高亮。
+/// 这里按常见构词规则生成候选，够用且完全可测；不追求覆盖全部不规则变化。
+fn word_forms(word: &str) -> Vec<String> {
+    let w = word.trim().to_lowercase();
+    if w.is_empty() {
+        return Vec::new();
+    }
+    let mut forms = vec![w.clone()];
+
+    // 以 y 结尾：study → studies / studied
+    if let Some(stem) = w.strip_suffix('y') {
+        forms.push(format!("{stem}ies"));
+        forms.push(format!("{stem}ied"));
+    }
+    // 以 e 结尾：use → used / using
+    if let Some(stem) = w.strip_suffix('e') {
+        forms.push(format!("{stem}ed"));
+        forms.push(format!("{stem}ing"));
+    }
+
+    forms.push(format!("{w}s"));
+    forms.push(format!("{w}es"));
+    forms.push(format!("{w}ed"));
+    forms.push(format!("{w}d"));
+    forms.push(format!("{w}ing"));
+
+    // 双写尾辅音：stop → stopped / stopping
+    if let Some(last) = w.chars().last() {
+        if "bdgklmnprt".contains(last) {
+            forms.push(format!("{w}{last}ed"));
+            forms.push(format!("{w}{last}ing"));
+        }
+    }
+    forms
+}
+
 /// 把例句按目标词切分；找不到时返回单个未命中片段（前端照常显示，只是没有高亮）
+///
+/// 匹配优先级：
+/// 1. **原形**（含词边界优先、退回时扩展成整词）——它是词条本身，句中出现时应优先高亮
+/// 2. 原形缺席时，再试常见变形（`apply` → `applied`）；多个变形命中时取最靠前的
 pub fn split_example(example: &str, word: &str) -> Vec<ExamplePart> {
     let ex = example.trim();
     if ex.is_empty() {
         return Vec::new();
     }
-    match find_ci(ex, word.trim()) {
+
+    let mut best = find_ci(ex, word.trim());
+    if best.is_none() {
+        for form in word_forms(word).into_iter().skip(1) {
+            if let Some((start, end)) = find_ci(ex, &form) {
+                let better = match best {
+                    None => true,
+                    Some((bs, be)) => start < bs || (start == bs && (end - start) > (be - bs)),
+                };
+                if better {
+                    best = Some((start, end));
+                }
+            }
+        }
+    }
+
+    match best {
         None => vec![ExamplePart {
             text: ex.to_string(),
             hit: false,
@@ -317,5 +376,64 @@ mod tests {
         let parts = split_example("(purpose), indeed!", "purpose");
         let hit = parts.iter().find(|p| p.hit).expect("应命中");
         assert_eq!(hit.text, "purpose");
+    }
+
+    // ---------- 词形变化匹配 ----------
+
+    #[test]
+    fn highlights_inflected_form_y_to_ied() {
+        // 真实案例：词条是 apply，例句里却是 applied（并不含 apply 这个子串）
+        let parts = split_example("She applied for the job yesterday.", "apply");
+        let hit = parts.iter().find(|p| p.hit).expect("变形也应高亮");
+        assert_eq!(hit.text, "applied");
+    }
+
+    #[test]
+    fn highlights_common_inflections() {
+        let cases = [
+            ("She applied for the job.", "apply", "applied"),
+            ("He studies every day.", "study", "studies"),
+            ("They studied hard.", "study", "studied"),
+            ("I am using it.", "use", "using"),
+            ("He used it.", "use", "used"),
+            ("She stopped there.", "stop", "stopped"),
+            ("They are stopping now.", "stop", "stopping"),
+            ("Two apples here.", "apple", "apples"),
+            ("He watches TV.", "watch", "watches"),
+        ];
+        for (sentence, word, expect) in cases {
+            let parts = split_example(sentence, word);
+            let hit = parts
+                .iter()
+                .find(|p| p.hit)
+                .unwrap_or_else(|| panic!("{word} 在「{sentence}」中应命中"));
+            assert_eq!(hit.text, expect, "句子「{sentence}」");
+        }
+    }
+
+    #[test]
+    fn prefers_earliest_match_across_forms() {
+        // 原形出现在变形之前 → 取原形
+        let parts = split_example("Purpose matters, he purposed it.", "purpose");
+        let hit = parts.iter().find(|p| p.hit).unwrap();
+        assert_eq!(hit.text, "Purpose");
+    }
+
+    #[test]
+    fn word_forms_covers_common_suffixes() {
+        let forms = word_forms("apply");
+        for want in ["apply", "applies", "applied", "applying"] {
+            assert!(forms.contains(&want.to_string()), "缺少 {want}");
+        }
+        assert!(word_forms("").is_empty());
+        assert!(word_forms("stop").contains(&"stopped".to_string()));
+        assert!(word_forms("stop").contains(&"stopping".to_string()));
+    }
+
+    #[test]
+    fn does_not_highlight_unrelated_word() {
+        let parts = split_example("Nothing to see here.", "apply");
+        assert_eq!(parts.len(), 1);
+        assert!(!parts[0].hit);
     }
 }

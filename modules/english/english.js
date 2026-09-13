@@ -17,7 +17,9 @@ var state = {
     wasm: null,      // WASM 引擎模块命名空间
     revealed: false, // 当前卡片是否已揭晓答案（主动回忆：揭晓前不允许评分）
     stats: null,     // 最近一次 /api/reviews/stats 返回的数据
-    card: null       // 当前卡片的展示数据（渲染与揭晓共用，避免重复向引擎取数）
+    card: null,      // 当前卡片的展示数据（渲染与揭晓共用，避免重复向引擎取数）
+    pendingSubmit: null, // 最近一次复习提交的 Promise（补词前要等它落库，避免竞态）
+    refilling: false     // 是否正在补词（防止并发补词）
 };
 
 // 自动朗读开关在 localStorage 中的键名
@@ -26,11 +28,22 @@ var AUTO_SPEAK_KEY = 'reviewAutoSpeak';
 // 引擎模块路径（相对本文件所在目录解析）
 var WASM_MODULE_URL = './engine/pkg/guangxue_wasm.js';
 
-// 今日新词上限（与后端默认口径一致）
-var NEW_LIMIT = 5;
+// 每次抽取的新词批量（**不是每日上限**）
+// 队列抽干后会自动再抽一批，直到词库没有未学词为止
+var NEW_BATCH_SIZE = 20;
+
+// 每次取回到期卡的数量（后端上限 200）
+var DUE_BATCH_SIZE = 50;
+
+// 换卡过渡时长（毫秒）：需与 english.css 里的离场动画时长保持一致
+var TRANSITION_MS = 150;
 
 // 键盘监听是否已绑定（同一页面内反复切换学科只绑定一次）
 var keysBound = false;
+
+// 语音是否已解锁（浏览器会拦截未经用户交互的 speechSynthesis）
+var speechUnlocked = false;
+var unlockBound = false;
 
 // 词性缩写 → 界面上显示的大写标签（多词性用 " / " 连接）
 var POS_LABELS = {
@@ -56,13 +69,20 @@ export function initReviewApp() {
         document.addEventListener('keydown', handleReviewKey);
     }
 
-    // 恢复「自动朗读」开关状态
+    // 恢复「自动朗读」开关状态（默认开启）
     var autoEl = document.getElementById('reviewAutoSpeak');
     if (autoEl) {
         autoEl.checked = isAutoSpeakOn();
         autoEl.addEventListener('change', function() {
             setAutoSpeak(this.checked);
         });
+    }
+
+    // 浏览器会拦截未经用户交互的语音：首次交互后补读一次当前单词
+    if (!unlockBound) {
+        unlockBound = true;
+        document.addEventListener('pointerdown', unlockSpeech);
+        document.addEventListener('keydown', unlockSpeech);
     }
 
     // 显示答案按钮与发音按钮
@@ -82,11 +102,7 @@ export function initReviewApp() {
     // 加载引擎 → 取回接口原文 → 交给引擎建会话
     loadEngine().then(function(wasm) {
         state.wasm = wasm;
-        return Promise.all([
-            fetchText('/api/reviews/due?limit=50'),
-            fetchText('/api/reviews/new?limit=50'),
-            fetchJson('/api/reviews/stats')
-        ]);
+        return fetchBatches();
     }).then(function(results) {
         var statsRes = results[2];
 
@@ -97,13 +113,22 @@ export function initReviewApp() {
 
         // 队列构建（洗牌到期卡 / 抽新词 / 换算日期）全部在引擎内完成。
         // 直接把接口返回的 JSON 原文交给引擎，本文件不再解析与保存卡片数组。
-        state.session = new state.wasm.ReviewSession(results[0], results[1], NEW_LIMIT);
+        state.session = new state.wasm.ReviewSession(results[0], results[1], NEW_BATCH_SIZE);
         renderCard();
     }).catch(function(err) {
         setStatus('');
         showMessage('复习功能加载失败', String(err) + '（需通过服务器访问，并确认已生成 WASM 引擎）');
         console.error('复习功能初始化失败:', err);
     });
+}
+
+// 取一批卡片与统计：会话初始化与「自动补词」共用同一套取数逻辑
+function fetchBatches() {
+    return Promise.all([
+        fetchText('/api/reviews/due?limit=' + DUE_BATCH_SIZE),
+        fetchText('/api/reviews/new?limit=' + NEW_BATCH_SIZE),
+        fetchJson('/api/reviews/stats')
+    ]);
 }
 
 // 释放引擎侧的会话对象（wasm-bindgen 为导出结构体生成的 free()）
@@ -156,7 +181,52 @@ function fetchJson(url) {
 
 // ---------- 渲染：卡片 ----------
 
+// 首屏渲染（不做过渡，避免刚进页面就闪一下）
 function renderCard() {
+    renderCardNow();
+}
+
+// 评分后切换卡片：先上锁 → 播离场动画 → 更新内容 → 播入场动画
+//
+// 上锁必须发生在过渡**开始前**：过渡期间旧卡的答案与评分按钮还在屏幕上，
+// 若用户连点或按住数字键，第二次评分会落到下一张卡上（引擎游标已经前进）。
+function advanceCard() {
+    state.revealed = false; // 评分守卫立刻失效
+    state.card = null;      // 键盘处理器靠 !state.card 直接 return
+    hide('reviewButtons');  // 视觉上让按钮先消失
+    withCardTransition(function() {
+        renderCardNow();
+    });
+}
+
+// 换卡过渡：给舞台加离场/入场动画类
+// 系统开启「减少动态效果」时直接跳过动画（业务逻辑完全一致）
+function withCardTransition(update) {
+    var stage = document.getElementById('studyStage');
+    if (!stage || prefersReducedMotion()) {
+        update();
+        return;
+    }
+    stage.classList.remove('is-in');
+    stage.classList.add('is-out');
+    setTimeout(function() {
+        update(); // 真正换内容
+        stage.classList.remove('is-out');
+        void stage.offsetWidth; // 强制重排，保证入场动画能重新播放
+        stage.classList.add('is-in');
+        setTimeout(function() {
+            stage.classList.remove('is-in');
+        }, 260);
+    }, TRANSITION_MS);
+}
+
+// 是否应当减少动态效果（无障碍）
+function prefersReducedMotion() {
+    return !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+}
+
+// 把当前卡片画到界面上（幂等；不负责过渡动画）
+function renderCardNow() {
     var session = state.session;
     if (!session) return;
 
@@ -172,14 +242,9 @@ function renderCard() {
     if (session.is_finished()) {
         hideCardBody();
         setStatus('');
-        var total = session.total();
-        if (total > 0) {
-            showMessage('今天复习完成 ✨', '本轮共 ' + total + ' 张');
-        } else if (state.stats && state.stats.total_words === 0) {
-            showMessage('词库还是空的', '可以到后台的「批量导入」粘贴词表添加词条');
-        } else {
-            showMessage('暂无需要复习的单词', '明天再来 👋');
-        }
+        showFinishMessage();
+        // 队列抽干：自动补一批（不限制每日新词）。补到了就继续渲染，补不到就停在上面的结束文案
+        maybeRefill();
         return;
     }
 
@@ -200,12 +265,72 @@ function renderCard() {
     renderMeta(state.card.meta);
     renderAnswer(state.card);
 
+    // 无限学习的场景下，「队列剩余」比「第 N / M 张」更能反映进度（M 会随补词增长）
     var sourceLabel = state.card.source === 'new' ? '新词' : '到期';
-    setStatus('第 ' + (session.done() + 1) + ' / ' + session.total() + ' 张 · ' + sourceLabel);
+    setStatus('已学 ' + session.done() + ' 张 · 队列剩余 ' +
+        (session.total() - session.done()) + ' 张 · ' + sourceLabel);
     show('reviewReveal');
 
     // 开启自动朗读时，每张新卡出现即朗读单词
     if (isAutoSpeakOn()) speakCurrent('word');
+}
+
+// 结束文案：区分「本轮学过」「词库学完」「词库为空」三种情况
+function showFinishMessage() {
+    var session = state.session;
+    var stats = state.stats || {};
+    var learned = session ? session.done() : 0;
+
+    if (learned > 0) {
+        showMessage('今天复习完成 ✨', '本轮共学 ' + learned + ' 张');
+    } else if ((stats.total_words || 0) === 0) {
+        showMessage('词库还是空的', '可以到后台的「批量导入」粘贴词表添加词条');
+    } else if ((stats.new_words || 0) === 0) {
+        showMessage('词库都学完了 🎉', '共 ' + stats.total_words + ' 个词条；可以到后台继续添加');
+    } else {
+        showMessage('暂无需要复习的单词', '明天再来 👋');
+    }
+}
+
+// 队列抽干后自动再抽一批，直到词库没有未学词（不再限制每日新词数量）
+function maybeRefill() {
+    if (state.refilling || !state.session) return;
+    state.refilling = true;
+
+    // 必须等上一次提交落库：否则刚评过的词在服务端 due_at 还没更新，
+    // 会被当成到期卡再抽一次（引擎侧的待办去重挡不住它，因为它已越过游标）
+    var wait = state.pendingSubmit || Promise.resolve();
+
+    wait.then(function() {
+        return fetchBatches();
+    }).then(function(results) {
+        state.refilling = false;
+
+        var statsRes = results[2];
+        if (statsRes && statsRes.code === 200 && statsRes.data) {
+            state.stats = statsRes.data;
+        }
+
+        var added = 0;
+        try {
+            added = state.session.append(results[0], results[1], NEW_BATCH_SIZE);
+        } catch (e) {
+            setStatus('补词失败：' + e);
+            console.error('补词失败:', e);
+            return;
+        }
+
+        if (added > 0) {
+            renderCardNow(); // 接着学下一批
+            return;
+        }
+        // 确实抽不到新卡了：保留结束文案（此时状态是「已学 N 张」或「词库都学完了」）
+        showFinishMessage();
+    }).catch(function(err) {
+        state.refilling = false;
+        setStatus('补词失败（刷新页面可重试）：' + err);
+        console.error('自动补词失败:', err);
+    });
 }
 
 // 顶栏三个数字：今日新学 / 今日复习 / 剩余待学
@@ -336,9 +461,19 @@ function revealAnswer() {
     hide('reviewReveal');
     show('reviewButtons');
 
+    // 揭晓区淡入（系统开启「减少动态效果」时跳过）
+    var answerEl = document.getElementById('reviewAnswer');
+    if (answerEl && !prefersReducedMotion()) {
+        answerEl.classList.remove('is-in');
+        void answerEl.offsetWidth; // 强制重排，保证动画能重新播放
+        answerEl.classList.add('is-in');
+        setTimeout(function() {
+            answerEl.classList.remove('is-in');
+        }, 240);
+    }
+
     var sourceLabel = state.card && state.card.source === 'new' ? '新词' : '到期';
-    setStatus('第 ' + (state.session.done() + 1) + ' / ' + state.session.total() +
-        ' 张 · ' + sourceLabel + ' · 请根据回忆情况评分');
+    setStatus('已学 ' + state.session.done() + ' 张 · ' + sourceLabel + ' · 请根据回忆情况评分');
 }
 
 // 用户点击评分：交给引擎算新记忆状态 → 引擎返回可直接提交的请求体 → POST 持久化
@@ -360,9 +495,10 @@ function handleReviewRating(rating) {
         return;
     }
 
-    renderCard(); // 乐观推进到下一张
+    advanceCard(); // 带动效推进到下一张（内部会先上锁，防止过渡期间重复评分）
 
-    fetch('/api/reviews/submit', {
+    // 记下这次提交：补词前要等它落库，否则刚评过的卡会被当成到期卡再抽一次
+    state.pendingSubmit = fetch('/api/reviews/submit', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: payload // 引擎返回的 JSON 即请求体，无需在前端重新拼装
@@ -399,11 +535,25 @@ function loadReviewStats() {
 // ---------- 语音合成 ----------
 
 // 读取「自动朗读」开关（持久化在 localStorage）
+// **默认开启**：只有用户显式关掉过（存了 '0'）才是关闭状态
 function isAutoSpeakOn() {
     try {
-        return localStorage.getItem(AUTO_SPEAK_KEY) === '1';
+        var saved = localStorage.getItem(AUTO_SPEAK_KEY);
+        return saved === null ? true : saved === '1';
     } catch (e) {
-        return false;
+        return true; // 读不到 localStorage 时也按默认开启处理
+    }
+}
+
+// 首次用户交互后解锁语音：浏览器会拦截未经交互的 speechSynthesis，
+// 因此首屏那次自动朗读可能被静默丢弃，这里补读一次当前单词
+function unlockSpeech() {
+    if (speechUnlocked) return;
+    speechUnlocked = true;
+    document.removeEventListener('pointerdown', unlockSpeech);
+    document.removeEventListener('keydown', unlockSpeech);
+    if (isAutoSpeakOn() && state.card) {
+        speakCurrent('word');
     }
 }
 

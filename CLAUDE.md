@@ -62,7 +62,7 @@
 4. **`go.sum` 已生成**：后端已有 `go.sum`（GORM + glebarez/sqlite 等依赖已通过 `go mod tidy` 固化）；新增依赖时用 `go mod tidy` 同步即可。
 5. **`image/avatar.png`**：当前视觉增强关闭，无法查看绘制内容；按元信息（WebP，约 1330×1146）处理即可，如需主题替换先问用户。
 6. **本机工具链**：Go 已装为便携版 `C:\Users\22629\go-portable\go\bin\go.exe`（go1.27.1，已 `go env -w GOPROXY=https://goproxy.cn,direct GOSUMDB=off`，直接 `go build` 即可）；Rust `cargo 1.97` 且 `wasm32-unknown-unknown` target 已装；wasm-bindgen CLI 在 `C:\Users\22629\.local\bin\wasm-bindgen-0.2.128-*\wasm-bindgen.exe`（须与 Cargo.toml 的 wasm-bindgen 版本一致 0.2.128）。
-   ✅ **宿主 `cargo test` 现在可以运行**（2026-09-13 实测 42 个测试通过；本文档此前记录的「缺 mingw `as`/MSVC SDK 无法链接」已不再成立）。完整验证路径：`cargo test` → `cargo check --target wasm32-unknown-unknown` → `cargo build --target wasm32-unknown-unknown --release` → `wasm-bindgen` 生成 `pkg/` → 浏览器端到端。
+   ✅ **宿主 `cargo test` 现在可以运行**（2026-09-13 实测 75 个测试通过；本文档此前记录的「缺 mingw `as`/MSVC SDK 无法链接」已不再成立）。完整验证路径：`cargo test` → `cargo check --target wasm32-unknown-unknown` → `cargo build --target wasm32-unknown-unknown --release` → `wasm-bindgen` 生成 `pkg/` → 浏览器端到端。
    ⚠️ 但 `JsValue` 在非 wasm32 目标上未实现（调用即 `panic: function not implemented on non-wasm32 targets`，无法 unwinding 会直接 abort）：**纯计算层不要碰 `JsValue`**，把它留在 wasm 导出方法的边界上。
 7. **`word_reviews` 行是懒创建**：单词由 `POST /api/words` 写入 `words` 表；首次提交复习时才创建对应 `word_reviews` 行。`/api/reviews/new` = 无复习行的词。
 
