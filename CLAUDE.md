@@ -11,22 +11,29 @@
 
 | 组成部分 | 说明 |
 |----------|------|
-| 前端（根目录） | `index.html`（主页）、`main.css`（样式）、`main.js`（交互与缓存）、`image/`、`pages/`（9 个学科页） |
+| 前端（根目录） | `index.html`（主页）、`main.css`（全站样式）、`main.js`（导航与缓存）、`dev-server.js`（本地开发服务器）、`image/`、`pages/`（8 个占位学科页） |
+| 学科模块（`modules/<学科>/`） | 学科自己的页面 / 样式 / 逻辑 / 引擎；目前只有 `modules/english/` |
 | 后端（`backend-go/`） | Go 1.21 + Gin + **GORM/SQLite**（`database/`、`handlers/review_handlers.go`），入口 `main.go` |
-| 复习引擎（`frontend-rust/`） | Rust/WASM crate `guangxue_wasm`：`fsrs_engine.rs`（FSRS 调度）+ `randomizer.rs`（随机器），浏览器内运行 |
+| 复习引擎（`modules/english/engine/`） | Rust/WASM crate `guangxue_wasm`：`session.rs`（会话编排）+ `fsrs_engine.rs`（FSRS 调度）+ `randomizer.rs`（随机器），浏览器内运行 |
 | 部署 | Nginx 反代：`/` → 前端静态文件，`/api/` → `localhost:8080` |
 
 ### 复习引擎（词汇间隔重复）
-- **流程**：前端运行时调 `GET /api/reviews/due`（到期卡）+ `GET /api/reviews/new`（新词）→ WASM 引擎 `fsrs_next_states(state_json, retention, days_elapsed)` 计算四种评分下一状态 → 选分支后 `POST /api/reviews/submit` 持久化 → 后端写入 `word_reviews`（due_at = now + 间隔）并记 `review_logs`。
+- **职责边界（重要）**：`modules/english/english.js` 只做 DOM 渲染 / `fetch` / `localStorage` / 语音；**队列、游标、日期换算、FSRS 计算、进度统计全部在 `engine/`（Rust）里**，JS 不再保存卡片数组。
+- **流程**：取 `GET /api/reviews/due` + `GET /api/reviews/new` 的 **JSON 原文** → `new ReviewSession(dueText, newText, 5)` 在 Rust 内完成「洗牌到期卡 + 抽新词 + 解析时间」→ 渲染时 `current_json()` → 评分时 `rate(rating, Date.now())` 返回**可直接 POST 的请求体** → 后端写 `word_reviews`（due_at = now + 间隔）并记 `review_logs`。
 - 记忆状态 `{stability, difficulty}` 与 SQLite `word_reviews` 字段一一对应；间隔最短 10 分钟。
-- 随机器：`random_indices(len, seed)` 洗牌复习顺序、`random_sample(len, count, seed)` 抽新词批次、`random_seed()` 取系统种子。
+- 随机器：`random_indices(len, seed)` 洗牌复习顺序、`random_sample(len, count, seed)` 抽新词批次、`random_seed()` 取系统种子；由 `session.rs` 内部调用。
+- `days_elapsed = floor((now - last) / 86400000)`（取 `last_review_at`，缺失回退 `due_at`，负值归零），在**评分那一刻**换算；时间串用 `js_sys::Date::parse` 解析（与改动前 `new Date(x).getTime()` 同一解析器）。
+- ⚠️ **接口空结果返回 `"items": null`**（Go 的 nil 切片）：解析层必须容忍 null，否则「今天没有到期卡」这种正常状态会直接报错（已踩过一次）。
+- ⚠️ `fsrs` 6.6.2 只公开 `next_states()`，内部一次算四个分支、**无单评分入口**，所以 `rate()` 是「算四个取一个」。
 - 引擎是确定性算术、不依赖系统时钟；`fsrs` 的 rayon/getrandom 已通过 getrandom `wasm_js` 特性适配 wasm32。
-- **复习 UI（简单版）**：`pages/english.html` 含 `#reviewApp`，由 `main.js` 中 `initReviewApp()` 驱动（动态 import `frontend-rust/pkg/guangxue_wasm.js`，调 `/api/reviews/*`）。⚠️ `frontend-rust/pkg/` 由 wasm-bindgen 生成（已 gitignore），若缺失需重新执行：`wasm-bindgen --target web --out-dir pkg --out-name guangxue_wasm target/wasm32-unknown-unknown/release/guangxue_wasm.wasm`。
+- **复习 UI**：`modules/english/english.html` 含 `#reviewApp`，由 `english.js` 的 `initReviewApp()` 驱动（`main.js` 的 `initSubjectModule()` 动态 import）。⚠️ `engine/pkg/` 由 wasm-bindgen 生成（已 gitignore），缺失时需在 `modules/english/engine/` 下重新构建，命令见 `modules/english/README.md`。
 
 ### 前端要点
-- 导航栏 `rectangle` 内含头像 + 9 个导航项，字段 `data-page="pages/<学科>.html"`。
-- `main.js` 用 **localStorage 缓存**（键前缀 `pageCache_`，30 天过期、自动清理），点击导航用 `fetch` 加载并缓存，默认展示英语。
-- 学科页命名 `pages/<学科>.html`，其余 7 门为占位（`<p>敬请期待</p>`），仅 `english.html` 已有内容。
+- 导航栏 `rectangle` 内含头像 + 9 个导航项，字段 `data-page="<学科页路径>"`。
+- `main.js` 用 **localStorage 缓存**（键前缀 `pageCache_`，30 天过期、自动清理；`CACHE_VERSION` 在结构或路径变更时整体失效），点击导航用 `fetch` 加载并缓存，默认展示英语。
+- **学科页路径**：已有独立模块的学科写成 `modules/<学科>/<学科>.html`（当前仅英语）；其余 8 门仍是 `pages/<学科>.html` 占位（`<p>敬请期待</p>`）。
+- **学科模块约定**：放在 `modules/<学科>/` 下并导出初始化函数，`main.js` 的 `initSubjectModule()` 按需动态 `import()`；**学科逻辑不得回流到 `main.js`**。
+- 本地起站点用仓库根目录的 `dev-server.js`（Node 内置模块实现，静态文件 + `/api` 同源代理，等价线上 Nginx 形态）；不能直接双击 `index.html`（`file://` 下 `/api` 与 WASM 模块都会失败）。
 
 ### 后端要点
 - API 前缀 `/api`：`/health`、`/hello`、`/user/*`、`/data/*`。
@@ -42,7 +49,9 @@
 3. **`console.log('FAIL'`** 是一个**空文件**（0 字节），系误用重定向产生的残留：**不是合法代码，不要把它当代码，也不要试图“修复”它**；除非用户确认，不要删除，也不要修改。
 4. **`go.sum` 已生成**：后端已有 `go.sum`（GORM + glebarez/sqlite 等依赖已通过 `go mod tidy` 固化）；新增依赖时用 `go mod tidy` 同步即可。
 5. **`image/avatar.png`**：当前视觉增强关闭，无法查看绘制内容；按元信息（WebP，约 1330×1146）处理即可，如需主题替换先问用户。
-6. **本机工具链（2026-09 现状）**：Go 已装为便携版 `C:\Users\22629\go-portable\go\bin\go.exe`（go1.27.1，已 `go env -w GOPROXY=https://goproxy.cn,direct GOSUMDB=off`，直接 `go build` 即可）；wasm-bindgen CLI 在 `C:\Users\22629\.local\bin\wasm-bindgen-0.2.128-*\wasm-bindgen.exe`（须与 Cargo.toml 的 wasm-bindgen 版本一致 0.2.128）。宿主 `cargo test` 仍无法链接（缺 mingw `as`/MSVC SDK），验证路径：`cargo check` + `cargo build --target wasm32-unknown-unknown --release` + Node 跑 `target/nodejs-pkg` 功能测试。
+6. **本机工具链**：Go 已装为便携版 `C:\Users\22629\go-portable\go\bin\go.exe`（go1.27.1，已 `go env -w GOPROXY=https://goproxy.cn,direct GOSUMDB=off`，直接 `go build` 即可）；Rust `cargo 1.97` 且 `wasm32-unknown-unknown` target 已装；wasm-bindgen CLI 在 `C:\Users\22629\.local\bin\wasm-bindgen-0.2.128-*\wasm-bindgen.exe`（须与 Cargo.toml 的 wasm-bindgen 版本一致 0.2.128）。
+   ✅ **宿主 `cargo test` 现在可以运行**（2026-09-13 实测 26 个测试通过；本文档此前记录的「缺 mingw `as`/MSVC SDK 无法链接」已不再成立）。完整验证路径：`cargo test` → `cargo check --target wasm32-unknown-unknown` → `cargo build --target wasm32-unknown-unknown --release` → `wasm-bindgen` 生成 `pkg/` → 浏览器端到端。
+   ⚠️ 但 `JsValue` 在非 wasm32 目标上未实现（调用即 `panic: function not implemented on non-wasm32 targets`，无法 unwinding 会直接 abort）：**纯计算层不要碰 `JsValue`**，把它留在 wasm 导出方法的边界上。
 7. **`word_reviews` 行是懒创建**：单词由 `POST /api/words` 写入 `words` 表；首次提交复习时才创建对应 `word_reviews` 行。`/api/reviews/new` = 无复习行的词。
 
 ---
@@ -51,7 +60,7 @@
 
 - 注释与面向用户文案使用**中文**。
 - 前端 JS 保持 **ES5** 风格（与现有 `main.js` 一致），不使用 `let`/`const`/箭头函数等 ES6+ 语法，除非用户明确要求升级。
-- 路径统一使用**相对路径**；新增学科页放入 `pages/`，命名 `<学科>.html`。
+- 路径统一使用**相对路径**；有独立模块的学科放 `modules/<学科>/`（页面命名 `<学科>.html`），其余占位页仍在 `pages/<学科>.html`。
 - 改动前**先读取目标文件**，再改动；改动后确认工作区是否被破坏。
 - 检查文件内容用 read 工具，不用 `cat`；查找用 grep/glob 工具。
 

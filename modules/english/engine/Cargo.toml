@@ -2,20 +2,23 @@
 name = "guangxue_wasm"
 version = "0.1.0"
 edition = "2021"
-description = "广学 前端 WebAssembly 模块（Rust 部分）"
+description = "广学 英语模块引擎（Rust → WebAssembly）"
 license = "MIT"
 
 [lib]
-# cdylib 生成可被浏览器加载的 .wasm；rlib 允许在宿主环境跑 cargo test / cargo unit
+# cdylib 生成可被浏览器加载的 .wasm；rlib 允许在宿主环境跑 cargo test
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+# FSRS 间隔复习调度算法
 fsrs = "6.6.2"
 # fsrs -> rand -> getrandom：wasm32 目标需要启用 js 后端才能编译
 getrandom = { version = "0.4", features = ["wasm_js"] }
-# 用于把 Rust 函数导出给浏览器中的 JavaScript 调用
+# 把 Rust 函数 / 结构体导出给浏览器中的 JavaScript 调用
 wasm-bindgen = "0.2"
-# 引擎 JSON 序列化（与前端/后端交换记忆状态）
+# 在 wasm 边界解析接口返回的 ISO 时间字符串（Date.parse），与此前前端的解析器一致
+js-sys = "0.3"
+# 引擎 JSON 序列化（与接口 / 后端交换卡片与记忆状态）
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 

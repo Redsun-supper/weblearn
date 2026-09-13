@@ -4,8 +4,11 @@
 // 只有真正进入英语页才会加载本模块及其 WASM 引擎，首屏不再携带英语逻辑。
 //
 // 职责划分（详见 modules/english/README.md）：
-// - 本文件      ：DOM 渲染、事件绑定、取数与提交（fetch）、本地存储、语音合成
-// - engine/     ：队列编排、FSRS 调度计算、随机化等纯计算（Rust → WASM）
+// - 本文件  ：DOM 渲染、事件绑定、取数与提交（fetch）、本地存储、语音合成
+// - engine/ ：队列编排、FSRS 调度计算、随机化、日期换算、进度统计（Rust → WASM）
+//
+// 因此本文件**不保存队列、不计算间隔、不做日期运算**：
+// 队列与游标由引擎里的 ReviewSession 持有，评分时引擎直接返回可提交的请求体。
 //
 // 模块本身是单例（ES module 的 import 缓存保证只实例化一次），因此模块级变量
 // 就是应用级状态，无需再挂到 window 上。
@@ -15,8 +18,7 @@
 // ---------- 模块级状态 ----------
 
 var state = {
-    queue: [],       // 待复习队列 [{source:'due'|'new', item:...}]
-    cursor: 0,       // 当前卡片下标
+    session: null,   // 引擎里的 ReviewSession 实例（队列、游标、记忆上下文都在 Rust 侧）
     wasm: null,      // WASM 引擎模块命名空间
     revealed: false, // 当前卡片是否已揭晓答案（主动回忆：揭晓前不允许评分）
     stats: null      // 最近一次 /api/reviews/stats 返回的数据
@@ -25,8 +27,11 @@ var state = {
 // 自动朗读开关在 localStorage 中的键名
 var AUTO_SPEAK_KEY = 'reviewAutoSpeak';
 
-// WASM 引擎模块路径（相对本文件所在目录解析）
-var WASM_MODULE_URL = '../../frontend-rust/pkg/guangxue_wasm.js';
+// 引擎模块路径（相对本文件所在目录解析）
+var WASM_MODULE_URL = './engine/pkg/guangxue_wasm.js';
+
+// 今日新词上限（与后端默认口径一致）
+var NEW_LIMIT = 5;
 
 // 键盘监听是否已绑定（同一页面内反复切换学科只绑定一次）
 var keysBound = false;
@@ -39,6 +44,9 @@ export function initReviewApp() {
     var statusEl = document.getElementById('reviewStatus');
     if (!statusEl) return; // 当前页面不是英语页，跳过
     statusEl.textContent = '正在加载复习内容...';
+
+    // 释放上一次会话对象，避免反复进出英语页时泄漏 WASM 侧内存
+    releaseSession();
 
     // 键盘快捷键只绑定一次：同一页面内反复切换学科不会重复注册
     if (!keysBound) {
@@ -69,10 +77,28 @@ export function initReviewApp() {
         });
     }
 
-    loadReviewWasm().then(function(wasm) {
+    // 加载引擎 → 取回接口原文 → 交给引擎建会话
+    loadEngine().then(function(wasm) {
         state.wasm = wasm;
-        return loadReviewQueue(wasm); // 队列加载时已顺带渲染统计面板
-    }).then(function() {
+        return Promise.all([
+            fetchText('/api/reviews/due?limit=50'),
+            fetchText('/api/reviews/new?limit=50'),
+            fetchJson('/api/reviews/stats')
+        ]);
+    }).then(function(results) {
+        var dueText = results[0];
+        var newText = results[1];
+        var statsRes = results[2];
+
+        // 统计面板先渲染，进入页面即可看到今日进度
+        if (statsRes && statsRes.code === 200 && statsRes.data) {
+            state.stats = statsRes.data;
+            renderStats(state.stats);
+        }
+
+        // 队列构建（洗牌到期卡 / 抽新词 / 换算日期）全部在引擎内完成。
+        // 直接把接口返回的 JSON 原文交给引擎，本文件不再解析与保存卡片数组。
+        state.session = new state.wasm.ReviewSession(dueText, newText, NEW_LIMIT);
         renderReviewCard();
     }).catch(function(err) {
         statusEl.textContent = '复习功能加载失败（需通过服务器访问，并确认已生成 WASM 引擎）: ' + err;
@@ -80,16 +106,28 @@ export function initReviewApp() {
     });
 }
 
-// ---------- 引擎与数据加载 ----------
+// 释放引擎侧的会话对象（wasm-bindgen 为导出结构体生成的 free()）
+function releaseSession() {
+    if (state.session) {
+        try {
+            state.session.free();
+        } catch (e) {
+            console.error('释放复习会话失败:', e);
+        }
+        state.session = null;
+    }
+}
+
+// ---------- 引擎加载与取数 ----------
 
 // 动态加载 WASM 引擎模块（浏览器原生 import()）
 // 两个关键点：
-// 1. 相对路径必须写成 './xxx' 或 '../xxx'：'frontend-rust/...' 会被当作 bare specifier
+// 1. 相对路径必须写成 './xxx' 或 '../xxx'：'engine/pkg/...' 会被当作 bare specifier
 //    （npm 包名）而解析失败；
 // 2. wasm-bindgen 的 --target web 产物必须先 await 默认导出（__wbg_init）完成实例化，
 //    否则模块内部变量 wasm 仍是 undefined，调用任何导出函数都会抛 TypeError。
 //    不传参时 __wbg_init 会自动 fetch 同目录下的 guangxue_wasm_bg.wasm。
-function loadReviewWasm() {
+function loadEngine() {
     return import(WASM_MODULE_URL).then(function(mod) {
         return mod.default().then(function() {
             return mod;
@@ -97,50 +135,24 @@ function loadReviewWasm() {
     });
 }
 
-// 加载今日复习队列：到期卡（洗牌打乱顺序）+ 新词（随机器无放回抽 5 个）
-function loadReviewQueue(wasm) {
-    return Promise.all([
-        fetch('/api/reviews/due?limit=50').then(function(res) { return res.json(); }),
-        fetch('/api/reviews/new?limit=50').then(function(res) { return res.json(); }),
-        fetch('/api/reviews/stats').then(function(res) { return res.json(); })
-    ]).then(function(results) {
-        var dueItems = (results[0].data && results[0].data.items) || [];
-        var newItems = (results[1].data && results[1].data.items) || [];
-        // 统计面板先渲染，进入页面即可看到今日进度
-        if (results[2] && results[2].code === 200 && results[2].data) {
-            state.stats = results[2].data;
-            renderStats(state.stats);
+// 取回响应原文（不做 JSON 解析，交给引擎处理）
+function fetchText(url) {
+    return fetch(url).then(function(res) {
+        if (!res.ok) {
+            throw new Error(url + ' 请求失败：HTTP ' + res.status);
         }
-        var seed = wasm.random_seed();
-        var queue = [];
-        var dueOrder = wasm.random_indices(dueItems.length, seed);
-        for (var i = 0; i < dueOrder.length; i++) {
-            queue.push({ source: 'due', item: dueItems[dueOrder[i]] });
-        }
-        var newCount = Math.min(5, newItems.length);
-        var newOrder = wasm.random_sample(newItems.length, newCount, seed ^ 0x9E3779B9);
-        for (var j = 0; j < newOrder.length; j++) {
-            queue.push({ source: 'new', item: newItems[newOrder[j]] });
-        }
-        state.queue = queue;
-        state.cursor = 0;
-        return queue;
+        return res.text();
     });
 }
 
-// 计算当前卡片的记忆状态 JSON 与距上次复习天数
-function reviewCardContext(entry) {
-    if (entry.source === 'new') {
-        return { stateJson: null, daysElapsed: 0 };
-    }
-    var item = entry.item;
-    var last = item.last_review_at || item.due_at;
-    var days = Math.floor((Date.now() - new Date(last).getTime()) / 86400000);
-    if (days < 0) days = 0;
-    return {
-        stateJson: JSON.stringify({ stability: item.stability, difficulty: item.difficulty }),
-        daysElapsed: days
-    };
+// 取回并解析 JSON
+function fetchJson(url) {
+    return fetch(url).then(function(res) {
+        if (!res.ok) {
+            throw new Error(url + ' 请求失败：HTTP ' + res.status);
+        }
+        return res.json();
+    });
 }
 
 // ---------- 渲染 ----------
@@ -159,10 +171,14 @@ function renderReviewCard() {
     if (answerEl) answerEl.style.display = 'none';
     if (btnEl) btnEl.style.display = 'none';
 
-    var total = state.queue.length;
-    if (state.cursor >= total) {
+    var session = state.session;
+    if (!session) return;
+
+    if (session.is_finished()) {
+        // 队列走完：区分「今天复习完了」与「词库为空」两种情况
         cardEl.style.display = 'none';
         if (revealEl) revealEl.style.display = 'none';
+        var total = session.total();
         var stats = state.stats;
         if (total > 0) {
             statusEl.textContent = '今日完成 ✨ 共 ' + total + ' 张';
@@ -175,17 +191,16 @@ function renderReviewCard() {
         return;
     }
 
-    var entry = state.queue[state.cursor];
-    var item = entry.item;
+    var card = JSON.parse(session.current_json());
     // 使用 textContent 渲染词条数据，避免词条内容被当作 HTML 解析
-    setTextContent('reviewWord', item.word || '');
-    setTextContent('reviewPhonetic', item.phonetic || '');
-    setTextContent('reviewMeaning', item.meaning || '');
-    setTextContent('reviewExample', item.example || '');
+    setTextContent('reviewWord', card.word || '');
+    setTextContent('reviewPhonetic', card.phonetic || '');
+    setTextContent('reviewMeaning', card.meaning || '');
+    setTextContent('reviewExample', card.example || '');
     cardEl.style.display = 'block';
     if (revealEl) revealEl.style.display = 'block';
-    var label = entry.source === 'new' ? '新词' : '到期';
-    statusEl.textContent = '第 ' + (state.cursor + 1) + ' / ' + total +
+    var label = card.source === 'new' ? '新词' : '到期';
+    statusEl.textContent = '第 ' + (session.done() + 1) + ' / ' + session.total() +
         ' 张（' + label + '）· 先回想，再显示答案';
     // 开启自动朗读时，每张新卡出现即朗读单词
     if (isAutoSpeakOn()) speakCurrent('word');
@@ -196,8 +211,8 @@ function renderReviewCard() {
 // 只有揭晓后才允许评分，否则「看着答案打分」会让 FSRS 的记忆状态失真
 function revealAnswer() {
     if (state.revealed) return;
-    var entry = state.queue[state.cursor];
-    if (!entry) return;
+    var session = state.session;
+    if (!session || session.is_finished()) return;
     state.revealed = true;
 
     var answerEl = document.getElementById('reviewAnswer');
@@ -209,64 +224,49 @@ function revealAnswer() {
 
     var statusEl = document.getElementById('reviewStatus');
     if (statusEl) {
-        var label = entry.source === 'new' ? '新词' : '到期';
-        statusEl.textContent = '第 ' + (state.cursor + 1) + ' / ' +
-            state.queue.length + ' 张（' + label + '）· 请根据回忆情况评分';
+        var card = JSON.parse(session.current_json());
+        var label = card.source === 'new' ? '新词' : '到期';
+        statusEl.textContent = '第 ' + (session.done() + 1) + ' / ' + session.total() +
+            ' 张（' + label + '）· 请根据回忆情况评分';
     }
 }
 
-// 渲染本轮队列进度条（已完成张数 / 队列总张数）
+// 渲染本轮队列进度条（进度百分比由引擎计算）
 function renderProgress() {
     var bar = document.getElementById('statProgressBar');
-    if (!bar) return;
-    var total = state.queue.length;
-    var done = Math.min(state.cursor, total);
-    bar.style.width = (total > 0 ? Math.round(done / total * 100) : 0) + '%';
+    if (!bar || !state.session) return;
+    bar.style.width = state.session.progress_percent() + '%';
 }
 
 // ---------- 评分与提交 ----------
 
-// 用户点击评分：WASM 引擎计算下一状态 → 提交后端持久化
+// 用户点击评分：交给引擎算新记忆状态 → 引擎返回可直接提交的请求体 → POST 持久化
 // 前置条件：必须已揭晓答案；揭晓前的评分一律忽略（避免误触键盘泄漏答案、也避免凭猜测打分）
 function handleReviewRating(rating) {
-    var entry = state.queue[state.cursor];
-    if (!entry || !state.wasm) return;
+    var session = state.session;
+    if (!session || session.is_finished()) return;
     if (!state.revealed) {
         var hintEl = document.getElementById('reviewStatus');
         if (hintEl) hintEl.textContent = '请先按空格（或点「显示答案」）揭晓答案，再评分';
         return;
     }
-    var ctx = reviewCardContext(entry);
-    var next;
+
+    // 引擎内部完成：换算距上次复习天数 → FSRS 计算 → 取对应分支 → 推进游标
+    var payload;
     try {
-        next = JSON.parse(state.wasm.fsrs_next_states(ctx.stateJson, 0.9, ctx.daysElapsed));
+        payload = session.rate(rating, Date.now());
     } catch (e) {
         var errEl = document.getElementById('reviewStatus');
         if (errEl) errEl.textContent = '引擎计算失败: ' + e;
         return;
     }
-    var names = { 1: 'again', 2: 'hard', 3: 'good', 4: 'easy' };
-    var chosen = next[names[rating]];
-    if (!chosen || !chosen.memory) {
-        var badEl = document.getElementById('reviewStatus');
-        if (badEl) badEl.textContent = '引擎返回数据异常，已跳过本张';
-        state.cursor++;
-        renderReviewCard();
-        return;
-    }
-    state.cursor++;
-    renderReviewCard();
+
+    renderReviewCard(); // 乐观推进到下一张
 
     fetch('/api/reviews/submit', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            word_id: entry.item.id,
-            rating: rating,
-            stability: chosen.memory.stability,
-            difficulty: chosen.memory.difficulty,
-            interval_days: chosen.interval_days
-        })
+        body: payload // 引擎返回的 JSON 即请求体，无需在前端重新拼装
     }).then(function(res) {
         return res.json();
     }).then(function(data) {
@@ -304,8 +304,7 @@ function renderStats(stats) {
 
 // 刷新统计（每次提交复习成功后调用）
 function loadReviewStats() {
-    return fetch('/api/reviews/stats')
-        .then(function(res) { return res.json(); })
+    return fetchJson('/api/reviews/stats')
         .then(function(data) {
             if (data && data.code === 200 && data.data) {
                 state.stats = data.data;

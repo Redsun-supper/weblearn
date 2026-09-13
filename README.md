@@ -57,24 +57,38 @@
 
 ```
 e:\porject\4/
-├── frontend/                    # 前端静态文件
+├── frontend/                    # 前端静态文件（根目录即站点根）
 │   ├── index.html               # 主页面入口
-│   ├── main.css                 # 全局样式
-│   ├── main.js                  # 交互逻辑与缓存管理
+│   ├── main.css                 # 全站样式（导航栏、内容容器等）
+│   ├── main.js                  # 导航交互与 localStorage 缓存管理
 │   ├── image/                   # 图片资源
 │   │   └── avatar.png           # 头像图片
-│   ── pages/                   # 学科内容页面
-│       ├── english.html         # 英语（已实现）
-│       ├── chinese.html         # 语文（敬请期待）
-│       ├── math.html            # 数学（敬请期待）
-│       ├── physics.html         # 物理（敬请期待）
-│       ├── chemistry.html       # 化学（敬请期待）
-│       ├── biology.html         # 生物（敬请期待）
-│       ├── history.html         # 历史（敬请期待）
-│       ├── politics.html        # 政治（敬请期待）
-│       └── geography.html       # 地理（敬请期待）
+│   └── pages/                   # 尚未建模块的学科占位页（其余 8 门，均为「敬请期待」）
+│       ├── chinese.html         # 语文
+│       ├── math.html            # 数学
+│       ├── physics.html         # 物理
+│       ├── chemistry.html       # 化学
+│       ├── biology.html         # 生物
+│       ├── history.html         # 历史
+│       ├── politics.html        # 政治
+│       └── geography.html       # 地理
 │
 ├── dev-server.js                # 本地开发服务器（静态文件 + /api 反向代理，仅开发用）
+│
+├── modules/                     # 学科模块（每个学科一个目录，独立管理）
+│   └── english/                 # 英语模块（唯一已实现的学科）
+│       ├── english.html         #   学科页片段（由 main.js 注入 #contentContainer）
+│       ├── english.css          #   模块样式（只作用于英语页）
+│       ├── english.js           #   模块逻辑：DOM / fetch / 存储 / 语音
+│       ├── README.md            #   模块说明
+│       └── engine/              #   Rust/WASM 引擎（队列编排 + FSRS 调度 + 随机化）
+│           ├── Cargo.toml
+│           ├── src/
+│           │   ├── lib.rs           # 模块导出
+│           │   ├── session.rs       # 会话编排（ReviewSession：队列/游标/评分/进度）
+│           │   ├── fsrs_engine.rs   # FSRS 调度计算
+│           │   └── randomizer.rs    # 随机器（洗牌/抽样/种子）
+│           └── README.md            # 引擎说明与构建命令
 │
 ├── backend-go/                  # Go后端服务
 │   ├── main.go                  # 程序入口
@@ -99,16 +113,29 @@ e:\porject\4/
 │   │   └── utils.go             # 工具函数
 │   └── README.md                # 后端说明文档
 │
-├── frontend-rust/               # 前端 Rust/WASM 模块（间隔复习引擎）
-│   ├── Cargo.toml               # cdylib + wasm-bindgen + fsrs
-│   ├── src/
-│   │   ├── lib.rs               # 模块导出
-│   │   ├── fsrs_engine.rs       # FSRS 调度引擎
-│   │   └── randomizer.rs        # 随机器（洗牌/抽样）
-│   └── README.md                # 引擎说明文档
-│
 └── README.md                    # 项目总说明（本文件）
 ```
+
+---
+
+## 学科模块约定
+
+每个学科的东西放在一个目录里（`modules/<学科>/`），便于独立管理与演进：
+
+| 文件 | 职责 |
+|------|------|
+| `<学科>.html` | 学科页片段，由 `main.js` fetch 后注入 `#contentContainer` |
+| `<学科>.css` | 模块样式，只作用于该学科页内的元素 |
+| `<学科>.js` | 模块逻辑（ES module），导出初始化函数，由 `main.js` **按需动态 import** |
+| `engine/` | 该学科的 Rust/WASM 引擎（纯计算：调度、随机化、统计等） |
+
+`main.js` 里只保留一处学科相关代码——`initSubjectModule(pageName)`：按 `data-page`
+判断并动态 `import()` 对应模块。**好处是学科逻辑不会回流到 `main.js`，且只有真正进入
+该学科页才会加载它的模块与引擎。**
+
+> 目前只有 `modules/english/` 建好了；其余 8 门仍是 `pages/<学科>.html` 占位页。
+> 将来把某门学科做成模块时，把它从 `pages/` 移进 `modules/<学科>/`，
+> 并在 `index.html` 的 `data-page` 与 `main.js` 的 `ENGLISH_PAGE` 旁登记即可。
 
 ---
 
@@ -221,7 +248,7 @@ e:\porject\4/
 
 | 键名 | 用途 |
 |------|------|
-| `pageCache_pages/xxx.html` | 存储页面HTML内容 |
+| `pageCache_<学科页路径>` | 存储页面HTML内容（如 `pageCache_modules/english/english.html`） |
 | `pageCache_meta` | 存储各页面最后访问时间 |
 | `pageCache_version` | 缓存结构版本号；版本升级时一次性清除所有旧页面缓存 |
 
@@ -270,7 +297,7 @@ node dev-server.js --api-port 8081    # 后端换了端口时对齐
 |------|-----------|
 | 页面提示「复习功能加载失败」 | 后端没启动或端口不是 8080；`dev-server.js` 控制台会打印 `[proxy error]` 说明具体原因 |
 | 提示「词库为空」或「暂无需要复习的单词」 | 还没导入词表，执行 `go run ./cmd/seed`（见上一步） |
-| 改了 `pages/*.html` 却不生效 | 学科页被 **localStorage 缓存了 30 天**：DevTools → Application → Local Storage 删除 `pageCache_*` 键，或在 Console 执行 `localStorage.clear()` 后刷新；也可以把 `main.js` 里的 `CACHE_VERSION` +1 强制全体用户失效 |
+| 改了学科页（`modules/<学科>/*.html` 或 `pages/*.html`）却不生效 | 学科页被 **localStorage 缓存了 30 天**：DevTools → Application → Local Storage 删除 `pageCache_*` 键，或在 Console 执行 `localStorage.clear()` 后刷新；也可以把 `main.js` 里的 `CACHE_VERSION` +1 强制全体用户失效 |
 | 改了 `main.js` / `main.css` 却不生效 | 浏览器 HTTP 缓存。`dev-server.js` 已发送 `Cache-Control: no-store`；若仍异常请硬刷新（Ctrl+F5） |
 | 端口 8080 / 8899 被占用 | 后端用环境变量换端口（如 `SERVER_PORT=8081`），前端用 `--api-port 8081` 对齐；前端自身用 `--port` 换 |
 | 想要与线上完全一致的形态 | 用 Nginx 反向代理：`root` 指向仓库根目录、`proxy_pass` 指向 `127.0.0.1:8080`（见「部署说明」） |
@@ -406,7 +433,9 @@ go build -o server main.go
 - [ ] 用户认证系统
 - [ ] 学科内容完善
 - [ ] 响应式优化
-- [x] 复习页面 UI（简单版：pages/english.html + main.js 集成 WASM 引擎）
+- [x] 复习页面 UI（简单版：`modules/english/english.html` + WASM 引擎）
+- [x] 英语模块独立成 `modules/english/`（页面/样式/逻辑/引擎集中管理）
+- [x] 计算下沉 Rust：会话编排、日期换算、FSRS 调度、进度统计移入引擎（26 个单元测试）
 - [x] 主动回忆流程（先回想 → 显示答案 → 评分，避免「看着答案打分」污染 FSRS 状态）
 - [x] 单词 / 例句发音（Web Speech API）与键盘快捷键（空格、1~4、P、E）
 - [x] 复习统计面板（今日进度、连续天数、记忆保持率、本轮进度条）
