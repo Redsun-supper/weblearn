@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<!--
+  广学 · 后台管理入口
+
+  这是一个**独立页面**，与学生站（index.html）互不影响：
+  不走 main.js 的导航，也不使用学科页的 localStorage 缓存。
+
+  当前状态：尚无登录系统，任何人可访问。因此**请勿把 /admin/ 暴露到公网**，
+  等接入登录后再部署。预留位置见本文件中的 #adminAuthGate 与 admin.js 的 checkAuth()。
+-->
+<html lang="zh-CN">
+<head>
+    <!-- meta设置字符编码为UTF-8，支持中文显示，防止乱码 -->
+    <meta charset="UTF-8">
+    <!-- meta设置视口，使页面宽度跟随设备宽度，实现移动端适配 -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <!-- title设置浏览器标签页标题 -->
+    <title>广学 · 后台管理</title>
+    <!-- link引入后台样式表 -->
+    <link rel="stylesheet" href="admin.css">
+</head>
+<body>
+    <!-- ===================== 登录鉴权（预留，当前未启用） ===================== -->
+    <!-- 目前 checkAuth() 直接放行，所以本区域保持隐藏。 -->
+    <!-- 将来接入登录后：由 admin.js 在鉴权失败时把它显示出来，并停止渲染后台内容。 -->
+    <div class="admin-gate" id="adminAuthGate" style="display:none;">
+        <div class="admin-gate-box">
+            <h2>需要登录</h2>
+            <p>登录功能尚未实现。请先在 <code>admin/admin.js</code> 的 <code>checkAuth()</code>
+               中接入会话校验，或在本地使用后台。</p>
+        </div>
+    </div>
+
+    <!-- ===================== 后台主布局 ===================== -->
+    <div class="admin-layout" id="adminLayout">
+        <!-- 左侧栏：品牌 + 学科导航（由 admin.js 依据注册表渲染） -->
+        <aside class="admin-sidebar">
+            <div class="admin-brand">
+                <span class="admin-brand-name">广学</span>
+                <span class="admin-brand-sub">后台管理</span>
+            </div>
+            <nav class="admin-nav" id="adminNav"></nav>
+            <div class="admin-sidebar-footer">
+                <a class="admin-link" href="../index.html">← 返回站点</a>
+            </div>
+        </aside>
+
+        <!-- 右侧主区：标题栏 + 内容区（内容由学科后台模块渲染） -->
+        <main class="admin-main">
+            <header class="admin-topbar">
+                <h1 class="admin-page-title" id="adminPageTitle">后台管理</h1>
+                <div class="admin-topbar-right">
+                    <!-- 后端连通性指示：调用 /api/health -->
+                    <span class="admin-backend-status" id="backendStatus">检测后端…</span>
+                    <span class="admin-user" id="adminUser">未登录</span>
+                </div>
+            </header>
+
+            <!-- 安全提示：接入登录前不要公网部署 -->
+            <div class="admin-banner" id="securityBanner">
+                ⚠️ 当前后台没有登录校验，任何能访问该地址的人都能修改词条。接入登录前请勿部署到公网。
+            </div>
+
+            <section class="admin-content" id="adminContent"></section>
+        </main>
+    </div>
+
+    <!-- 提示条容器（由 admin.js 的 toast() 填充） -->
+    <div class="admin-toasts" id="adminToasts"></div>
+
+    <!-- 后台框架脚本（ES module，按需动态加载学科后台） -->
+    <script type="module" src="admin.js"></script>
+</body>
+</html>

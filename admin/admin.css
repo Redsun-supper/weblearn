@@ -1,0 +1,407 @@
+/* ============================================================================
+ * 广学 · 后台管理样式
+ * 只作用于 admin/ 下的页面，与学生站的 main.css 完全独立。
+ *
+ * 这里同时提供**通用组件样式**（表格、表单、按钮、分页、徽章、空状态、提示条），
+ * 供各学科后台模块直接复用，避免每个学科各写一套外观。
+ * ========================================================================== */
+
+/* 通配符选择器：清除默认内外边距，统一盒模型 */
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: Arial, sans-serif;
+    font-size: 14px;
+    line-height: 1.6;
+    color: #333;
+    background-color: #f5f6f8;
+}
+
+/* ===================== 登录鉴权遮罩（预留） ===================== */
+
+.admin-gate {
+    position: fixed;
+    inset: 0;
+    z-index: 200;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background-color: #f5f6f8;
+}
+
+.admin-gate-box {
+    max-width: 420px;
+    padding: 28px;
+    border: 1px solid #e0e0e0;
+    border-radius: 12px;
+    background-color: #ffffff;
+    text-align: center;
+}
+
+.admin-gate-box h2 {
+    margin-bottom: 10px;
+    font-size: 20px;
+}
+
+.admin-gate-box code {
+    padding: 1px 4px;
+    border-radius: 4px;
+    background-color: #eceff1;
+    font-size: 12px;
+}
+
+/* ===================== 主布局 ===================== */
+
+.admin-layout {
+    display: flex;
+    min-height: 100vh;
+}
+
+/* 左侧栏 */
+.admin-sidebar {
+    display: flex;
+    flex-direction: column;
+    width: 220px;
+    flex: 0 0 220px;
+    background-color: #263238;
+    color: #cfd8dc;
+}
+
+.admin-brand {
+    display: flex;
+    flex-direction: column;
+    padding: 18px 20px;
+    border-bottom: 1px solid #37474f;
+}
+
+.admin-brand-name {
+    font-size: 20px;
+    font-weight: bold;
+    color: #ffffff;
+}
+
+.admin-brand-sub {
+    font-size: 12px;
+    color: #90a4ae;
+}
+
+.admin-nav {
+    flex: 1;
+    padding: 10px 0;
+}
+
+/* 侧栏导航项 */
+.admin-nav-item {
+    display: block;
+    padding: 10px 20px;
+    color: #cfd8dc;
+    text-decoration: none;
+    cursor: pointer;
+    border-left: 3px solid transparent;
+    transition: background-color 0.2s, color 0.2s;
+}
+
+.admin-nav-item:hover {
+    background-color: #37474f;
+    color: #ffffff;
+}
+
+.admin-nav-item.active {
+    background-color: #37474f;
+    border-left-color: #64b5f6;
+    color: #ffffff;
+}
+
+/* 导航项里的次要说明 */
+.admin-nav-desc {
+    display: block;
+    font-size: 12px;
+    color: #90a4ae;
+}
+
+.admin-nav-empty {
+    padding: 10px 20px;
+    font-size: 12px;
+    color: #78909c;
+}
+
+.admin-sidebar-footer {
+    padding: 14px 20px;
+    border-top: 1px solid #37474f;
+}
+
+.admin-link {
+    color: #90a4ae;
+    text-decoration: none;
+    font-size: 13px;
+}
+
+.admin-link:hover {
+    color: #ffffff;
+}
+
+/* 右侧主区 */
+.admin-main {
+    flex: 1;
+    min-width: 0; /* 允许内部表格横向滚动而不撑破布局 */
+    display: flex;
+    flex-direction: column;
+}
+
+.admin-topbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 14px 24px;
+    background-color: #ffffff;
+    border-bottom: 1px solid #e0e0e0;
+}
+
+.admin-page-title {
+    font-size: 18px;
+    font-weight: bold;
+}
+
+.admin-topbar-right {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    font-size: 13px;
+    color: #78909c;
+}
+
+/* 后端连通性指示 */
+.admin-backend-status.ok { color: #2e7d32; }
+.admin-backend-status.bad { color: #c62828; }
+
+/* 安全提示条 */
+.admin-banner {
+    margin: 16px 24px 0;
+    padding: 10px 14px;
+    border: 1px solid #ffe0b2;
+    border-radius: 8px;
+    background-color: #fff8e1;
+    color: #8d6e63;
+    font-size: 13px;
+}
+
+.admin-content {
+    flex: 1;
+    padding: 20px 24px 40px;
+}
+
+/* ===================== 通用组件：卡片 / 区块 ===================== */
+
+.admin-card {
+    padding: 16px;
+    margin-bottom: 16px;
+    border: 1px solid #e0e0e0;
+    border-radius: 12px;
+    background-color: #ffffff;
+}
+
+.admin-card-title {
+    margin-bottom: 12px;
+    font-size: 15px;
+    font-weight: bold;
+}
+
+/* ===================== 通用组件：按钮 ===================== */
+
+.admin-btn {
+    padding: 7px 14px;
+    border: 1px solid #d0d0d0;
+    border-radius: 6px;
+    background-color: #ffffff;
+    color: #37474f;
+    font-size: 13px;
+    cursor: pointer;
+    transition: background-color 0.2s;
+}
+
+.admin-btn:hover { background-color: #eceff1; }
+
+.admin-btn:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+}
+
+.admin-btn-primary {
+    border-color: #1976d2;
+    background-color: #1976d2;
+    color: #ffffff;
+}
+
+.admin-btn-primary:hover { background-color: #1565c0; }
+
+.admin-btn-danger {
+    border-color: #e57373;
+    background-color: #ffffff;
+    color: #c62828;
+}
+
+.admin-btn-danger:hover { background-color: #ffebee; }
+
+.admin-btn-sm {
+    padding: 3px 9px;
+    font-size: 12px;
+}
+
+/* 按钮组 */
+.admin-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+}
+
+/* ===================== 通用组件：表单 ===================== */
+
+.admin-field {
+    margin-bottom: 12px;
+}
+
+.admin-field label {
+    display: block;
+    margin-bottom: 4px;
+    font-size: 13px;
+    color: #546e7a;
+}
+
+.admin-field input[type="text"],
+.admin-field input[type="number"],
+.admin-field select,
+.admin-field textarea {
+    width: 100%;
+    padding: 7px 10px;
+    border: 1px solid #cfd8dc;
+    border-radius: 6px;
+    font-family: inherit;
+    font-size: 13px;
+    color: #333;
+    background-color: #ffffff;
+}
+
+.admin-field input:focus,
+.admin-field select:focus,
+.admin-field textarea:focus {
+    outline: none;
+    border-color: #64b5f6;
+}
+
+.admin-field textarea {
+    min-height: 80px;
+    resize: vertical;
+}
+
+/* 表单网格：两列表单 */
+.admin-grid-2 {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0 14px;
+}
+
+.admin-hint {
+    margin-top: 4px;
+    font-size: 12px;
+    color: #90a4ae;
+}
+
+/* ===================== 通用组件：表格 ===================== */
+
+.admin-table-wrap {
+    overflow-x: auto;
+}
+
+.admin-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+}
+
+.admin-table th,
+.admin-table td {
+    padding: 9px 12px;
+    border-bottom: 1px solid #eceff1;
+    text-align: left;
+    vertical-align: top;
+}
+
+.admin-table th {
+    background-color: #fafafa;
+    color: #546e7a;
+    font-weight: bold;
+    white-space: nowrap;
+}
+
+.admin-table tbody tr:hover {
+    background-color: #fafafa;
+}
+
+.admin-table .col-actions {
+    white-space: nowrap;
+}
+
+/* ===================== 通用组件：徽章 / 空状态 / 分页 ===================== */
+
+.admin-badge {
+    display: inline-block;
+    padding: 1px 8px;
+    border-radius: 10px;
+    background-color: #eceff1;
+    color: #546e7a;
+    font-size: 12px;
+}
+
+/* 空状态（无数据 / 未注册学科） */
+.admin-empty {
+    padding: 36px 16px;
+    color: #90a4ae;
+    text-align: center;
+}
+
+.admin-empty-title {
+    margin-bottom: 6px;
+    font-size: 15px;
+    color: #607d8b;
+}
+
+.admin-pager {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 12px;
+    font-size: 13px;
+    color: #78909c;
+}
+
+/* ===================== 通用组件：提示条（toast） ===================== */
+
+.admin-toasts {
+    position: fixed;
+    right: 20px;
+    bottom: 20px;
+    z-index: 300;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.admin-toast {
+    min-width: 200px;
+    max-width: 380px;
+    padding: 10px 14px;
+    border-radius: 8px;
+    background-color: #37474f;
+    color: #ffffff;
+    font-size: 13px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+}
+
+.admin-toast.error { background-color: #c62828; }
+.admin-toast.success { background-color: #2e7d32; }
