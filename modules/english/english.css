@@ -113,16 +113,22 @@
     color: #1a1a1a;
 }
 
-/* ===================== 主体 ===================== */
-
+/* 主体 */
 .study-stage {
     flex: 1;
     display: flex;
     flex-direction: column;
     align-items: center;
-    justify-content: center;
+    /* 关键：不用 justify-content: center。
+     * 居中的含义是「内容块的中心固定在正中间」，而揭晓答案会让内容一下子变高，
+     * 于是新增的高度一半往下、一半往上——单词就被顶上去半截
+     * （实测：1 条释义上移 53px，3 条释义上移 159px）。
+     * 改成从固定位置往下排：单词的位置只由下面的 padding-top 决定，
+     * 答案无论多长都只往下生长，不会推动单词。
+     * 顶部留白用 clamp 兜住小窗口：矮屏不至于把评分按钮挤出可视区。 */
+    justify-content: flex-start;
     gap: 16px;
-    padding: 20px 0;
+    padding: clamp(28px, 18vh, 220px) 0 20px;
     text-align: center;
 }
 
@@ -334,8 +340,10 @@
     cursor: pointer;
 }
 
-/* 无卡片时（加载中 / 已完成 / 出错）主体里的提示 */
+/* 无卡片时（加载中 / 已完成 / 出错）主体里的提示
+ * margin: auto 0 让它在主体剩余空间里居中——此时单词是隐藏的，只有这一块 */
 .study-message {
+    margin: auto 0;
     font-size: 15px;
     line-height: 1.8;
     color: #6b7280;
