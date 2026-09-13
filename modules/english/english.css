@@ -31,6 +31,20 @@
     to   { opacity: 1; transform: none; }
 }
 
+/* 「显示答案」按钮退场：缩小 + 淡出 + 微微下沉，像被按进去一样
+ * 缓动用 easeIn，收尾快，退场才不拖沓 */
+@keyframes revealOut {
+    from { opacity: 1; transform: none; }
+    to   { opacity: 0; transform: translateY(4px) scale(0.9); }
+}
+
+/* 四个评分按钮入场：从下方浮起 + 由小变大
+ * 它接的是「显示答案」按钮退场的班（同一个位置），所以起手也带缩放，看起来是同一个东西长出来 */
+@keyframes ratingIn {
+    from { opacity: 0; transform: translateY(8px) scale(0.92); }
+    to   { opacity: 1; transform: none; }
+}
+
 /* 例句里的目标词高亮：像荧光笔从左往右扫过去（动的是 background-size） */
 @keyframes hitSweep {
     from { background-size: 0% 100%; }
@@ -41,9 +55,17 @@
  * 这里只定义「怎么动」。放在 .study.revealing 下面，是为了让每次揭晓都能重新触发。 */
 .study.revealing #reviewExample,
 .study.revealing #reviewExampleCn,
-.study.revealing .sense-block,
-.study.revealing .rating {
+.study.revealing .sense-block {
     animation: revealUp 300ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* 退场与入场接力：170ms 后 english.js 会藏掉揭晓按钮、放出评分按钮（REVEAL_OUT_MS） */
+.study.revealing .study-reveal-btn {
+    animation: revealOut 170ms cubic-bezier(0.55, 0, 1, 0.45) both;
+}
+
+.study.revealing .rating {
+    animation: ratingIn 320ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
 /* 高亮扫过：慢起慢收的缓动最像荧光笔划过去 */
@@ -59,6 +81,7 @@
     .study.revealing #reviewExampleCn,
     .study.revealing .sense-block,
     .study.revealing .rating,
+    .study.revealing .study-reveal-btn,
     .study.revealing .study-hit {
         animation: none;
     }

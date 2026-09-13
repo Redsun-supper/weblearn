@@ -535,10 +535,9 @@ function revealAnswer() {
     state.revealed = true;
 
     show('reviewAnswer');
-    hide('reviewReveal');
-    show('reviewButtons');
 
     // 揭晓动效：整块淡入太死板，改成按顺序浮现（见 playRevealAnimation）
+    // 「揭晓按钮退场 → 评分按钮入场」也在这条时间线上，所以这里不再直接 hide/show 按钮
     playRevealAnimation();
 
     var sourceLabel = state.card && state.card.source === 'new' ? '新词' : '到期';
@@ -548,8 +547,11 @@ function revealAnswer() {
 // ---------- 揭晓动效 ----------
 //
 // 一眼看完的「整块淡入」很死板，这里排了一个节拍：
-//   主例句淡入上浮 → 译文跟上 → 一条条释义块错开浮现（每块里的高亮再晚一点扫过去）
-//   → 最后四个评分按钮依次弹起。
+//   揭晓按钮缩小淡出 ─┐
+//   主例句淡入上浮 ───┤
+//   译文跟上 ─────────┼─→ 揭晓按钮消失的同一刻，四个评分按钮从它原来的位置依次顶上来
+//   一条条释义块浮现 ─┘   （每块里的目标词高亮再晚一点扫过去，像荧光笔划过去）
+//
 // 为什么分离「动画定义」与「延时」：什么时候开始由这里的数字决定（好调），
 // 动画怎么动（时长/缓动/起止状态）写在 english.css 里，两边只靠这几个常量对齐。
 // 单词本身**不参与动画**：揭晓时它必须待在原位不动（之前整体居中导致上移，已经改掉了）。
@@ -562,13 +564,20 @@ var REVEAL_HEAD_MS = 110;
 var REVEAL_CN_MS = 60;
 // 高亮比它所在的那一块再晚一点（例句先出来，荧光笔才扫过去）
 var REVEAL_HIT_MS = 100;
-// 评分按钮之间的错开间隔，以及它们相对最后一块释义的延后
-var REVEAL_BTN_STEP_MS = 35;
-var REVEAL_BTN_TAIL_MS = 30;
-// 单个元素的动画时长（与 english.css 的 revealUp / hitSweep 保持一致，用来算总时长）
+// 「显示答案」按钮退场时长。**换人的时刻就是它**：退场动画一播完，
+// 立刻藏掉它、放出评分按钮，中间不留空档也不重叠
+var REVEAL_OUT_MS = 170;
+// 评分按钮：相对「被放出来」那一刻的起步延后，以及它们之间的错开间隔
+var REVEAL_BTN_BASE_MS = 30;
+var REVEAL_BTN_STEP_MS = 45;
+// 文本块动画时长（与 english.css 的 revealUp / hitSweep 保持一致）
 var REVEAL_DURATION_MS = 300;
+// 评分按钮动画时长（与 english.css 的 ratingIn 保持一致）
+var REVEAL_RATING_MS = 320;
 
-// 揭晓动效的收尾定时器（换卡 / 离开页面时要清掉，否则会把下一张卡的动效提前掐断）
+// 两个定时器：换人（藏揭晓按钮 / 放评分按钮）与整轮收尾
+// 换卡或离开页面时必须都清掉，否则会把下一张卡的动效提前掐断
+var revealSwapTimer = null;
 var revealTimer = null;
 
 // 给元素设动画延时（内联样式，优先级高于样式表里的默认值）
@@ -581,6 +590,14 @@ function setRevealDelay(el, ms) {
 function playRevealAnimation() {
     var root = document.getElementById('reviewApp');
     if (!root) return 0;
+
+    // 系统开启「减少动态效果」：不放动画，直接一步到位换人
+    if (prefersReducedMotion()) {
+        cancelRevealAnimation();
+        hide('reviewReveal');
+        show('reviewButtons');
+        return 0;
+    }
 
     // 主例句与它的译文
     setRevealDelay(document.getElementById('reviewExample'), 0);
@@ -605,21 +622,38 @@ function playRevealAnimation() {
         }
     }
 
-    // 评分按钮：等文字都出来之后再依次弹起
+    // 揭晓按钮退场：延时留 0，跟着 revealing 类立刻开始缩小淡出
+    setRevealDelay(document.getElementById('reviewRevealBtn'), 0);
+
+    // 评分按钮的延时是相对「被放出来的那一刻」算的（它们在 REVEAL_OUT_MS 之后才 show），
+    // 所以起步延后从 0 附近开始，才是紧接着揭晓按钮的退场
     var buttons = document.querySelectorAll('.rating');
-    var btnBase = REVEAL_HEAD_MS + blocks.length * REVEAL_STEP_MS + REVEAL_BTN_TAIL_MS;
     for (i = 0; i < buttons.length; i++) {
-        setRevealDelay(buttons[i], btnBase + i * REVEAL_BTN_STEP_MS);
+        setRevealDelay(buttons[i], REVEAL_BTN_BASE_MS + i * REVEAL_BTN_STEP_MS);
     }
 
-    var total = btnBase + buttons.length * REVEAL_BTN_STEP_MS + REVEAL_DURATION_MS;
+    // 整轮时长取两条线里更晚结束的那条：文本块那条，和「退场 → 换人 → 按钮入场」那条
+    var textEnd = REVEAL_HEAD_MS + blocks.length * REVEAL_STEP_MS + REVEAL_DURATION_MS;
+    var buttonEnd = REVEAL_OUT_MS + REVEAL_BTN_BASE_MS + buttons.length * REVEAL_BTN_STEP_MS + REVEAL_RATING_MS;
+    var total = Math.max(textEnd, buttonEnd);
 
     // 先摘类再挂：强制一次重排，保证同一张卡重播（或换卡后又回来）时动画能重新开始
     root.classList.remove('revealing');
     void root.offsetWidth;
     root.classList.add('revealing');
 
+    clearTimeout(revealSwapTimer);
     clearTimeout(revealTimer);
+
+    // 揭晓按钮退场动画播完的同一刻换人。
+    // ⚠️ 必须先藏掉揭晓按钮再放评分按钮：两者是底部操作区里相邻的两个块，
+    // 同时显示会让操作区变高，把上面的单词顶上去（那正是之前修掉的毛病）。
+    revealSwapTimer = setTimeout(function() {
+        revealSwapTimer = null;
+        hide('reviewReveal');
+        show('reviewButtons');
+    }, REVEAL_OUT_MS);
+
     revealTimer = setTimeout(function() {
         root.classList.remove('revealing');
         revealTimer = null;
@@ -628,9 +662,11 @@ function playRevealAnimation() {
     return total;
 }
 
-// 取消揭晓动效：换卡时调用，避免上一张卡的动画残留到新卡上
+// 取消揭晓动效：换卡时调用，避免上一张卡的动画与定时器残留到新卡上
 function cancelRevealAnimation() {
+    clearTimeout(revealSwapTimer);
     clearTimeout(revealTimer);
+    revealSwapTimer = null;
     revealTimer = null;
     var root = document.getElementById('reviewApp');
     if (root) root.classList.remove('revealing');
