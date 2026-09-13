@@ -136,6 +136,7 @@ export function initReviewApp() {
 // 顺带释放引擎侧会话、取消未读完的语音，避免反复进出英语页时内存与声音残留。
 export function unmount() {
     document.body.classList.remove('is-immersive');
+    cancelRevealAnimation();
     releaseSession();
     state.card = null;
     state.revealed = false;
@@ -262,6 +263,7 @@ function renderCardNow() {
     // 换卡即重置揭示状态：新卡一律先隐藏答案与评分按钮
     state.revealed = false;
     state.card = null;
+    cancelRevealAnimation(); // 上一张卡的揭晓动效可能还在收尾，先掐掉
     hide('reviewAnswer');
     hide('reviewButtons');
     hide('reviewReveal');
@@ -536,19 +538,102 @@ function revealAnswer() {
     hide('reviewReveal');
     show('reviewButtons');
 
-    // 揭晓区淡入（系统开启「减少动态效果」时跳过）
-    var answerEl = document.getElementById('reviewAnswer');
-    if (answerEl && !prefersReducedMotion()) {
-        answerEl.classList.remove('is-in');
-        void answerEl.offsetWidth; // 强制重排，保证动画能重新播放
-        answerEl.classList.add('is-in');
-        setTimeout(function() {
-            answerEl.classList.remove('is-in');
-        }, 240);
-    }
+    // 揭晓动效：整块淡入太死板，改成按顺序浮现（见 playRevealAnimation）
+    playRevealAnimation();
 
     var sourceLabel = state.card && state.card.source === 'new' ? '新词' : '到期';
     setStatus('已学 ' + state.session.done() + ' 张 · ' + sourceLabel + ' · 请根据回忆情况评分');
+}
+
+// ---------- 揭晓动效 ----------
+//
+// 一眼看完的「整块淡入」很死板，这里排了一个节拍：
+//   主例句淡入上浮 → 译文跟上 → 一条条释义块错开浮现（每块里的高亮再晚一点扫过去）
+//   → 最后四个评分按钮依次弹起。
+// 为什么分离「动画定义」与「延时」：什么时候开始由这里的数字决定（好调），
+// 动画怎么动（时长/缓动/起止状态）写在 english.css 里，两边只靠这几个常量对齐。
+// 单词本身**不参与动画**：揭晓时它必须待在原位不动（之前整体居中导致上移，已经改掉了）。
+
+// 释义块之间的错开间隔
+var REVEAL_STEP_MS = 60;
+// 首块释义之前留一点时间，让主例句先浮现
+var REVEAL_HEAD_MS = 110;
+// 译文比主例句晚一点
+var REVEAL_CN_MS = 60;
+// 高亮比它所在的那一块再晚一点（例句先出来，荧光笔才扫过去）
+var REVEAL_HIT_MS = 100;
+// 评分按钮之间的错开间隔，以及它们相对最后一块释义的延后
+var REVEAL_BTN_STEP_MS = 35;
+var REVEAL_BTN_TAIL_MS = 30;
+// 单个元素的动画时长（与 english.css 的 revealUp / hitSweep 保持一致，用来算总时长）
+var REVEAL_DURATION_MS = 300;
+
+// 揭晓动效的收尾定时器（换卡 / 离开页面时要清掉，否则会把下一张卡的动效提前掐断）
+var revealTimer = null;
+
+// 给元素设动画延时（内联样式，优先级高于样式表里的默认值）
+function setRevealDelay(el, ms) {
+    if (el) el.style.animationDelay = ms + 'ms';
+}
+
+// 播放揭晓动效：给各元素排好延时，再给根节点挂 revealing 类触发动画
+// 返回这一轮动效的总时长（毫秒）
+function playRevealAnimation() {
+    var root = document.getElementById('reviewApp');
+    if (!root) return 0;
+
+    // 主例句与它的译文
+    setRevealDelay(document.getElementById('reviewExample'), 0);
+    setRevealDelay(document.getElementById('reviewExampleCn'), REVEAL_CN_MS);
+
+    var i, k;
+
+    // 主例句里的目标词高亮
+    var quoteHits = document.querySelectorAll('#reviewExample .study-hit');
+    for (k = 0; k < quoteHits.length; k++) {
+        setRevealDelay(quoteHits[k], REVEAL_HIT_MS);
+    }
+
+    // 一条条释义块，每块里自己的高亮再晚一点
+    var blocks = document.querySelectorAll('#reviewSenses .sense-block');
+    for (i = 0; i < blocks.length; i++) {
+        var delay = REVEAL_HEAD_MS + i * REVEAL_STEP_MS;
+        setRevealDelay(blocks[i], delay);
+        var hits = blocks[i].querySelectorAll('.study-hit');
+        for (k = 0; k < hits.length; k++) {
+            setRevealDelay(hits[k], delay + REVEAL_HIT_MS);
+        }
+    }
+
+    // 评分按钮：等文字都出来之后再依次弹起
+    var buttons = document.querySelectorAll('.rating');
+    var btnBase = REVEAL_HEAD_MS + blocks.length * REVEAL_STEP_MS + REVEAL_BTN_TAIL_MS;
+    for (i = 0; i < buttons.length; i++) {
+        setRevealDelay(buttons[i], btnBase + i * REVEAL_BTN_STEP_MS);
+    }
+
+    var total = btnBase + buttons.length * REVEAL_BTN_STEP_MS + REVEAL_DURATION_MS;
+
+    // 先摘类再挂：强制一次重排，保证同一张卡重播（或换卡后又回来）时动画能重新开始
+    root.classList.remove('revealing');
+    void root.offsetWidth;
+    root.classList.add('revealing');
+
+    clearTimeout(revealTimer);
+    revealTimer = setTimeout(function() {
+        root.classList.remove('revealing');
+        revealTimer = null;
+    }, total);
+
+    return total;
+}
+
+// 取消揭晓动效：换卡时调用，避免上一张卡的动画残留到新卡上
+function cancelRevealAnimation() {
+    clearTimeout(revealTimer);
+    revealTimer = null;
+    var root = document.getElementById('reviewApp');
+    if (root) root.classList.remove('revealing');
 }
 
 // 用户点击评分：交给引擎算新记忆状态 → 引擎返回可直接提交的请求体 → POST 持久化

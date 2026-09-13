@@ -29,6 +29,7 @@
 - 引擎是确定性算术、不依赖系统时钟；`fsrs` 的 rayon/getrandom 已通过 getrandom `wasm_js` 特性适配 wasm32。
 - **复习 UI**：`modules/english/english.html` 含 `#reviewApp`，由 `english.js` 的 `initReviewApp()` 驱动（`main.js` 的 `initSubjectModule()` 动态 import）。界面为**极简全屏**风格：顶栏（沉浸模式开关 / 今日新学 / 今日复习 / 剩余待学 + 记忆元信息）、大字号单词 + 音标胶囊、底部操作区；揭晓后主例句目标词高亮 + 中文翻译，下面是**一条条释义块**（一个词性一块，可各带例句与译文）。键位：空格揭晓，`Q/W/E/R`（或 `1~4`）评分，`P` 读单词，`L` 读例句（`E` 被「一般」占用），`Esc` 切换沉浸模式。⚠️ `engine/pkg/` 由 wasm-bindgen 生成（已 gitignore），缺失时需在 `modules/english/engine/` 下重新构建，命令见 `modules/english/README.md`。
 - **沉浸模式**：进复习页默认给 `body` 挂 `is-immersive`（隐藏站点导航栏、内容区占满整屏），样式在 `main.css` 的通用规则 + `english.css` 自己的留白里，偏好存 `reviewImmersive`。**切学科时必须摘掉**，由 `main.js` 的 `teardownSubjectModule()` 调用模块导出的 `unmount()` 完成（框架级收口点，别把清理逻辑写回 `main.js` 各学科判断里）。
+- **揭晓动效**：不是整块淡入，而是「主例句 → 译文 → 各释义块 → 评分按钮」依次错开浮现，块内高亮再用 `background-size` 从左往右扫出来。**节拍时刻**在 `english.js` 的 `playRevealAnimation()`（`REVEAL_*` 常量，靠内联 `animation-delay` 下达），**动作定义**在 `english.css` 的 `revealUp` / `hitSweep`；换卡时 `renderCardNow()` 会调 `cancelRevealAnimation()` 掐掉上一轮的收尾定时器。⚠️ **单词不参与任何动画**：揭晓时它必须留在原位（`.study-stage` 用 `justify-content: flex-start` 而不是 `center`，否则答案变高会把单词顶上去——实测 1 条释义上移 53px、3 条 159px）。
 - **一词多义**：`words.senses` 是**一列 JSON 文本**（`models.WordSenses`，实现了 `Value`/`Scan`/`MarshalJSON`），不单开子表——释义永远跟着词条走，省一次 join、少传 `id`/`word_id`。空值必须序列化成 `[]` 而非 `null`（`Scan` 里先重置为非 nil 空切片）；Rust 侧对应字段仍用 `Option<Vec<ApiSense>>` 兜一层。填了 `senses` 就用它，没填则引擎按 `meaning` 里的词性标签自动分块（`card_view::split_senses`，历史数据不用改）。
 
 ### 前端要点

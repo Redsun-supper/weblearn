@@ -7,7 +7,7 @@
  * 全站通用样式（导航栏、内容容器等）在根目录 main.css。
  * ========================================================================== */
 
-/* ===================== 过渡动效 ===================== */
+/* ===================== 过渡与揭晓动效 ===================== */
 
 /* 换卡：旧卡淡出上移 → 新卡淡入下移 */
 @keyframes studyOut {
@@ -24,14 +24,42 @@
 .study-stage.is-out { animation: studyOut 150ms ease-in forwards; }
 .study-stage.is-in  { animation: studyIn 240ms ease-out; }
 
-/* 揭晓答案时的淡入 */
-.study-answer.is-in { animation: studyIn 220ms ease-out; }
+/* 揭晓时的单个元素：向上浮起 + 淡入
+ * 缓动用 easeOutQuint（起步快、收尾极慢），比线性或 ease 更有「落定」的质感 */
+@keyframes revealUp {
+    from { opacity: 0; transform: translateY(10px); }
+    to   { opacity: 1; transform: none; }
+}
+
+/* 例句里的目标词高亮：像荧光笔从左往右扫过去（动的是 background-size） */
+@keyframes hitSweep {
+    from { background-size: 0% 100%; }
+    to   { background-size: 100% 100%; }
+}
+
+/* 揭晓节拍：谁在什么时刻出现由 english.js 的 playRevealAnimation 用内联 animation-delay 决定，
+ * 这里只定义「怎么动」。放在 .study.revealing 下面，是为了让每次揭晓都能重新触发。 */
+.study.revealing #reviewExample,
+.study.revealing #reviewExampleCn,
+.study.revealing .sense-block,
+.study.revealing .rating {
+    animation: revealUp 300ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* 高亮扫过：慢起慢收的缓动最像荧光笔划过去 */
+.study.revealing .study-hit {
+    animation: hitSweep 360ms cubic-bezier(0.33, 1, 0.68, 1) both;
+}
 
 /* 无障碍：系统开启「减少动态效果」时全部关掉（业务逻辑不受影响） */
 @media (prefers-reduced-motion: reduce) {
     .study-stage.is-out,
     .study-stage.is-in,
-    .study-answer.is-in {
+    .study.revealing #reviewExample,
+    .study.revealing #reviewExampleCn,
+    .study.revealing .sense-block,
+    .study.revealing .rating,
+    .study.revealing .study-hit {
         animation: none;
     }
 }
@@ -199,11 +227,18 @@
     color: #374151;
 }
 
-/* 目标词高亮 */
+/* 目标词高亮：黄色底用渐变画（而不是 background-color），
+ * 这样揭晓时只要动 background-size，就能做出「荧光笔从左往右扫过去」的效果。
+ * 不用 ::before + z-index: -1 的原因：负 z-index 会跑到祖先背景后面，
+ * 以后谁给某一层加了背景色，高亮就会莫名其妙消失。 */
 .study-hit {
     padding: 0 2px;
     border-radius: 3px;
-    background-color: #fff2b8;
+    background-color: transparent;
+    background-image: linear-gradient(#fff2b8, #fff2b8);
+    background-repeat: no-repeat;
+    background-position: left center;
+    background-size: 100% 100%;
     font-weight: 600;
     color: #1a1a1a;
 }
