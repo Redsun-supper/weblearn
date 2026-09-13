@@ -10,14 +10,26 @@
 //!
 //! ## 分层设计
 //!
-//! - **纯计算层**（[`plan_session`]、[`days_elapsed`]、[`pick_branch`]、[`progress_percent`]
-//!   以及 `ReviewSession` 的 `try_new` / `try_rate`）：只吃 epoch 毫秒与下标，错误类型是
-//!   `String`，可在宿主环境直接 `cargo test`
+//! - **纯计算层**（[`plan_day`]、[`chunk_shuffle`]、[`days_elapsed`]、[`pick_branch`]、
+//!   [`progress_percent`] 以及 `ReviewSession` 的 `try_rate`）：只吃 epoch 毫秒与下标，
+//!   错误类型是 `String`，可在宿主环境直接 `cargo test`
 //! - **wasm 边界层**（`#[wasm_bindgen]` 那一组方法）：只做「ISO 时间字符串 → 毫秒」的解析
 //!   和「`String` 错误 → `JsValue`」的转换，不承载业务逻辑
 //!
 //! 这样分层是有实际原因的：`JsValue` 在非 wasm32 目标上并未实现，一旦业务逻辑里
 //! 碰了它，宿主单元测试就会直接 abort 而不是给出断言失败。
+//!
+//! ## 每日队列的编排口径
+//!
+//! 一天的开局不是「把所有到期的抓过来」，而是三段拼接（详见 [`plan_day`]）：
+//!
+//! 1. **新词**：每天固定几个（默认 5，无放回随机抽），词库没有未学词时这段为空
+//! 2. **抽查**：每天固定几个（默认 5），从「到期时间最远」的已学词里挑，最近抽过的不再抽。
+//!    目的是防止只按到期时间出题时，间隔长的词永远轮不到（长期不露面就是盲区）
+//! 3. **复习区**：其余已学词按紧迫度 `due_at - now` 升序；已过期的严格排序（最旧的先），
+//!    未到期的每 [`CHUNK_SIZE`] 个一块、块内打乱（梯度乱序）
+//!
+//! 队列走完后还能继续往下翻（未到期的也允许提前复习），靠分页取数 + [`append_queue`] 追加。
 //!
 //! ## 关于 `fsrs` 依赖的一个事实
 //!
@@ -25,6 +37,8 @@
 //! Again/Hard/Good/Easy 四个分支，**没有单评分入口**（连私有函数也没有）。
 //! 所以这里仍是「算四个取一个」；每个分支只是几十次浮点运算，开销可忽略，
 //! 不值得为了省这点计算去重写 FSRS 公式（会造成算法重复与版本漂移风险）。
+
+use std::collections::HashSet;
 
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
@@ -38,8 +52,8 @@ use crate::randomizer::{random_indices, random_sample, random_seed};
 /// 期望记忆保持率（与原前端一致，固定 0.9）
 const DESIRED_RETENTION: f32 = 0.9;
 
-/// 每次抽取新词的默认批量（**不是每日上限**：队列抽干后前端会再抽一批，直到词库没有未学词）
-const DEFAULT_NEW_BATCH: u32 = 20;
+/// 梯度乱序的块大小：未到期的复习卡每 10 个一块、块内打乱
+const CHUNK_SIZE: usize = 10;
 
 /// 一天的毫秒数
 const MS_PER_DAY: f64 = 86_400_000.0;
@@ -162,16 +176,69 @@ fn parse_time_ms(_s: &str) -> Option<f64> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum CardSource {
-    /// 到期复习卡
+    /// 复习区的到期卡（`due_at` 已过或即将到）
     Due,
-    /// 新词
+    /// 每日新词（词库里还没有复习记录的词）
     New,
+    /// 每日抽查：从「到期时间最远」的已学词里提前抽出来的卡。
+    ///
+    /// 存在的意义：只按到期时间出题时，那些间隔被拉到几十天的词永远轮不到，
+    /// 长期不露面就成了盲区。每天固定抽查几张，等于给整库做抽样体检。
+    /// 评分时按**新卡**重算记忆状态（见 [`ReviewSession::try_rate`]）。
+    Probe,
+}
+
+/// 队列输入：卡片 + 两个已解析成毫秒的时间。
+///
+/// 为什么把时间单独拎出来：宿主（`cargo test`）上拿不到 JS 的 `Date.parse`，
+/// 时间串解析是 wasm 边界的事；纯计算层只认毫秒，这样排序与切分才能在宿主上测。
+#[derive(Debug, Clone)]
+pub struct QueueInput {
+    /// 词条数据
+    pub card: ApiCard,
+    /// 上次复习时间（epoch 毫秒）：评分时算「距上次几天」用；新词为 `None`
+    pub last_ms: Option<f64>,
+    /// 下次到期时间（epoch 毫秒）：排序与「已过期 / 未到期」切分用
+    pub due_ms: Option<f64>,
+}
+
+/// 每日计划参数（由 JS 用 localStorage 里的进度算好后传进来）
+///
+/// ⚠️ 这两个 limit 是**今天还剩多少配额**，不是每日上限本身——
+/// 上限（每天 5 个新词 + 5 个抽查）记在浏览器 localStorage 里，
+/// 因为现在没有登录系统，服务端分不清是谁的配额（详见 README 的说明）。
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct PlanOptions {
+    /// 今天还能学几个新词
+    #[serde(default)]
+    pub new_limit: u32,
+    /// 今天还能抽查几个
+    #[serde(default)]
+    pub probe_limit: u32,
+    /// 最近抽查过的词 id：这些词不再被抽中（避免连续几天抽到同一批）
+    #[serde(default)]
+    pub probed_ids: Vec<u32>,
+    /// 当前时间（epoch 毫秒），用于切分「已过期 / 未到期」
+    #[serde(default)]
+    pub now_ms: f64,
+}
+
+/// 今日计划 + 复习区
+pub struct DayPlan {
+    pub cards: Vec<PlannedCard>,
+    /// 计划区长度：`cards[0..plan_len]` 是今日计划（新词 + 抽查），之后是复习区。
+    /// JS 靠它判断「今日计划做完了，该切文案了」。
+    pub plan_len: usize,
+    /// 计划里实际放了几个新词（词库不够时会少于 `new_limit`）
+    pub new_count: usize,
+    /// 计划里实际放了几个抽查
+    pub probe_count: usize,
 }
 
 /// 会话中的一张计划卡
 #[derive(Debug, Clone)]
 pub struct PlannedCard {
-    /// 来源：到期 / 新词
+    /// 来源：复习区到期卡 / 每日新词 / 每日抽查
     pub source: CardSource,
     /// 在原始数组中的下标（便于排查与复现）
     pub index: u32,
@@ -179,109 +246,228 @@ pub struct PlannedCard {
     pub state: Option<CardState>,
     /// 上次复习时间（epoch 毫秒）；新词或时间缺失时为 `None`
     pub last_ms: Option<f64>,
+    /// 下次到期时间（epoch 毫秒）；用于排序与切分
+    pub due_ms: Option<f64>,
     /// 词条数据（由 Rust 持有，JS 不再保存一份）
     pub card: ApiCard,
 }
 
-/// 编排今日队列：到期卡整体洗牌 + 新词无放回抽样，到期卡在前、新词在后。
+/// 梯度乱序：把 `items` 切成每 `chunk` 个一块，**块内洗牌、块间顺序不变**。
 ///
-/// 与改动前 JS 的行为逐位一致：
-/// - 到期顺序 = `random_indices(due.len(), seed)`
-/// - 新词顺序 = `random_sample(new.len(), min(new_limit, new.len()), seed ^ 0x9E3779B9)`
-///
-/// `due` 需要同时给出「上次复习时间（epoch 毫秒）」，因为距上次复习的天数要在
-/// 评分那一刻才换算（与改动前一致，见 [`days_elapsed`]）。
-pub fn plan_session(
-    due: Vec<(ApiCard, Option<f64>)>,
-    new: Vec<ApiCard>,
-    seed: u32,
-    new_limit: u32,
-) -> Vec<PlannedCard> {
-    let take = new_limit.min(new.len() as u32);
-    let mut cards: Vec<PlannedCard> = Vec::with_capacity(due.len() + take as usize);
-
-    // 到期卡：Fisher–Yates 整体洗牌
-    let due_order = random_indices(due.len() as u32, seed);
-    for &i in due_order.iter() {
-        let idx = i as usize;
-        // random_indices 保证返回 0..len 的排列，越界属实现错误，跳过而非 panic
-        if let Some((card, last_ms)) = due.get(idx) {
-            cards.push(PlannedCard {
-                source: CardSource::Due,
-                index: i,
-                state: match (card.stability, card.difficulty) {
-                    (Some(stability), Some(difficulty)) => Some(CardState {
-                        stability,
-                        difficulty,
-                    }),
-                    // 理论上不会发生：到期卡一定带记忆状态。真出现时按新卡处理，
-                    // 比改动前「拼出残缺 JSON 导致引擎报错」更稳健
-                    _ => None,
-                },
-                last_ms: *last_ms,
-                card: card.clone(),
-            });
-        }
+/// 用途：未到期的复习卡按紧迫度排序后直接出题会很机械（永远是「后天、大后天、再大后天」），
+/// 整段洗牌又会让「最该复习的」沉底。折中就是每 10 个一块块内打乱——
+/// 整体仍是紧迫度递减，但局部有随机性。
+pub fn chunk_shuffle(items: &mut [usize], chunk: usize, seed: u32) {
+    if chunk < 2 || items.len() < 2 {
+        return;
     }
+    let mut start = 0usize;
+    let mut salt = 0u32;
+    while start < items.len() {
+        let end = (start + chunk).min(items.len());
+        // 每块换一个种子：同一块内可复现，不同块互不相同
+        let order = random_indices((end - start) as u32, seed.wrapping_add(salt));
+        let slice: Vec<usize> = items[start..end].to_vec();
+        for (k, &pos) in order.iter().enumerate() {
+            let p = pos as usize;
+            if p < slice.len() {
+                items[start + k] = slice[p];
+            }
+        }
+        start = end;
+        salt = salt.wrapping_add(0x9E37_79B9);
+    }
+}
 
-    // 新词：无放回随机抽 take 个
-    let new_order = random_sample(new.len() as u32, take, seed ^ 0x9E37_79B9);
+/// 编排今日队列。
+///
+/// 结构（从前往后）：
+/// 1. **新词**：无放回随机抽 `new_limit` 个（随机而不是按词表顺序，避免每次刷新都从同一头开始）
+/// 2. **抽查**：从 `probes`（服务端按 `due_at` **倒序**给的候选）里取，跳过 `probed_ids` 里刚抽过的
+/// 3. **复习区**：其余已学词，`due_at <= now` 的按紧迫度严格排序（最旧的先），
+///    未到期的每 `CHUNK_SIZE` 个一块、块内打乱
+///
+/// `queue` 需按 `due_at` 升序给出（服务端 `ORDER BY due_at ASC` 保证）；
+/// 纯计算层不再排序，只做切分与打乱，避免两处排序口径不一致。
+pub fn plan_day(
+    queue: Vec<QueueInput>,
+    new: Vec<ApiCard>,
+    probes: Vec<ApiCard>,
+    opts: &PlanOptions,
+    seed: u32,
+) -> DayPlan {
+    let mut cards: Vec<PlannedCard> = Vec::new();
+
+    // ---- 1. 每日新词：无放回随机抽 ----
+    let new_take = opts.new_limit.min(new.len() as u32);
+    let new_order = random_sample(new.len() as u32, new_take, seed ^ 0x9E37_79B9);
+    let mut used_ids: HashSet<u32> = HashSet::new();
     for &i in new_order.iter() {
         let idx = i as usize;
         if let Some(card) = new.get(idx) {
+            used_ids.insert(card.id);
             cards.push(PlannedCard {
                 source: CardSource::New,
                 index: i,
                 state: None,
                 last_ms: None,
+                due_ms: None,
                 card: card.clone(),
             });
         }
     }
 
-    cards
-}
-
-/// 把接口返回的卡片转成计划输入：时间串 → epoch 毫秒
-/// （`last_review_at` 优先，缺失时回退 `due_at`，与原 JS 一致）
-fn to_due_inputs(cards: Vec<ApiCard>) -> Vec<(ApiCard, Option<f64>)> {
-    cards
-        .into_iter()
-        .map(|card| {
-            let last_ms = card
+    // ---- 2. 每日抽查：到期最远且最近没抽过的 ----
+    // 候选已按 due_at 倒序给出，这里顺序取前 probe_limit 个
+    let mut probe_ids: HashSet<u32> = HashSet::new();
+    for card in probes.iter() {
+        if cards.len() - new_take as usize >= opts.probe_limit as usize {
+            break;
+        }
+        if opts.probed_ids.contains(&card.id) || used_ids.contains(&card.id) {
+            continue; // 最近抽过：换下一个候选
+        }
+        probe_ids.insert(card.id);
+        used_ids.insert(card.id);
+        cards.push(PlannedCard {
+            source: CardSource::Probe,
+            index: 0,
+            state: match (card.stability, card.difficulty) {
+                (Some(stability), Some(difficulty)) => Some(CardState {
+                    stability,
+                    difficulty,
+                }),
+                _ => None,
+            },
+            last_ms: card
                 .last_review_at
                 .as_deref()
                 .or(card.due_at.as_deref())
-                .and_then(parse_time_ms);
-            (card, last_ms)
-        })
-        .collect()
+                .and_then(parse_time_ms),
+            due_ms: card.due_at.as_deref().and_then(parse_time_ms),
+            card: card.clone(),
+        });
+    }
+    let plan_len = cards.len();
+    let probe_count = plan_len - new_take as usize;
+
+    // ---- 3. 复习区：已过期严格排序 + 未到期梯度乱序 ----
+    let mut overdue: Vec<usize> = Vec::new();
+    let mut upcoming: Vec<usize> = Vec::new();
+    for (i, item) in queue.iter().enumerate() {
+        if probe_ids.contains(&item.card.id) {
+            continue; // 今天已经抽查过它了，不再在复习区出现
+        }
+        match item.due_ms {
+            Some(due) if due <= opts.now_ms => overdue.push(i),
+            _ => upcoming.push(i), // 未到期（或时间缺失）的按未到期处理
+        }
+    }
+
+    // 未到期部分：每 CHUNK_SIZE 个一块、块内打乱
+    chunk_shuffle(&mut upcoming, CHUNK_SIZE, seed ^ 0x85EB_CA6B);
+
+    for &i in overdue.iter().chain(upcoming.iter()) {
+        if let Some(item) = queue.get(i) {
+            cards.push(PlannedCard {
+                source: CardSource::Due,
+                index: i as u32,
+                state: match (item.card.stability, item.card.difficulty) {
+                    (Some(stability), Some(difficulty)) => Some(CardState {
+                        stability,
+                        difficulty,
+                    }),
+                    // 复习区的卡一定带记忆状态；真缺失时按新卡处理，
+                    // 比「拼出残缺 JSON 让引擎报错」稳健
+                    _ => None,
+                },
+                last_ms: item.last_ms,
+                due_ms: item.due_ms,
+                card: item.card.clone(),
+            });
+        }
+    }
+
+    DayPlan {
+        cards,
+        plan_len,
+        new_count: new_take as usize,
+        probe_count,
+    }
 }
 
-/// 把新一批卡片追加到队列尾部（**游标不动**），只返回**新增**的部分。
+/// 复习区追加上一页（**游标不动**）：只做复习区的排序与乱序，不再放新词与抽查。
 ///
-/// 去重规则：跳过 id 已经出现在「待办区」（`existing[cursor..]`，即还没评分的部分）里的卡片。
-/// 游标之前已经评完的卡**不算重复**——它到期后再次被抽到属于正常复习。
-/// 这样即使前端补词请求与提交存在竞态，也不会让同一张卡在待办队列里出现两次。
-pub fn append_plan(
+/// 去重规则与过去一致：跳过 id 已出现在「待办区」（`existing[cursor..]`）里的卡片，
+/// 这样即使前端取数与提交存在竞态，同一张卡也不会在待办队列里出现两次。
+/// 游标之前已评完的卡不算重复——那属于正常的再次复习。
+pub fn append_queue_plan(
     existing: &[PlannedCard],
     cursor: usize,
-    due: Vec<(ApiCard, Option<f64>)>,
-    new: Vec<ApiCard>,
-    new_limit: u32,
+    queue: Vec<QueueInput>,
+    opts: &PlanOptions,
     seed: u32,
 ) -> Vec<PlannedCard> {
-    use std::collections::HashSet;
-
     let mut pending: HashSet<u32> = HashSet::new();
     for card in existing.iter().skip(cursor) {
         pending.insert(card.card.id);
     }
 
-    // insert 返回 false 说明该 id 已在待办区（或本次批次里已经出现过），直接丢弃
-    plan_session(due, new, seed, new_limit)
+    let mut overdue: Vec<usize> = Vec::new();
+    let mut upcoming: Vec<usize> = Vec::new();
+    for (i, item) in queue.iter().enumerate() {
+        match item.due_ms {
+            Some(due) if due <= opts.now_ms => overdue.push(i),
+            _ => upcoming.push(i),
+        }
+    }
+    chunk_shuffle(&mut upcoming, CHUNK_SIZE, seed ^ 0x85EB_CA6B);
+
+    let mut out: Vec<PlannedCard> = Vec::new();
+    for &i in overdue.iter().chain(upcoming.iter()) {
+        let item = match queue.get(i) {
+            Some(item) => item,
+            None => continue,
+        };
+        if !pending.insert(item.card.id) {
+            continue; // 待办区里已经有了
+        }
+        out.push(PlannedCard {
+            source: CardSource::Due,
+            index: i as u32,
+            state: match (item.card.stability, item.card.difficulty) {
+                (Some(stability), Some(difficulty)) => Some(CardState {
+                    stability,
+                    difficulty,
+                }),
+                _ => None,
+            },
+            last_ms: item.last_ms,
+            due_ms: item.due_ms,
+            card: item.card.clone(),
+        });
+    }
+    out
+}
+
+/// 把接口返回的卡片转成队列输入：时间串 → epoch 毫秒
+/// （`last_ms` 取 `last_review_at`，缺失时回退 `due_at`，与原 JS 一致）
+pub fn to_queue_inputs(cards: Vec<ApiCard>) -> Vec<QueueInput> {
+    cards
         .into_iter()
-        .filter(|card| pending.insert(card.card.id))
+        .map(|card| {
+            let due_ms = card.due_at.as_deref().and_then(parse_time_ms);
+            let last_ms = card
+                .last_review_at
+                .as_deref()
+                .and_then(parse_time_ms)
+                .or(due_ms);
+            QueueInput {
+                card,
+                last_ms,
+                due_ms,
+            }
+        })
         .collect()
 }
 
@@ -323,6 +509,9 @@ pub fn progress_percent(done: u32, total: u32) -> u32 {
 ///
 /// 新词（无记忆状态）只给 `status = "new"`；到期卡给出难度、稳定度、复习次数、
 /// 距上次天数，并用 FSRS 可提取率算「预计记住」。
+///
+/// 抽查卡给 `status = "probe"`：它同样带上**旧的**难度/稳定度/复习次数，
+/// 但界面上标成「抽查」而不是「已到期」，让人看得出这个词为什么反常地提前出现。
 fn card_meta(card: &PlannedCard, now_ms: f64) -> CardMetaOut {
     let state = match card.state {
         None => {
@@ -338,7 +527,11 @@ fn card_meta(card: &PlannedCard, now_ms: f64) -> CardMetaOut {
         None => 0,
     };
     CardMetaOut {
-        status: "due",
+        status: if card.source == CardSource::Probe {
+            "probe"
+        } else {
+            "due"
+        },
         difficulty: Some(state.difficulty),
         stability: Some(state.stability),
         reps: card.card.reps,
@@ -357,6 +550,9 @@ struct SubmitPayload {
     stability: f32,
     difficulty: f32,
     interval_days: f32,
+    /// 是否为每日抽查卡：后端记进 `review_logs.is_probe`，
+    /// 供日后做 FSRS 参数优化时排除这批「间隔被压缩」的记录
+    is_probe: bool,
 }
 
 /// 卡片的记忆元信息（界面右上角展示，与参考产品的「难度/稳定性/预计记住」对应）
@@ -470,28 +666,53 @@ pub struct ReviewSession {
     cards: Vec<PlannedCard>,
     cursor: usize,
     desired_retention: f32,
+    /// 计划区长度（新词 + 抽查）；`done() >= plan_len` 就说明进入复习阶段了
+    plan_len: usize,
+    /// 今日计划里实际放了几个新词
+    new_count: usize,
+    /// 今日计划里实际放了几个抽查
+    probe_count: usize,
+}
+
+/// `plan_json()` 的输出结构
+#[derive(Debug, Serialize)]
+struct PlanSummary {
+    new_target: usize,
+    probe_target: usize,
+    plan_len: usize,
+}
+
+/// 解析今日计划参数；空串按「没有新词、没有抽查」处理（只复习）
+fn parse_plan_options(json: &str) -> Result<PlanOptions, String> {
+    let text = json.trim();
+    if text.is_empty() {
+        return Ok(PlanOptions::default());
+    }
+    serde_json::from_str::<PlanOptions>(text).map_err(|e| format!("解析今日计划参数失败: {e}"))
 }
 
 /// 纯计算实现：不参与 wasm 导出，错误类型是 `String`，可在宿主上直接单元测试。
 impl ReviewSession {
     /// 由已解析的卡片建立会话（纯计算，不涉及 JSON 与时间字符串）。
     ///
-    /// `due` 为 `(到期卡, 上次复习时间 epoch 毫秒)` 的列表。
+    /// `opts.new_limit` / `opts.probe_limit` 就是本次要放几个，**不做任何兜底**：
+    /// JS 会把「今天还剩多少配额」原样传进来，配额用完就传 0（这一天不再有新词）。
+    /// 参数缺失或空 JSON 时两者都是 0，等价于「只复习」。
     pub fn build(
-        due: Vec<(ApiCard, Option<f64>)>,
+        queue: Vec<QueueInput>,
         new: Vec<ApiCard>,
-        new_limit: u32,
+        probes: Vec<ApiCard>,
+        opts: PlanOptions,
         seed: u32,
     ) -> ReviewSession {
-        let limit = if new_limit == 0 {
-            DEFAULT_NEW_BATCH
-        } else {
-            new_limit
-        };
+        let plan = plan_day(queue, new, probes, &opts, seed);
         ReviewSession {
-            cards: plan_session(due, new, seed, limit),
+            cards: plan.cards,
             cursor: 0,
             desired_retention: DESIRED_RETENTION,
+            plan_len: plan.plan_len,
+            new_count: plan.new_count,
+            probe_count: plan.probe_count,
         }
     }
 
@@ -512,7 +733,15 @@ impl ReviewSession {
             None => 0, // 新词
         };
 
-        let states = compute_next_states(card.state, self.desired_retention, days)
+        // 抽查卡按**新卡**重算：丢掉原来的 stability/difficulty，天数按 0 算。
+        // 这是「重新体检」——它的间隔会被压缩回几天，从而很快回来重新标定。
+        let (state, days) = if card.source == CardSource::Probe {
+            (None, 0)
+        } else {
+            (card.state, days)
+        };
+
+        let states = compute_next_states(state, self.desired_retention, days)
             .map_err(|e| format!("FSRS 计算失败: {e}"))?;
         let chosen = pick_branch(states, rating)
             .ok_or_else(|| format!("无对应的评分分支: {rating}"))?;
@@ -523,6 +752,7 @@ impl ReviewSession {
             stability: chosen.memory.stability,
             difficulty: chosen.memory.difficulty,
             interval_days: chosen.interval_days,
+            is_probe: card.source == CardSource::Probe,
         };
 
         // 计算成功后才推进游标
@@ -540,62 +770,80 @@ fn js_err(msg: impl Into<String>) -> JsValue {
 
 #[wasm_bindgen]
 impl ReviewSession {
-    /// 建立会话：内部取一次系统随机种子。
+    /// 建立今日会话：内部取一次系统随机种子。
     ///
-    /// - `due_json` / `new_json`：`GET /api/reviews/due`、`GET /api/reviews/new` 的响应体原文
-    /// - `new_limit`：本次抽取的新词批量（传 0 表示使用默认值 20）；**不是每日上限**
+    /// - `queue_json`：`GET /api/reviews/queue` 的响应体原文（**整库按紧迫度升序**，含未到期）
+    /// - `new_json`：`GET /api/reviews/new` 的响应体原文（未学词候选）
+    /// - `probe_json`：`GET /api/reviews/probes` 的响应体原文（**到期最远**的已学词候选）
+    /// - `plan_json`：今日计划参数，形如
+    ///   `{"new_limit":5,"probe_limit":5,"probed_ids":[12,34],"now_ms":1757000000000}`
+    ///   （两个 limit 是**今天还剩多少配额**，由 JS 从 localStorage 里的今日进度算出来）
     #[wasm_bindgen(constructor)]
-    pub fn new(due_json: &str, new_json: &str, new_limit: u32) -> Result<ReviewSession, JsValue> {
+    pub fn new(
+        queue_json: &str,
+        new_json: &str,
+        probe_json: &str,
+        plan_json: &str,
+    ) -> Result<ReviewSession, JsValue> {
         let seed = random_seed().map_err(|e| js_err(format!("获取随机种子失败: {e:?}")))?;
-        Self::with_seed(due_json, new_json, new_limit, seed)
+        Self::with_seed(queue_json, new_json, probe_json, plan_json, seed)
     }
 
     /// 建立会话（显式种子）：便于复现与测试。
     #[wasm_bindgen]
     pub fn with_seed(
-        due_json: &str,
+        queue_json: &str,
         new_json: &str,
-        new_limit: u32,
+        probe_json: &str,
+        plan_json: &str,
         seed: u32,
     ) -> Result<ReviewSession, JsValue> {
-        let due_cards = parse_items(due_json).map_err(js_err)?;
+        let queue = to_queue_inputs(parse_items(queue_json).map_err(js_err)?);
         let new_cards = parse_items(new_json).map_err(js_err)?;
-        let due = to_due_inputs(due_cards);
+        let probe_cards = parse_items(probe_json).map_err(js_err)?;
+        let opts = parse_plan_options(plan_json).map_err(js_err)?;
 
-        Ok(Self::build(due, new_cards, new_limit, seed))
+        Ok(Self::build(queue, new_cards, probe_cards, opts, seed))
     }
 
-    /// 追加一批卡片到队列尾部（**游标不动**），返回实际追加的数量。
+    /// 追加复习区的下一批（**游标不动**），返回实际追加的数量。
     ///
-    /// 用于「不限制每日新词、连续抽取」：队列走完后前端再取一批交进来即可。
-    /// 返回 0 表示这批没有可追加的卡片（词库已无未学词）。
-    pub fn append(&mut self, due_json: &str, new_json: &str, new_limit: u32) -> Result<u32, JsValue> {
+    /// 队列走完后前端再取一页交进来即可（未到期的卡也允许提前复习）。
+    /// 只追加复习区：新词与抽查受每日配额限制，不会因为翻页而变多。
+    /// 返回 0 表示这一页没有可追加的卡片（已到词库末尾）。
+    pub fn append(&mut self, queue_json: &str, plan_json: &str) -> Result<u32, JsValue> {
         let seed = random_seed().map_err(|e| js_err(format!("获取随机种子失败: {e:?}")))?;
-        self.append_with_seed(due_json, new_json, new_limit, seed)
+        self.append_with_seed(queue_json, plan_json, seed)
     }
 
-    /// 追加一批卡片（显式种子）：便于复现与单元测试。
+    /// 追加复习区的下一批（显式种子）：便于复现与单元测试。
     #[wasm_bindgen]
     pub fn append_with_seed(
         &mut self,
-        due_json: &str,
-        new_json: &str,
-        new_limit: u32,
+        queue_json: &str,
+        plan_json: &str,
         seed: u32,
     ) -> Result<u32, JsValue> {
-        let due_cards = parse_items(due_json).map_err(js_err)?;
-        let new_cards = parse_items(new_json).map_err(js_err)?;
-        let due = to_due_inputs(due_cards);
+        let queue = to_queue_inputs(parse_items(queue_json).map_err(js_err)?);
+        let opts = parse_plan_options(plan_json).map_err(js_err)?;
 
-        let limit = if new_limit == 0 {
-            DEFAULT_NEW_BATCH
-        } else {
-            new_limit
-        };
-        let added = append_plan(&self.cards, self.cursor, due, new_cards, limit, seed);
+        let added = append_queue_plan(&self.cards, self.cursor, queue, &opts, seed);
         let count = added.len() as u32;
         self.cards.extend(added);
         Ok(count)
+    }
+
+    /// 今日计划的规模：`{"new_target":5,"probe_target":5,"plan_len":10}`
+    ///
+    /// JS 用它渲染左下角的计划进度，并判断「计划区走完了没有」（`done() >= plan_len`）。
+    /// `*_target` 是**实际放进队列的数量**，词库不够时会小于每日上限。
+    pub fn plan_json(&self) -> String {
+        let plan = PlanSummary {
+            new_target: self.new_count,
+            probe_target: self.probe_count,
+            plan_len: self.plan_len,
+        };
+        serde_json::to_string(&plan).unwrap_or_else(|_| "{}".to_string())
     }
 
     /// 队列总张数
@@ -685,74 +933,235 @@ mod tests {
         }
     }
 
-    fn json_of(cards: &[ApiCard]) -> String {
-        serde_json::to_string(cards).unwrap()
+    /// 已学词（复习区 / 抽查候选共用）：带记忆状态与到期时间（毫秒直接给）
+    fn learned(id: u32, word: &str, stability: f32, difficulty: f32, due_ms: f64) -> QueueInput {
+        QueueInput {
+            card: due_card(id, word, stability, difficulty),
+            // 上次复习时间随便给一个过去的值（本组测试只关心排序与编排）
+            last_ms: Some(due_ms - MS_PER_DAY),
+            due_ms: Some(due_ms),
+        }
     }
 
-    /// 构造会话：时间以毫秒直接给出（宿主环境无需 ISO 解析）
-    fn session(due: &[ApiCard], times: &[Option<f64>], new: &[ApiCard], seed: u32) -> ReviewSession {
-        let due = due.iter().cloned().zip(times.iter().copied()).collect();
-        ReviewSession::build(due, new.to_vec(), 5, seed)
+    /// 今日计划参数
+    fn plan_opts(new_limit: u32, probe_limit: u32, now_ms: f64) -> PlanOptions {
+        PlanOptions {
+            new_limit,
+            probe_limit,
+            probed_ids: Vec::new(),
+            now_ms,
+        }
+    }
+
+    /// 构造会话：`now` 固定为第 10 天，计划为「5 个新词 + 5 个抽查」
+    fn session(
+        queue: Vec<QueueInput>,
+        new: &[ApiCard],
+        probes: &[ApiCard],
+        seed: u32,
+    ) -> ReviewSession {
+        ReviewSession::build(
+            queue,
+            new.to_vec(),
+            probes.to_vec(),
+            plan_opts(5, 5, 10.0 * MS_PER_DAY),
+            seed,
+        )
+    }
+
+    // ---------- 今日编排：新词 → 抽查 → 复习区 ----------
+
+    #[test]
+    fn plan_puts_new_then_probe_then_review() {
+        // 复习区给 3 张已到期的卡（第 5 天到期，now = 第 10 天）
+        let queue: Vec<QueueInput> = (1..=3)
+            .map(|i| learned(i, "d", 1.0, 5.0, 5.0 * MS_PER_DAY))
+            .collect();
+        let new: Vec<ApiCard> = (10..15).map(|i| card(i, "n")).collect();
+        let probes: Vec<ApiCard> = (20..23).map(|i| due_card(i, "p", 8.0, 3.0)).collect();
+
+        let plan = plan_day(queue, new, probes, &plan_opts(5, 5, 10.0 * MS_PER_DAY), 42);
+
+        // 新词 5 个（不足则全取）+ 抽查 3 个（候选只有 3 个）+ 复习区 3 张
+        assert_eq!(plan.new_count, 5);
+        assert_eq!(plan.probe_count, 3);
+        assert_eq!(plan.plan_len, 8, "计划区 = 新词 + 抽查");
+        assert_eq!(plan.cards.len(), 11);
+
+        let sources: Vec<CardSource> = plan.cards.iter().map(|c| c.source).collect();
+        assert!(sources[..5].iter().all(|s| *s == CardSource::New), "最前面是新词");
+        assert!(sources[5..8].iter().all(|s| *s == CardSource::Probe), "接着是抽查");
+        assert!(sources[8..].iter().all(|s| *s == CardSource::Due), "最后是复习区");
     }
 
     #[test]
-    fn plan_puts_due_before_new_and_respects_limit() {
-        let due = vec![
-            (due_card(1, "a", 1.0, 5.0), Some(0.0)),
-            (due_card(2, "b", 2.0, 5.0), Some(0.0)),
-        ];
+    fn plan_respects_remaining_quota() {
+        // 今天已经学过 3 个新词、2 个抽查 → 只剩 2 个新词与 3 个抽查的额度
         let new: Vec<ApiCard> = (10..20).map(|i| card(i, "n")).collect();
-        let planned = plan_session(due, new, 42, 5);
+        let probes: Vec<ApiCard> = (20..30).map(|i| due_card(i, "p", 8.0, 3.0)).collect();
+        let plan = plan_day(
+            Vec::new(),
+            new,
+            probes,
+            &plan_opts(2, 3, 10.0 * MS_PER_DAY),
+            7,
+        );
+        assert_eq!(plan.new_count, 2);
+        assert_eq!(plan.probe_count, 3);
+        assert_eq!(plan.plan_len, 5);
+    }
 
-        assert_eq!(planned.len(), 7, "2 张到期 + 5 张新词");
-        assert_eq!(planned[0].source, CardSource::Due);
-        assert_eq!(planned[1].source, CardSource::Due);
-        assert!(planned[2..].iter().all(|c| c.source == CardSource::New));
+    #[test]
+    fn plan_skips_recently_probed_words() {
+        // 候选按「到期最远」倒序给出：[1,2,3,4]；1、2 最近抽过 → 应换成 3、4
+        let probes: Vec<ApiCard> = (1..=4).map(|i| due_card(i, "p", 8.0, 3.0)).collect();
+        let mut opts = plan_opts(0, 2, 10.0 * MS_PER_DAY);
+        opts.probed_ids = vec![1, 2];
+
+        let plan = plan_day(Vec::new(), Vec::new(), probes, &opts, 1);
+        assert_eq!(plan.probe_count, 2);
+        let ids: Vec<u32> = plan.cards.iter().map(|c| c.card.id).collect();
+        assert_eq!(ids, vec![3, 4], "刚抽过的词要被跳过");
+    }
+
+    #[test]
+    fn plan_probe_target_capped_by_available_candidates() {
+        let probes: Vec<ApiCard> = vec![due_card(1, "p", 8.0, 3.0)];
+        let plan = plan_day(Vec::new(), Vec::new(), probes, &plan_opts(0, 5, 0.0), 1);
+        assert_eq!(plan.probe_count, 1, "候选不够时只放现有的");
+    }
+
+    #[test]
+    fn plan_probed_card_is_not_repeated_in_review_region() {
+        // 抽查卡同时也是已学词（复习区里本来有它）→ 不应出现两次
+        let queue = vec![learned(1, "p", 8.0, 3.0, 30.0 * MS_PER_DAY)];
+        let probes = vec![due_card(1, "p", 8.0, 3.0)];
+        let plan = plan_day(
+            queue,
+            Vec::new(),
+            probes,
+            &plan_opts(0, 5, 10.0 * MS_PER_DAY),
+            1,
+        );
+        assert_eq!(plan.cards.len(), 1, "同一张卡只出现一次");
+        assert_eq!(plan.cards[0].source, CardSource::Probe);
+    }
+
+    #[test]
+    fn plan_overdue_keeps_urgency_order_strictly() {
+        // 已过期（第 1、3、5 天到期，now = 第 10 天）应严格按到期时间升序，不打乱
+        let queue = vec![
+            learned(1, "a", 1.0, 5.0, 1.0 * MS_PER_DAY),
+            learned(2, "b", 1.0, 5.0, 3.0 * MS_PER_DAY),
+            learned(3, "c", 1.0, 5.0, 5.0 * MS_PER_DAY),
+        ];
+        let plan = plan_day(
+            queue,
+            Vec::new(),
+            Vec::new(),
+            &plan_opts(0, 0, 10.0 * MS_PER_DAY),
+            99,
+        );
+        let ids: Vec<u32> = plan.cards.iter().map(|c| c.card.id).collect();
+        assert_eq!(ids, vec![1, 2, 3], "已过期的最旧优先，且顺序不受种子影响");
+    }
+
+    #[test]
+    fn plan_upcoming_is_chunk_shuffled() {
+        // 25 张未到期：块内打乱、块间顺序不变
+        let queue: Vec<QueueInput> = (1..=25)
+            .map(|i| learned(i as u32, "u", 1.0, 5.0, (100 + i) as f64 * MS_PER_DAY))
+            .collect();
+        let plan = plan_day(
+            queue.clone(),
+            Vec::new(),
+            Vec::new(),
+            &plan_opts(0, 0, 10.0 * MS_PER_DAY),
+            20260913,
+        );
+        let ids: Vec<u32> = plan.cards.iter().map(|c| c.card.id).collect();
+        assert_eq!(ids.len(), 25, "不增不减");
+
+        // 每一块（10 个）内必须是同一批 id，只是顺序变了
+        let mut sorted = ids.clone();
+        sorted.sort_unstable();
+        assert_eq!(sorted, (1..=25).collect::<Vec<u32>>());
+        let mut block_sorted: Vec<u32> = ids[0..10].to_vec();
+        block_sorted.sort_unstable();
+        assert_eq!(block_sorted, (1..=10).collect::<Vec<u32>>(), "第一块是 1~10");
+        let mut block_sorted: Vec<u32> = ids[20..25].to_vec();
+        block_sorted.sort_unstable();
+        assert_eq!(block_sorted, (21..=25).collect::<Vec<u32>>(), "最后一块是 21~25");
+        assert_ne!(ids[0..10].to_vec(), (1..=10).collect::<Vec<u32>>(), "块内应被打乱");
+    }
+
+    #[test]
+    fn chunk_shuffle_is_noop_for_small_input() {
+        let mut one = vec![7usize];
+        chunk_shuffle(&mut one, 10, 1);
+        assert_eq!(one, vec![7]);
+
+        let mut two = vec![1usize, 2];
+        chunk_shuffle(&mut two, 1, 1); // 块大小 < 2 → 不动
+        assert_eq!(two, vec![1, 2]);
     }
 
     #[test]
     fn plan_is_deterministic_for_same_seed() {
         let mk = || {
-            let due = vec![
-                (due_card(1, "a", 1.0, 5.0), Some(0.0)),
-                (due_card(2, "b", 1.0, 5.0), Some(0.0)),
-                (due_card(3, "c", 1.0, 5.0), Some(0.0)),
-            ];
-            let new: Vec<ApiCard> = (10..30).map(|i| card(i, "n")).collect();
-            plan_session(due, new, 20260913, 5)
+            let queue: Vec<QueueInput> = (1..=20)
+                .map(|i| learned(i, "u", 1.0, 5.0, (20 + i) as f64 * MS_PER_DAY))
+                .collect();
+            let new: Vec<ApiCard> = (100..120).map(|i| card(i, "n")).collect();
+            let probes: Vec<ApiCard> = (200..220).map(|i| due_card(i, "p", 8.0, 3.0)).collect();
+            plan_day(queue, new, probes, &plan_opts(5, 5, 10.0 * MS_PER_DAY), 20260913)
         };
-        let a = mk();
-        let b = mk();
-        let ida: Vec<u32> = a.iter().map(|c| c.card.id).collect();
-        let idb: Vec<u32> = b.iter().map(|c| c.card.id).collect();
-        assert_eq!(ida, idb, "同一种子必须得到同一队列");
+        let a: Vec<u32> = mk().cards.iter().map(|c| c.card.id).collect();
+        let b: Vec<u32> = mk().cards.iter().map(|c| c.card.id).collect();
+        assert_eq!(a, b, "同一种子必须得到同一队列");
     }
 
     #[test]
     fn plan_due_is_permutation_of_input() {
-        let due: Vec<(ApiCard, Option<f64>)> = (0..8)
-            .map(|i| (due_card(i, "w", 1.0, 5.0), Some(0.0)))
+        let queue: Vec<QueueInput> = (0..8)
+            .map(|i| learned(i, "w", 1.0, 5.0, 3.0 * MS_PER_DAY))
             .collect();
-        let planned = plan_session(due, Vec::new(), 7, 5);
-        let mut ids: Vec<u32> = planned.iter().map(|c| c.card.id).collect();
+        let plan = plan_day(
+            queue,
+            Vec::new(),
+            Vec::new(),
+            &plan_opts(0, 0, 10.0 * MS_PER_DAY),
+            7,
+        );
+        let mut ids: Vec<u32> = plan.cards.iter().map(|c| c.card.id).collect();
         ids.sort_unstable();
-        assert_eq!(ids, (0..8).collect::<Vec<u32>>(), "洗牌不应增删卡片");
+        assert_eq!(ids, (0..8).collect::<Vec<u32>>(), "编排不应增删卡片");
     }
 
     #[test]
     fn plan_new_limit_capped_by_available() {
         let new: Vec<ApiCard> = (0..3).map(|i| card(i, "n")).collect();
-        let planned = plan_session(Vec::new(), new, 1, 5);
-        assert_eq!(planned.len(), 3, "新词不足 5 个时全部取用");
+        let plan = plan_day(Vec::new(), new, Vec::new(), &plan_opts(5, 0, 0.0), 1);
+        assert_eq!(plan.new_count, 3, "新词不足时全部取用");
     }
 
     #[test]
     fn plan_falls_back_to_new_card_when_state_missing() {
-        // 到期卡缺记忆状态时按新卡处理，而不是让引擎报错
-        let due = vec![(card(1, "broken"), Some(0.0))];
-        let planned = plan_session(due, Vec::new(), 1, 5);
-        assert_eq!(planned.len(), 1);
-        assert!(planned[0].state.is_none());
+        // 复习区的卡缺记忆状态时按新卡处理，而不是让引擎报错
+        let queue = vec![QueueInput {
+            card: card(1, "broken"),
+            last_ms: Some(0.0),
+            due_ms: Some(0.0),
+        }];
+        let plan = plan_day(
+            queue,
+            Vec::new(),
+            Vec::new(),
+            &plan_opts(0, 0, 10.0 * MS_PER_DAY),
+            1,
+        );
+        assert_eq!(plan.cards.len(), 1);
+        assert!(plan.cards[0].state.is_none());
     }
 
     #[test]
@@ -796,9 +1205,9 @@ mod tests {
 
     #[test]
     fn session_rates_in_order_and_returns_submit_payload() {
-        let due = vec![due_card(1, "ability", 0.2, 9.0)];
+        let queue = vec![learned(1, "ability", 0.2, 9.0, 9.0 * MS_PER_DAY)];
         let new = vec![card(2, "achieve")];
-        let mut s = session(&due, &[Some(0.0)], &new, 12345);
+        let mut s = session(queue, &new, &[], 12345);
 
         assert_eq!(s.total(), 2);
         assert_eq!(s.done(), 0);
@@ -827,7 +1236,7 @@ mod tests {
     #[test]
     fn session_rejects_invalid_rating() {
         let new = vec![card(1, "w")];
-        let mut s = session(&[], &[], &new, 1);
+        let mut s = session(Vec::new(), &new, &[], 1);
         assert!(s.try_rate(0, 0.0).is_err());
         assert!(s.try_rate(5, 0.0).is_err());
         assert_eq!(s.done(), 0, "非法评分不应推进游标");
@@ -835,20 +1244,17 @@ mod tests {
 
     #[test]
     fn session_accepts_api_envelope_and_empty_input() {
-        let due = r#"{"code":200,"data":{"items":[]},"message":"获取成功"}"#;
+        let queue = r#"{"code":200,"data":{"items":[]},"message":"获取成功"}"#;
         let new = r#"{"code":200,"data":{"items":[{"id":9,"word":"decide","phonetic":"/x/","meaning":"v. 决定","example":"e"}]},"message":"ok"}"#;
         // 走 parse_items 的信封路径，再用 build 建会话（避开宿主上不可用的 JsValue）
         let s = ReviewSession::build(
-            parse_items(due)
-                .unwrap()
-                .into_iter()
-                .map(|c| (c, None))
-                .collect(),
+            to_queue_inputs(parse_items(queue).unwrap()),
             parse_items(new).unwrap(),
-            0,
-            5,
+            Vec::new(),
+            plan_opts(5, 0, 0.0),
+            7,
         );
-        assert_eq!(s.total(), 1, "默认批量 20，但只有一个新词");
+        assert_eq!(s.total(), 1, "只有一个新词候选");
         assert_eq!(s.current_word_id(), 9);
         assert!(s.current_json(0.0).contains("decide"));
         assert!(s.current_json(0.0).contains(r#""source":"new""#));
@@ -858,17 +1264,126 @@ mod tests {
     }
 
     #[test]
+    fn session_reports_plan_targets() {
+        let new: Vec<ApiCard> = (10..20).map(|i| card(i, "n")).collect();
+        let probes: Vec<ApiCard> = (20..30).map(|i| due_card(i, "p", 8.0, 3.0)).collect();
+        let s = ReviewSession::build(
+            Vec::new(),
+            new,
+            probes,
+            plan_opts(5, 5, 10.0 * MS_PER_DAY),
+            3,
+        );
+        let v: serde_json::Value = serde_json::from_str(&s.plan_json()).unwrap();
+        assert_eq!(v["new_target"], 5);
+        assert_eq!(v["probe_target"], 5);
+        assert_eq!(v["plan_len"], 10);
+        assert_eq!(s.total(), 10, "没有复习区时队列就是计划区");
+    }
+
+    // ---------- 抽查：按新卡重置 ----------
+
+    #[test]
+    fn probe_rating_resets_memory_state() {
+        // 一张已经稳定到 60 天的卡：正常复习会得到很长的间隔，
+        // 但被抽查时应按新卡重算（Good → 初始稳定度 2.3065 天）
+        let matured = 60.0f32;
+        let queue = vec![learned(1, "mature", matured, 3.0, 100.0 * MS_PER_DAY)];
+        let probes = vec![due_card(1, "mature", matured, 3.0)];
+        let mut s = ReviewSession::build(
+            queue,
+            Vec::new(),
+            probes,
+            plan_opts(0, 5, 10.0 * MS_PER_DAY),
+            5,
+        );
+        assert_eq!(s.cards[0].source, CardSource::Probe);
+
+        let payload = s.try_rate(3, 10.0 * MS_PER_DAY).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        let interval = v["interval_days"].as_f64().unwrap();
+        assert!(
+            (interval - 2.3065).abs() < 1e-3,
+            "抽查应按新卡重算（Good → 2.3065 天），得到 {interval}"
+        );
+        assert_eq!(v["is_probe"], true, "抽查必须在请求体里标记，供后端记进日志");
+    }
+
+    #[test]
+    fn normal_review_keeps_memory_state() {
+        // 同一张卡走正常复习：间隔应远大于新卡（证明上面那条不是巧合）
+        let matured = 60.0f32;
+        let queue = vec![learned(1, "mature", matured, 3.0, 5.0 * MS_PER_DAY)];
+        let mut s = ReviewSession::build(
+            queue,
+            Vec::new(),
+            Vec::new(),
+            plan_opts(0, 0, 10.0 * MS_PER_DAY),
+            5,
+        );
+        let payload = s.try_rate(3, 10.0 * MS_PER_DAY).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        assert!(
+            v["interval_days"].as_f64().unwrap() > 30.0,
+            "稳定到 60 天的卡正常复习应拿到长间隔，得到 {}",
+            v["interval_days"]
+        );
+        assert_eq!(v["is_probe"], false);
+    }
+
+    #[test]
+    fn probe_meta_is_marked_as_probe() {
+        let probes = vec![ApiCard {
+            stability: Some(60.0),
+            difficulty: Some(3.0),
+            reps: Some(9),
+            ..card(1, "mature")
+        }];
+        let s = ReviewSession::build(
+            Vec::new(),
+            Vec::new(),
+            probes,
+            plan_opts(0, 5, 10.0 * MS_PER_DAY),
+            5,
+        );
+        let v: serde_json::Value = serde_json::from_str(&s.current_json(10.0 * MS_PER_DAY)).unwrap();
+        assert_eq!(v["meta"]["status"], "probe", "界面要能看出这是抽查而不是到期");
+        assert_eq!(v["meta"]["reps"], 9, "抽查仍展示原有的复习次数供参考");
+        assert!((v["meta"]["stability"].as_f64().unwrap() - 60.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn parse_plan_options_handles_empty_and_missing() {
+        assert_eq!(parse_plan_options("").unwrap().new_limit, 0);
+        assert_eq!(parse_plan_options("  ").unwrap().probe_limit, 0);
+        let o = parse_plan_options(r#"{"new_limit":3}"#).unwrap();
+        assert_eq!(o.new_limit, 3);
+        assert_eq!(o.probe_limit, 0, "缺失字段按 0 处理");
+        assert!(o.probed_ids.is_empty());
+        assert!(parse_plan_options("{坏JSON").is_err());
+    }
+
+    #[test]
     fn current_json_exposes_senses_parts_and_meta() {
-        // 到期卡：应带上释义块、例句切分与完整记忆元信息
-        let due = vec![due_card(1, "purpose", 2.3, 5.0)];
-        let mut s = session(&due, &[Some(10.0 * MS_PER_DAY)], &[], 1);
-        // 词条文本单独构造（due_card 里没有释义与例句）
+        // 已到期的复习卡：应带上释义块、例句切分与完整记忆元信息
+        let queue = vec![learned(1, "purpose", 2.3, 5.0, 5.0 * MS_PER_DAY)];
+        let mut s = ReviewSession::build(
+            queue,
+            Vec::new(),
+            Vec::new(),
+            plan_opts(0, 0, 10.0 * MS_PER_DAY),
+            1,
+        );
+        // 词条文本单独构造（learned 里没有释义与例句）
         s.cards[0].card.meaning = "n. 目的；意图".to_string();
         s.cards[0].card.example = "The purpose of this meeting is to discuss.".to_string();
         s.cards[0].card.example_translation = "这次会议的目的是讨论。".to_string();
         s.cards[0].card.reps = Some(3);
+        // learned() 把上次复习时间设成「到期前一天」，这里改成「到期前 7 天」，
+        // 于是 now = 第 10 天时正好距上次 2 天（与断言一致）
+        s.cards[0].last_ms = Some(8.0 * MS_PER_DAY);
 
-        let now = 12.0 * MS_PER_DAY; // 距上次 2 天
+        let now = 10.0 * MS_PER_DAY; // 距上次 2 天
         let v: serde_json::Value = serde_json::from_str(&s.current_json(now)).unwrap();
 
         // 没填多释义时，由 meaning 自动拆成一块
@@ -900,7 +1415,7 @@ mod tests {
         // 历史数据把两个义项写在一行：应拆成名词、动词两块
         let mut c = card(1, "benefit");
         c.meaning = "n. 好处；益处 v. 有益于".to_string();
-        let s = session(&[], &[], &[c], 1);
+        let s = session(Vec::new(), &[c], &[], 1);
 
         let v: serde_json::Value = serde_json::from_str(&s.current_json(0.0)).unwrap();
         let senses = v["senses"].as_array().unwrap();
@@ -933,7 +1448,7 @@ mod tests {
                 example_translation: String::new(),
             },
         ]);
-        let s = session(&[], &[], &[c], 1);
+        let s = session(Vec::new(), &[c], &[], 1);
 
         let v: serde_json::Value = serde_json::from_str(&s.current_json(0.0)).unwrap();
         let senses = v["senses"].as_array().unwrap();
@@ -952,7 +1467,7 @@ mod tests {
         let mut c = card(1, "apply");
         c.meaning = "v. 申请；应用".to_string();
         c.senses = Some(vec![ApiSense::default(), ApiSense::default()]);
-        let s = session(&[], &[], &[c], 1);
+        let s = session(Vec::new(), &[c], &[], 1);
 
         let v: serde_json::Value = serde_json::from_str(&s.current_json(0.0)).unwrap();
         let senses = v["senses"].as_array().unwrap();
@@ -1016,7 +1531,7 @@ mod tests {
     fn new_word_uses_zero_days_elapsed() {
         // 新词没有 last_ms，days 一律按 0 处理；新卡 Good 的首个间隔等于初始稳定度 2.3065
         let new = vec![card(1, "w")];
-        let mut s = session(&[], &[], &new, 1);
+        let mut s = session(Vec::new(), &new, &[], 1);
         let payload = s.try_rate(3, 123456789.0).unwrap();
         let v: serde_json::Value = serde_json::from_str(&payload).unwrap();
         let interval = v["interval_days"].as_f64().unwrap();
@@ -1026,12 +1541,22 @@ mod tests {
     #[test]
     fn due_card_uses_elapsed_days_from_last_review() {
         // 只改变 last_ms，其它输入完全相同 → 结果必须变化（证明 last_ms 真的参与了天数换算）
-        let due = vec![due_card(1, "w", 2.3065, 2.118)];
         let now = 30.0 * MS_PER_DAY;
+        let mk = |last_days: f64| {
+            let mut item = learned(1, "w", 2.3065, 2.118, 10.0 * MS_PER_DAY);
+            item.last_ms = Some(last_days * MS_PER_DAY);
+            ReviewSession::build(
+                vec![item],
+                Vec::new(),
+                Vec::new(),
+                plan_opts(0, 0, now),
+                1,
+            )
+        };
         // fresh：1 天前复习过（逾期 29 天）
-        let mut fresh = session(&due, &[Some(1.0 * MS_PER_DAY)], &[], 1);
+        let mut fresh = mk(1.0);
         // overdue：7 天前复习过（逾期 23 天，离现在更近）
-        let mut overdue = session(&due, &[Some(7.0 * MS_PER_DAY)], &[], 1);
+        let mut overdue = mk(7.0);
 
         let a: serde_json::Value = serde_json::from_str(&fresh.try_rate(3, now).unwrap()).unwrap();
         let b: serde_json::Value = serde_json::from_str(&overdue.try_rate(3, now).unwrap()).unwrap();
@@ -1043,81 +1568,121 @@ mod tests {
         assert!(ia > ib, "逾期更久应得到更长间隔：{ia} vs {ib}");
     }
 
-    // ---------- 追加卡片（连续抽词，不限制每日新词） ----------
+    // ---------- 追加复习区（整库往下翻，不限量） ----------
 
-    /// 构造一个会话：待办队列里有 n 张新词
-    fn session_with_new(n: u32, batch: u32) -> ReviewSession {
-        let new: Vec<ApiCard> = (1..=n).map(|i| card(i, "n")).collect();
-        ReviewSession::build(Vec::new(), new, batch, 42)
+    /// 构造一个只有复习区的会话：n 张已到期（第 1 天到期）
+    fn session_with_queue(n: u32) -> ReviewSession {
+        let queue: Vec<QueueInput> = (1..=n)
+            .map(|i| learned(i, "q", 1.0, 5.0, 1.0 * MS_PER_DAY))
+            .collect();
+        ReviewSession::build(
+            queue,
+            Vec::new(),
+            Vec::new(),
+            plan_opts(0, 0, 10.0 * MS_PER_DAY),
+            42,
+        )
     }
 
     #[test]
-    fn append_adds_cards_without_moving_cursor() {
-        let s = session_with_new(3, 3);
+    fn append_adds_queue_cards_without_moving_cursor() {
+        let s = session_with_queue(3);
         assert_eq!(s.total(), 3);
         assert_eq!(s.done(), 0);
 
-        let more: Vec<ApiCard> = (100..110).map(|i| card(i, "m")).collect();
-        let added = append_plan(&s.cards, s.cursor, Vec::new(), more, 5, 7);
-        assert_eq!(added.len(), 5, "应按批量追加 5 张");
+        let more: Vec<QueueInput> = (100..110)
+            .map(|i| learned(i, "m", 1.0, 5.0, 1.0 * MS_PER_DAY))
+            .collect();
+        let added = append_queue_plan(
+            &s.cards,
+            s.cursor,
+            more,
+            &plan_opts(0, 0, 10.0 * MS_PER_DAY),
+            7,
+        );
+        assert_eq!(added.len(), 10, "复习区一页全量追加（不受新词批量限制）");
         assert_eq!(s.done(), 0, "追加不应推进游标");
-        assert_eq!(s.total(), 3, "append_plan 只计算，不改动原队列");
+        assert_eq!(s.total(), 3, "append_queue_plan 只计算，不改动原队列");
     }
 
     #[test]
     fn append_skips_ids_already_pending() {
         // 待办区已有 id=1 → 同一张卡不应被重复追加进待办队列
-        let mut s = session_with_new(1, 1);
+        let mut s = session_with_queue(1);
         assert_eq!(s.total(), 1);
-        let dup = vec![card(1, "n")];
+        let dup: Vec<QueueInput> = vec![learned(1, "q", 1.0, 5.0, 1.0 * MS_PER_DAY)];
         assert!(
-            append_plan(&s.cards, s.cursor, Vec::new(), dup, 5, 7).is_empty(),
+            append_queue_plan(&s.cards, s.cursor, dup, &plan_opts(0, 0, 10.0 * MS_PER_DAY), 7)
+                .is_empty(),
             "待办区已有的卡不能再追加一份"
         );
 
         // 评完之后（越过游标）再抽到同一 id 属于正常复习，应允许追加
-        s.try_rate(3, 0.0).unwrap();
-        let again = append_plan(&s.cards, s.cursor, Vec::new(), vec![card(1, "n")], 5, 7);
-        assert_eq!(again.len(), 1, "已评完的卡到期后再次抽到应允许");
+        s.try_rate(3, 10.0 * MS_PER_DAY).unwrap();
+        let again: Vec<QueueInput> = vec![learned(1, "q", 1.0, 5.0, 1.0 * MS_PER_DAY)];
+        let added = append_queue_plan(
+            &s.cards,
+            s.cursor,
+            again,
+            &plan_opts(0, 0, 10.0 * MS_PER_DAY),
+            7,
+        );
+        assert_eq!(added.len(), 1, "已评完的卡再次抽到应允许");
     }
 
     #[test]
     fn append_dedups_within_batch() {
-        let s = session_with_new(1, 1);
-        let dup = vec![card(9, "x"), card(9, "x")];
+        let s = session_with_queue(1);
+        let dup: Vec<QueueInput> = vec![
+            learned(9, "x", 1.0, 5.0, 1.0 * MS_PER_DAY),
+            learned(9, "x", 1.0, 5.0, 1.0 * MS_PER_DAY),
+        ];
         assert_eq!(
-            append_plan(&s.cards, s.cursor, Vec::new(), dup, 5, 7).len(),
+            append_queue_plan(&s.cards, s.cursor, dup, &plan_opts(0, 0, 10.0 * MS_PER_DAY), 7).len(),
             1,
             "同一批里重复的 id 只保留一张"
         );
     }
 
     #[test]
-    fn append_does_not_limit_due_cards() {
-        // 批量参数只限制新词；到期卡与 plan_session 一致是全量洗牌
-        let s = session_with_new(1, 1);
-        let due: Vec<(ApiCard, Option<f64>)> = (200..208)
-            .map(|i| (due_card(i, "d", 1.0, 5.0), Some(0.0)))
+    fn append_never_adds_new_words_or_probes() {
+        // 每日配额不因为翻页而变多：追加只放复习区
+        let s = session_with_queue(1);
+        let more: Vec<QueueInput> = (200..208)
+            .map(|i| learned(i, "d", 1.0, 5.0, 1.0 * MS_PER_DAY))
             .collect();
-        let added = append_plan(&s.cards, s.cursor, due, Vec::new(), 1, 7);
-        assert_eq!(added.len(), 8, "到期卡应全部追加");
+        let added = append_queue_plan(
+            &s.cards,
+            s.cursor,
+            more,
+            &plan_opts(5, 5, 10.0 * MS_PER_DAY),
+            7,
+        );
+        assert_eq!(added.len(), 8, "复习区全量追加");
+        assert!(added.iter().all(|c| c.source == CardSource::Due));
     }
 
     #[test]
     fn append_is_empty_for_empty_input() {
-        let s = session_with_new(2, 2);
-        assert!(append_plan(&s.cards, s.cursor, Vec::new(), Vec::new(), 5, 7).is_empty());
+        let s = session_with_queue(2);
+        assert!(
+            append_queue_plan(&s.cards, s.cursor, Vec::new(), &plan_opts(0, 0, 10.0 * MS_PER_DAY), 7)
+                .is_empty()
+        );
     }
 
     #[test]
     fn append_is_deterministic_for_same_seed() {
-        let s = session_with_new(1, 1);
-        let more: Vec<ApiCard> = (300..320).map(|i| card(i, "m")).collect();
-        let a: Vec<u32> = append_plan(&s.cards, s.cursor, Vec::new(), more.clone(), 5, 99)
+        let s = session_with_queue(1);
+        let more: Vec<QueueInput> = (300..320)
+            .map(|i| learned(i, "m", 1.0, 5.0, (20 + i) as f64 * MS_PER_DAY))
+            .collect();
+        let opts = plan_opts(0, 0, 10.0 * MS_PER_DAY);
+        let a: Vec<u32> = append_queue_plan(&s.cards, s.cursor, more.clone(), &opts, 99)
             .iter()
             .map(|c| c.card.id)
             .collect();
-        let b: Vec<u32> = append_plan(&s.cards, s.cursor, Vec::new(), more, 5, 99)
+        let b: Vec<u32> = append_queue_plan(&s.cards, s.cursor, more, &opts, 99)
             .iter()
             .map(|c| c.card.id)
             .collect();
@@ -1127,24 +1692,32 @@ mod tests {
     #[test]
     fn append_with_seed_grows_queue_and_keeps_rating() {
         // 走 wasm 边界那条路径（成功路径不碰 JsValue，所以宿主上可以测）
-        let mut s = session_with_new(2, 2);
+        let mut s = session_with_queue(2);
         assert_eq!(s.total(), 2);
 
-        let more: Vec<ApiCard> = (100..110).map(|i| card(i, "m")).collect();
-        let added = s.append_with_seed("[]", &json_of(&more), 5, 3).unwrap();
+        let more: Vec<QueueInput> = (100..105)
+            .map(|i| learned(i, "m", 1.0, 5.0, 1.0 * MS_PER_DAY))
+            .collect();
+        let more_json = serde_json::to_string(
+            &more.iter().map(|m| m.card.clone()).collect::<Vec<ApiCard>>(),
+        )
+        .unwrap();
+        let added = s
+            .append_with_seed(&more_json, r#"{"now_ms":864000000}"#, 3)
+            .unwrap();
         assert_eq!(added, 5);
         assert_eq!(s.total(), 7, "队列应增长到 2 + 5");
 
         // 追加之后评分流程照旧
-        s.try_rate(3, 0.0).unwrap();
+        s.try_rate(3, 10.0 * MS_PER_DAY).unwrap();
         assert_eq!(s.done(), 1);
         assert_eq!(s.progress_percent(), 14); // 1/7 ≈ 14%
     }
 
     #[test]
     fn append_returns_zero_when_nothing_available() {
-        let mut s = session_with_new(1, 1);
-        assert_eq!(s.append_with_seed("[]", "[]", 5, 3).unwrap(), 0);
+        let mut s = session_with_queue(1);
+        assert_eq!(s.append_with_seed("[]", "{}", 3).unwrap(), 0);
         assert_eq!(s.total(), 1);
     }
 }

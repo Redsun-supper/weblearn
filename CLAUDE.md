@@ -19,15 +19,23 @@
 | 部署 | Nginx 反代：`/` → 前端静态文件，`/api/` → `localhost:8080` |
 
 ### 复习引擎（词汇间隔重复）
-- **职责边界（重要）**：`modules/english/english.js` 只做 DOM 渲染 / `fetch` / `localStorage` / 语音；**队列、游标、日期换算、FSRS 计算、进度统计全部在 `engine/`（Rust）里**，JS 不再保存卡片数组。
-- **流程**：取 `GET /api/reviews/due` + `GET /api/reviews/new` 的 **JSON 原文** → `new ReviewSession(dueText, newText, 5)` 在 Rust 内完成「洗牌到期卡 + 抽新词 + 解析时间」→ 渲染时 `current_json()` → 评分时 `rate(rating, Date.now())` 返回**可直接 POST 的请求体** → 后端写 `word_reviews`（due_at = now + 间隔）并记 `review_logs`。
+- **职责边界（重要）**：`modules/english/english.js` 只做 DOM 渲染 / `fetch` / `localStorage` / 语音；**队列编排、游标、日期换算、FSRS 计算、进度统计全部在 `engine/`（Rust）里**，JS 不再保存卡片数组。
+- **每日队列的编排口径（2026-09-13 起）**：一天的开局不是「把所有到期的抓过来」，而是三段拼接（`session.rs::plan_day`）：
+  1. **新词**：每天固定 5 个（无放回随机抽；没有未学词时这段为空）
+  2. **抽查**：每天固定 5 个，从「`due_at` 最远」的已学词里挑，最近 7 天抽过的不再抽。作用是防止只按到期时间出题时**间隔长的词永远轮不到**（长期不露面就是盲区）
+  3. **复习区**：其余已学词按紧迫度 `due_at - now` 升序；**已过期的严格排序**（最旧的先），**未到期的每 10 个一块、块内打乱**（`chunk_shuffle`，梯度乱序）
+- **抽查卡评分时按「新卡」重算**（丢掉原 stability/difficulty，天数按 0 算），等于重新体检：它的间隔会被压缩回几天，从而很快回来重新标定。请求体里带 `is_probe: true`，后端记进 `review_logs.is_probe`（**`stability_before` 仍是库里的真实旧值**，所以「今日新学」统计不会被污染）。日后做 FSRS 参数优化时要排除这批记录。
+- **每日配额记在浏览器 localStorage**（`reviewDailyPlan`：日期 / 新词数 / 抽查数 / 各词的抽查时间）。⚠️ 因为现在**没有登录系统**，服务端只有一份共享词库：若在服务端按「每天 5 个」算，等于全站每天共放 5 个新词，你先学了别人就没得学。代价是换设备/清缓存会重置——等有登录再迁到服务端。
+- **流程**：取 `/api/reviews/queue`（整库紧迫度序，分页）+ `/api/reviews/new`（新词候选）+ `/api/reviews/probes`（到期最远的候选）+ `/api/reviews/stats` 的 **JSON 原文** → `new ReviewSession(queueText, newText, probeText, planJson)`（`planJson` = `{new_limit, probe_limit, probed_ids, now_ms}`，两个 limit 是**今天还剩多少额度**）→ 渲染时 `current_json()` → 评分时 `rate(rating, Date.now())` 返回**可直接 POST 的请求体** → 后端写 `word_reviews`（due_at = now + 间隔）并记 `review_logs`。队列走完后前端按 `offset` 取复习区下一页 → `session.append(queueText, planJson)`（**只追加复习区**，新词与抽查不因翻页变多）。
 - 记忆状态 `{stability, difficulty}` 与 SQLite `word_reviews` 字段一一对应；间隔最短 10 分钟。
-- 随机器：`random_indices(len, seed)` 洗牌复习顺序、`random_sample(len, count, seed)` 抽新词批次、`random_seed()` 取系统种子；由 `session.rs` 内部调用。
-- `days_elapsed = floor((now - last) / 86400000)`（取 `last_review_at`，缺失回退 `due_at`，负值归零），在**评分那一刻**换算；时间串用 `js_sys::Date::parse` 解析（与改动前 `new Date(x).getTime()` 同一解析器）。
+- 随机器：`random_indices(len, seed)` 洗牌、`random_sample(len, count, seed)` 抽新词、`chunk_shuffle(items, 10, seed)` 梯度乱序、`random_seed()` 取系统种子；由 `session.rs` 内部调用。
+- `days_elapsed = floor((now - last) / 86400000)`（取 `last_review_at`，缺失回退 `due_at`，负值归零），在**评分那一刻**换算；时间串用 `js_sys::Date::parse` 解析（与改动前 `new Date(x).getTime()` 同一解析器）。纯计算层的排序/切分只认毫秒（`QueueInput.due_ms`），这样宿主测试才能覆盖。
 - ⚠️ **接口空结果返回 `"items": null`**（Go 的 nil 切片）：解析层必须容忍 null，否则「今天没有到期卡」这种正常状态会直接报错（已踩过一次）。
 - ⚠️ `fsrs` 6.6.2 只公开 `next_states()`，内部一次算四个分支、**无单评分入口**，所以 `rate()` 是「算四个取一个」。
 - 引擎是确定性算术、不依赖系统时钟；`fsrs` 的 rayon/getrandom 已通过 getrandom `wasm_js` 特性适配 wasm32。
-- **复习 UI**：`modules/english/english.html` 含 `#reviewApp`，由 `english.js` 的 `initReviewApp()` 驱动（`main.js` 的 `initSubjectModule()` 动态 import）。界面为**极简全屏**风格：顶栏（沉浸模式开关 / 今日新学 / 今日复习 / 剩余待学 + 记忆元信息）、大字号单词 + 音标胶囊、底部操作区；揭晓后主例句目标词高亮 + 中文翻译，下面是**一条条释义块**（一个词性一块，可各带例句与译文）。键位：空格揭晓，`Q/W/E/R`（或 `1~4`）评分，`P` 读单词，`L` 读例句（`E` 被「一般」占用），`Esc` 切换沉浸模式。⚠️ `engine/pkg/` 由 wasm-bindgen 生成（已 gitignore），缺失时需在 `modules/english/engine/` 下重新构建，命令见 `modules/english/README.md`。
+- **复习 UI**：`modules/english/english.html` 含 `#reviewApp`，由 `english.js` 的 `initReviewApp()` 驱动（`main.js` 的 `initSubjectModule()` 动态 import）。界面为**极简全屏**风格：顶栏（沉浸模式开关 / 今日新学 / 今日复习 / 剩余待学 + 记忆元信息）、大字号单词 + 音标胶囊、底部操作区、**左下角计划小字**；揭晓后主例句目标词高亮 + 中文翻译，下面是**一条条释义块**（一个词性一块，可各带例句与译文）。键位：空格揭晓，`Q/W/E/R`（或 `1~4`）评分，`P` 读单词，`L` 读例句（`E` 被「一般」占用），`Esc` 切换沉浸模式。⚠️ `engine/pkg/` 由 wasm-bindgen 生成（已 gitignore），缺失时需在 `modules/english/engine/` 下重新构建，命令见 `modules/english/README.md`。
+- **左下角计划小字**（`#studyPlan` / `#studyPlanText`，绝对定位在 `.study-foot` 左下、11px 极淡色、`pointer-events: none`）：计划阶段显示「新词 3/5 · 抽查 2/5」，计划区走完的那一刻**带动效切换**成「计划完成 · 进入复习阶段」（`revealUp` 同族的 `planOut` / `planIn`）。
+  - ⚠️ 两个坑：① 分母（`state.planTotals`）**建会话时算一次后固定**，不能每次渲染重算，否则分子涨分母也涨（会出现「新词 1/4、2/5」）；② `setPlanText` 在文案未变时**直接返回、不要清理动画类**，`markPlanDone` 也**不刷界面**——否则换卡时那次渲染会把刚起步的切换动画掐断（踩过，表现为「动画没播」）。
 - **沉浸模式**：进复习页默认给 `body` 挂 `is-immersive`（隐藏站点导航栏、内容区占满整屏），样式在 `main.css` 的通用规则 + `english.css` 自己的留白里，偏好存 `reviewImmersive`。**切学科时必须摘掉**，由 `main.js` 的 `teardownSubjectModule()` 调用模块导出的 `unmount()` 完成（框架级收口点，别把清理逻辑写回 `main.js` 各学科判断里）。
 - **揭晓动效**：不是整块淡入，而是「显示答案」按钮缩小淡出 → 主例句 → 译文 → 各释义块依次错开浮现（块内高亮再用 `background-size` 从左往右扫出来）→ 按钮退场动画播完的**同一刻**四个评分按钮从原位置依次顶上来（浮起 + 由小变大）。**节拍时刻**在 `english.js` 的 `playRevealAnimation()`（`REVEAL_*` 常量，靠内联 `animation-delay` 下达；`REVEAL_OUT_MS` 是换人时刻），**动作定义**在 `english.css` 的 `revealUp` / `revealOut` / `ratingIn` / `hitSweep`；`renderCardNow()` 与 `unmount()` 会调 `cancelRevealAnimation()` 把换人定时器与收尾定时器都清掉。⚠️ 两条铁律：① **单词不参与任何动画**，揭晓时必须留在原位（`.study-stage` 用 `justify-content: flex-start` 而非 `center`，否则答案变高会把单词顶上去，实测 1 条释义 53px、3 条 159px）；② **必须先藏揭晓按钮再放评分按钮**，两者是底部操作区相邻的两个块，同时显示会让操作区变高、把单词顶上去。
 - **一词多义**：`words.senses` 是**一列 JSON 文本**（`models.WordSenses`，实现了 `Value`/`Scan`/`MarshalJSON`），不单开子表——释义永远跟着词条走，省一次 join、少传 `id`/`word_id`。空值必须序列化成 `[]` 而非 `null`（`Scan` 里先重置为非 nil 空切片）；Rust 侧对应字段仍用 `Option<Vec<ApiSense>>` 兜一层。填了 `senses` 就用它，没填则引擎按 `meaning` 里的词性标签自动分块（`card_view::split_senses`，历史数据不用改）。
@@ -50,6 +58,8 @@
   - `POST /api/words` 查重**大小写不敏感**。
   - `word-options` 刻意不在 `/api/words/options`，避免与 `/api/words/:id` 通配路由冲突。
   - 词条带 `example_translation`（词条级例句翻译）与 `senses`（多释义数组）两个字段；两者都可空。`/api/reviews/due` 的 `dueCard` 里 `senses` 用 `models.WordSenses` 直接扫列，GORM 认 `sql.Scanner`，不需要额外 join。
+- **复习调度接口**：`/api/reviews/due`（只给已到期的，仍在）、`/api/reviews/new`（未学词候选）、**`/api/reviews/queue`**（整库按 `due_at` 升序，含未到期，分页带 `total`）、**`/api/reviews/probes`**（`due_at` **倒序**，即「到期最远」的抽查候选）、`/api/reviews/submit`、`/api/reviews/stats`。
+  - `submit` 请求体多一个 `is_probe`（默认 false），后端记进 `review_logs.is_probe`；`stability_before` 取库里真实旧值，**不要**改成引擎的输入状态，否则抽查会被统计成「今日新学」。
 
 ### 后端要点
 - API 前缀 `/api`：`/health`、`/hello`、`/user/*`、`/data/*`。
@@ -66,7 +76,7 @@
 4. **`go.sum` 已生成**：后端已有 `go.sum`（GORM + glebarez/sqlite 等依赖已通过 `go mod tidy` 固化）；新增依赖时用 `go mod tidy` 同步即可。
 5. **`image/avatar.png`**：当前视觉增强关闭，无法查看绘制内容；按元信息（WebP，约 1330×1146）处理即可，如需主题替换先问用户。
 6. **本机工具链**：Go 已装为便携版 `C:\Users\22629\go-portable\go\bin\go.exe`（go1.27.1，已 `go env -w GOPROXY=https://goproxy.cn,direct GOSUMDB=off`，直接 `go build` 即可）；Rust `cargo 1.97` 且 `wasm32-unknown-unknown` target 已装；wasm-bindgen CLI 在 `C:\Users\22629\.local\bin\wasm-bindgen-0.2.128-*\wasm-bindgen.exe`（须与 Cargo.toml 的 wasm-bindgen 版本一致 0.2.128）。
-   ✅ **宿主 `cargo test` 现在可以运行**（2026-09-13 实测 94 个测试通过；本文档此前记录的「缺 mingw `as`/MSVC SDK 无法链接」已不再成立）。完整验证路径：`cargo test` → `cargo check --target wasm32-unknown-unknown` → `cargo build --target wasm32-unknown-unknown --release` → `wasm-bindgen` 生成 `pkg/` → 浏览器端到端。
+   ✅ **宿主 `cargo test` 现在可以运行**（2026-09-13 实测 106 个测试通过；本文档此前记录的「缺 mingw `as`/MSVC SDK 无法链接」已不再成立）。完整验证路径：`cargo test` → `cargo check --target wasm32-unknown-unknown` → `cargo build --target wasm32-unknown-unknown --release` → `wasm-bindgen` 生成 `pkg/` → 浏览器端到端。
    ⚠️ 但 `JsValue` 在非 wasm32 目标上未实现（调用即 `panic: function not implemented on non-wasm32 targets`，无法 unwinding 会直接 abort）：**纯计算层不要碰 `JsValue`**，把它留在 wasm 导出方法的边界上。
 7. **`word_reviews` 行是懒创建**：单词由 `POST /api/words` 写入 `words` 表；首次提交复习时才创建对应 `word_reviews` 行。`/api/reviews/new` = 无复习行的词。
 

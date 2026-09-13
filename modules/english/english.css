@@ -318,9 +318,49 @@
     color: #9ca3af;
 }
 
+/* ===================== 左下角：今日计划进度 ===================== */
+
+/* 刻意做得很淡很小：它是「心里有数」用的，不该抢卡片的注意力。
+ * 绝对定位（父元素 .study-foot 是 relative），所以不参与底部的纵向布局，
+ * 消失/出现都不会把上面的单词顶动。 */
+.study-plan {
+    position: absolute;
+    left: 0;
+    bottom: 0;
+    font-size: 11px;
+    line-height: 1.6;
+    color: #c8ced8;
+    white-space: nowrap;
+    pointer-events: none; /* 纯展示，不挡点击 */
+}
+
+/* 计划完成时的切换动效：旧文案下沉淡出 → 新文案从上方浮入
+ * 时长与 english.js 的 PLAN_SWAP_OUT_MS / 收尾定时器保持一致 */
+@keyframes planOut {
+    from { opacity: 1; transform: none; }
+    to   { opacity: 0; transform: translateY(5px); }
+}
+
+@keyframes planIn {
+    from { opacity: 0; transform: translateY(-5px); }
+    to   { opacity: 1; transform: none; }
+}
+
+.study-plan-text.is-out { animation: planOut 160ms ease-in both; }
+.study-plan-text.is-in  { animation: planIn 240ms cubic-bezier(0.22, 1, 0.36, 1) both; }
+
+/* 无障碍：跟随系统的「减少动态效果」 */
+@media (prefers-reduced-motion: reduce) {
+    .study-plan-text.is-out,
+    .study-plan-text.is-in {
+        animation: none;
+    }
+}
+
 /* ===================== 底部操作区 ===================== */
 
 .study-foot {
+    position: relative; /* 左下角小字（.study-plan）以它为定位参考 */
     display: flex;
     flex-direction: column;
     align-items: center;

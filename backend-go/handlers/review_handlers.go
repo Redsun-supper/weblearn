@@ -63,6 +63,10 @@ type submitReviewRequest struct {
 	Difficulty    float64 `json:"difficulty"`    // 引擎算出的新记忆状态
 	IntervalDays  float64 `json:"interval_days"` // 引擎算出的下次间隔（天）
 	DesiredRetain float64 `json:"desired_retention"`
+	// IsProbe 标记「每日抽查」卡：这类卡评分时引擎按**新卡**重算记忆状态（相当于重新体检）。
+	// 日志里的 stability_before 仍是数据库里的真实旧值，所以「今日新学」统计不会被它污染；
+	// 记这个标记是为了日后做 FSRS 参数优化时能排除这批「间隔被大幅压缩」的记录。
+	IsProbe bool `json:"is_probe"`
 }
 
 // 到期复习卡（单词 + FSRS 记忆状态）
@@ -461,6 +465,91 @@ func (h *ReviewHandler) NewWords(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"code": 200, "message": "获取成功", "data": gin.H{"items": words}})
 }
 
+// learnedQuery 构造「已学词 + 记忆状态」的查询，供复习队列与抽查候选共用。
+//
+// 只取已经加入复习的词（有 word_reviews 行，due_at 非空），字段与到期卡一致
+// （复用 dueCard 结构，客户端引擎的解析代码不用改）。
+func (h *ReviewHandler) learnedQuery(order string) *gorm.DB {
+	return h.db.Model(&models.Word{}).
+		Select(`
+			words.id AS word_id, words.word, words.phonetic, words.meaning, words.example,
+			words.example_translation, words.senses, words.subject,
+			word_reviews.stability, word_reviews.difficulty, word_reviews.due_at,
+			word_reviews.last_review_at, word_reviews.reps
+		`).
+		Joins("JOIN word_reviews ON word_reviews.word_id = words.id").
+		Where("word_reviews.due_at IS NOT NULL").
+		Order(order)
+}
+
+// QueueReviews 复习队列：**所有已学词**按紧迫度（due_at 升序）排列，包含尚未到期的。
+// GET /api/reviews/queue?limit=100&offset=0
+//
+// 与 /api/reviews/due 的区别：due 只给「已经到期」的，queue 给整库并把「离到期还有多久」
+// 一起排好序。当前调度里到期与否只影响**顺序**，不影响是否有资格出现——
+// 想多学就能一直往下翻（已过期的最旧优先；未到期的每 10 个一块、块内打乱，
+// 这两件事由客户端引擎负责，见 modules/english/engine/src/session.rs 的 plan_day）。
+//
+// 分页：`total` 是已学词总数，客户端翻到底就说明整库过了一遍。
+func (h *ReviewHandler) QueueReviews(c *gin.Context) {
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "100"))
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
+	if offset < 0 {
+		offset = 0
+	}
+
+	now := time.Now()
+	if nowMs, err := strconv.ParseInt(c.Query("now"), 10, 64); err == nil && nowMs > 0 {
+		now = time.UnixMilli(nowMs)
+	}
+
+	var total int64
+	if err := h.db.Model(&models.WordReview{}).Where("due_at IS NOT NULL").Count(&total).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "统计失败:" + err.Error()})
+		return
+	}
+
+	var cards []dueCard
+	if err := h.learnedQuery("word_reviews.due_at ASC").Limit(limit).Offset(offset).Scan(&cards).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "查询失败:" + err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"code": 200, "message": "获取成功", "data": gin.H{
+		"items":  cards,
+		"total":  total,
+		"limit":  limit,
+		"offset": offset,
+		"now":    now.UnixMilli(),
+	}})
+}
+
+// ProbeCandidates 每日抽查候选：**到期时间最远**的已学词（due_at 倒序）。
+// GET /api/reviews/probes?limit=20
+//
+// 用途：每天固定抽几个「最轮不到复习」的词提前确认记忆强度，避免出现
+// 「总是快要过期的那些天天出现，而间隔已经拉到几十天的词永远不出现」。
+//
+// 为什么多给一些候选：客户端还会按 localStorage 里的「最近抽查过的词」过滤，
+// 所以这里按 due_at 倒序多取几条，让它有得挑。
+func (h *ReviewHandler) ProbeCandidates(c *gin.Context) {
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
+	if limit <= 0 || limit > 200 {
+		limit = 20
+	}
+
+	var cards []dueCard
+	if err := h.learnedQuery("word_reviews.due_at DESC").Limit(limit).Scan(&cards).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "查询失败:" + err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"code": 200, "message": "获取成功", "data": gin.H{"items": cards}})
+}
+
 // SubmitReview 提交一次复习结果（引擎已算好新状态，这里只做持久化）
 // POST /api/reviews/submit
 // 请求体：{ word_id, rating(1-4), stability, difficulty, interval_days, desired_retention? }
@@ -545,6 +634,7 @@ func (h *ReviewHandler) SubmitReview(c *gin.Context) {
 			DifficultyAfter: req.Difficulty,
 			IntervalDays:    req.IntervalDays,
 			ReviewedAt:      now,
+			IsProbe:         req.IsProbe,
 		}
 		return tx.Create(&log).Error
 	})

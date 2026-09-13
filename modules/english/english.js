@@ -19,7 +19,12 @@ var state = {
     stats: null,     // 最近一次 /api/reviews/stats 返回的数据
     card: null,      // 当前卡片的展示数据（渲染与揭晓共用，避免重复向引擎取数）
     pendingSubmit: null, // 最近一次复习提交的 Promise（补词前要等它落库，避免竞态）
-    refilling: false     // 是否正在补词（防止并发补词）
+    refilling: false,    // 是否正在补卡（防止并发补卡）
+    planInfo: null,      // 引擎给的今日计划规模 {new_target, probe_target, plan_len}
+    planTotals: null,    // 今日计划的分母 {new, probe}，建会话时算一次后固定
+    planPhase: '',       // 左下角小字当前处于哪一段：'' / 'plan' / 'review'
+    queueOffset: 0,      // 复习区已经交给引擎多少张（翻页用）
+    queueTotal: 0        // 复习区一共多少张（后端给的总数）
 };
 
 // 自动朗读开关在 localStorage 中的键名
@@ -29,18 +34,35 @@ var AUTO_SPEAK_KEY = 'reviewAutoSpeak';
 // 没有记录时默认**开启**：进入复习页就是要专注，导航栏先收起来
 var IMMERSIVE_KEY = 'reviewImmersive';
 
+// 今日计划（每天 5 个新词 + 5 个抽查）在 localStorage 中的键名
+//
+// ⚠️ 为什么配额记在浏览器上而不是服务端：现在没有登录系统，服务端只有一份共享词库，
+// 若在服务端按「每天 5 个」算，等于全站每天共放 5 个新词——你先学了别人就没得学。
+// 记在本地就是「每台设备各自一份计划」，换设备/清缓存会重置（已知代价，等有登录再迁走）。
+var PLAN_KEY = 'reviewDailyPlan';
+
+// 每天的新词 / 抽查配额
+var DAILY_NEW_TARGET = 5;
+var DAILY_PROBE_TARGET = 5;
+
+// 抽查冷却期（天）：同一个词在这段时间内不会被再次抽中，
+// 否则「每天都抽到期最远的那几个」会变成新的饥饿
+var PROBE_COOLDOWN_DAYS = 7;
+
+// 取数批量：复习区每次取多少张、新词候选取多少、抽查候选取多少
+// 新词/抽查都多取一些候选，随机抽与冷却过滤才有挑选余地
+var QUEUE_PAGE_SIZE = 100;
+var NEW_CANDIDATE_SIZE = 20;
+var PROBE_CANDIDATE_SIZE = 20;
+
 // 引擎模块路径（相对本文件所在目录解析）
 var WASM_MODULE_URL = './engine/pkg/guangxue_wasm.js';
 
-// 每次抽取的新词批量（**不是每日上限**）
-// 队列抽干后会自动再抽一批，直到词库没有未学词为止
-var NEW_BATCH_SIZE = 20;
-
-// 每次取回到期卡的数量（后端上限 200）
-var DUE_BATCH_SIZE = 50;
-
 // 换卡过渡时长（毫秒）：需与 english.css 里的离场动画时长保持一致
 var TRANSITION_MS = 150;
+
+// 左下角计划文案的切换时长（毫秒）：需与 english.css 的 planOut 动画一致
+var PLAN_SWAP_OUT_MS = 160;
 
 // 键盘监听是否已绑定（同一页面内反复切换学科只绑定一次）
 var keysBound = false;
@@ -107,21 +129,43 @@ export function initReviewApp() {
         });
     }
 
-    // 加载引擎 → 取回接口原文 → 交给引擎建会话
+    // 加载引擎 → 取回今日计划所需的四份数据 → 交给引擎编排
+    var plan = loadTodayPlan();
+    state.planPhase = '';
+
     loadEngine().then(function(wasm) {
         state.wasm = wasm;
-        return fetchBatches();
+        return fetchDay(0);
     }).then(function(results) {
-        var statsRes = results[2];
+        var statsRes = results[3];
 
         // 顶部统计先拿到，渲染卡片时一起显示
         if (statsRes && statsRes.code === 200 && statsRes.data) {
             state.stats = statsRes.data;
         }
 
-        // 队列构建（洗牌到期卡 / 抽新词 / 换算日期）全部在引擎内完成。
+        // 队列编排（今日计划 + 复习区排序 + 日期换算）全部在引擎内完成。
         // 直接把接口返回的 JSON 原文交给引擎，本文件不再解析与保存卡片数组。
-        state.session = new state.wasm.ReviewSession(results[0], results[1], NEW_BATCH_SIZE);
+        state.session = new state.wasm.ReviewSession(
+            results[0], // 复习区：整库按紧迫度升序（含未到期）
+            results[1], // 新词候选
+            results[2], // 抽查候选（到期最远的）
+            JSON.stringify(buildPlanOptions(plan))
+        );
+
+        // 记下复习区取到哪儿了：队列走完后按 offset 取下一页
+        state.queueOffset = parseQueueMeta(results[0]).count;
+        state.queueTotal = parseQueueMeta(results[0]).total;
+        state.planInfo = JSON.parse(state.session.plan_json());
+
+        // 今日计划的分母在建会话时**只算一次**：
+        // = 今天此前已经做完的 + 本次队列里排着的。
+        // 不能每次渲染时重算，否则分子涨一分母也跟着涨（会出现「新词 1/4、2/5」这种错）。
+        state.planTotals = {
+            new: plan.newDone + state.planInfo.new_target,
+            probe: plan.probeDone + state.planInfo.probe_target
+        };
+
         renderCard();
     }).catch(function(err) {
         setStatus('');
@@ -137,12 +181,19 @@ export function initReviewApp() {
 export function unmount() {
     document.body.classList.remove('is-immersive');
     cancelRevealAnimation();
+    clearTimeout(planSwapTimer);
+    planSwapTimer = null;
     releaseSession();
     state.card = null;
     state.revealed = false;
     state.stats = null;
     state.pendingSubmit = null;
     state.refilling = false;
+    state.planInfo = null;
+    state.planTotals = null;
+    state.planPhase = '';
+    state.queueOffset = 0;
+    state.queueTotal = 0;
     if (window.speechSynthesis) {
         try {
             window.speechSynthesis.cancel();
@@ -152,13 +203,146 @@ export function unmount() {
     }
 }
 
-// 取一批卡片与统计：会话初始化与「自动补词」共用同一套取数逻辑
-function fetchBatches() {
+// 取今日计划所需的数据。
+// 四份数据各司其职：复习区（整库紧迫度序）/ 新词候选 / 抽查候选 / 顶部统计。
+function fetchDay(queueOffset) {
     return Promise.all([
-        fetchText('/api/reviews/due?limit=' + DUE_BATCH_SIZE),
-        fetchText('/api/reviews/new?limit=' + NEW_BATCH_SIZE),
+        fetchText('/api/reviews/queue?limit=' + QUEUE_PAGE_SIZE + '&offset=' + queueOffset),
+        fetchText('/api/reviews/new?limit=' + NEW_CANDIDATE_SIZE),
+        fetchText('/api/reviews/probes?limit=' + PROBE_CANDIDATE_SIZE),
         fetchJson('/api/reviews/stats')
     ]);
+}
+
+// 只取复习区的下一页（翻到底之后用），并顺手刷新顶部统计
+function fetchQueuePage(offset) {
+    return Promise.all([
+        fetchText('/api/reviews/queue?limit=' + QUEUE_PAGE_SIZE + '&offset=' + offset),
+        fetchJson('/api/reviews/stats')
+    ]);
+}
+
+// 从复习区响应里读出「这一页多少张 / 一共多少张」
+// 解析失败时按 0 处理：取数异常不该让整个复习页打不开
+function parseQueueMeta(queueText) {
+    try {
+        var parsed = JSON.parse(queueText);
+        var data = (parsed && parsed.data) || {};
+        var items = data.items || [];
+        return { count: items.length, total: data.total || items.length };
+    } catch (e) {
+        return { count: 0, total: 0 };
+    }
+}
+
+// ---------- 今日计划（每天 5 个新词 + 5 个抽查） ----------
+//
+// 配额和抽查冷却记录都放在浏览器 localStorage 里（原因见 PLAN_KEY 的注释）。
+// 引擎只管「按我给的剩余额度编排队列」，额度的账在这里算。
+
+// 本地日期键（按浏览器本地自然日，跨零点即新的一天）
+function todayKey() {
+    var d = new Date();
+    var m = d.getMonth() + 1;
+    var day = d.getDate();
+    return d.getFullYear() + '-' + (m < 10 ? '0' + m : m) + '-' + (day < 10 ? '0' + day : day);
+}
+
+// 读出今日计划状态；日期变了就重置计数（抽查冷却记录保留，并按冷却期清理）
+function loadTodayPlan() {
+    var today = todayKey();
+    var raw = null;
+    try {
+        raw = localStorage.getItem(PLAN_KEY);
+    } catch (e) {
+        raw = null;
+    }
+
+    var plan = null;
+    if (raw) {
+        try {
+            plan = JSON.parse(raw);
+        } catch (e) {
+            plan = null;
+        }
+    }
+    if (!plan || typeof plan !== 'object') plan = {};
+    if (!plan.probedAt || typeof plan.probedAt !== 'object') plan.probedAt = {};
+
+    if (plan.date !== today) {
+        plan.date = today;
+        plan.newDone = 0;
+        plan.probeDone = 0;
+    }
+    if (typeof plan.newDone !== 'number' || plan.newDone < 0) plan.newDone = 0;
+    if (typeof plan.probeDone !== 'number' || plan.probeDone < 0) plan.probeDone = 0;
+
+    pruneProbedAt(plan);
+    saveTodayPlan(plan);
+    return plan;
+}
+
+// 丢掉超过冷却期的抽查记录（否则这个对象会无限长大）
+function pruneProbedAt(plan) {
+    var limit = Date.now() - PROBE_COOLDOWN_DAYS * 86400000;
+    var kept = {};
+    var keys = Object.keys(plan.probedAt || {});
+    for (var i = 0; i < keys.length; i++) {
+        var ts = Number(plan.probedAt[keys[i]]);
+        if (isFinite(ts) && ts >= limit) kept[keys[i]] = ts;
+    }
+    plan.probedAt = kept;
+}
+
+function saveTodayPlan(plan) {
+    try {
+        localStorage.setItem(PLAN_KEY, JSON.stringify(plan));
+    } catch (e) {
+        console.error('保存今日计划失败:', e);
+    }
+}
+
+// 今天还剩多少额度（0 表示今天不再放这一类卡片）
+function remainingQuota(plan, kind) {
+    var target = kind === 'probe' ? DAILY_PROBE_TARGET : DAILY_NEW_TARGET;
+    var done = kind === 'probe' ? plan.probeDone : plan.newDone;
+    return Math.max(0, target - done);
+}
+
+// 冷却期内抽过的词 id 列表：交给引擎跳过，避免连续几天抽到同一批
+function probedIdsInCooldown(plan) {
+    var ids = [];
+    var keys = Object.keys(plan.probedAt || {});
+    for (var i = 0; i < keys.length; i++) {
+        var id = parseInt(keys[i], 10);
+        if (isFinite(id) && id > 0) ids.push(id);
+    }
+    return ids;
+}
+
+// 组装给引擎的计划参数：两个 limit 都是「今天还剩多少」，不是每日上限本身
+function buildPlanOptions(plan) {
+    return {
+        new_limit: remainingQuota(plan, 'new'),
+        probe_limit: remainingQuota(plan, 'probe'),
+        probed_ids: probedIdsInCooldown(plan),
+        now_ms: Date.now()
+    };
+}
+
+// 记一次计划完成（评分成功后调用）
+//
+// 这里**不刷界面**：评分紧接着就是换卡过渡（150ms），界面刷新交给换卡时的
+// renderPlanProgress。若在这里先刷一次，切换动画刚起步就会被换卡那次渲染掐断。
+function markPlanDone(kind, wordId) {
+    var plan = loadTodayPlan();
+    if (kind === 'probe') {
+        plan.probeDone += 1;
+        if (wordId) plan.probedAt[String(wordId)] = Date.now();
+    } else {
+        plan.newDone += 1;
+    }
+    saveTodayPlan(plan);
 }
 
 // 释放引擎侧的会话对象（wasm-bindgen 为导出结构体生成的 free()）
@@ -269,12 +453,15 @@ function renderCardNow() {
     hide('reviewReveal');
 
     renderStats(state.stats);
+    // 计划小字要在「队列走完」这条分支之前刷新：
+    // 最后一张计划卡评完时队列可能同时见底，否则小字会停在旧文案上不再切换
+    renderPlanProgress();
 
     if (session.is_finished()) {
         hideCardBody();
         setStatus('');
         showFinishMessage();
-        // 队列抽干：自动补一批（不限制每日新词）。补到了就继续渲染，补不到就停在上面的结束文案
+        // 队列抽干：还有下一页就接着取，取不到就停在上面的结束文案
         maybeRefill();
         return;
     }
@@ -296,14 +483,21 @@ function renderCardNow() {
     renderMeta(state.card.meta);
     renderAnswer(state.card);
 
-    // 无限学习的场景下，「队列剩余」比「第 N / M 张」更能反映进度（M 会随补词增长）
-    var sourceLabel = state.card.source === 'new' ? '新词' : '到期';
+    // 无限学习的场景下，「队列剩余」比「第 N / M 张」更能反映进度（M 会随翻页增长）
+    var sourceLabel = sourceLabelOf(state.card.source);
     setStatus('已学 ' + session.done() + ' 张 · 队列剩余 ' +
         (session.total() - session.done()) + ' 张 · ' + sourceLabel);
     show('reviewReveal');
 
     // 开启自动朗读时，每张新卡出现即朗读单词
     if (isAutoSpeakOn()) speakCurrent('word');
+}
+
+// 卡片来源 → 界面文案
+function sourceLabelOf(source) {
+    if (source === 'new') return '新词';
+    if (source === 'probe') return '抽查';
+    return '复习';
 }
 
 // 结束文案：区分「本轮学过」「词库学完」「词库为空」三种情况
@@ -323,9 +517,17 @@ function showFinishMessage() {
     }
 }
 
-// 队列抽干后自动再抽一批，直到词库没有未学词（不再限制每日新词数量）
+// 队列走完后接着往下翻：复习区还分页没取完就再取一页，取完了就停在结束文案。
+// 注意这里只追加**复习区**：新词与抽查受每日配额限制，不因为翻页而变多。
 function maybeRefill() {
     if (state.refilling || !state.session) return;
+
+    // 整库都翻完了：没有更多卡片了
+    if (state.queueOffset >= state.queueTotal) {
+        showFinishMessage();
+        return;
+    }
+
     state.refilling = true;
 
     // 必须等上一次提交落库：否则刚评过的词在服务端 due_at 还没更新，
@@ -333,34 +535,41 @@ function maybeRefill() {
     var wait = state.pendingSubmit || Promise.resolve();
 
     wait.then(function() {
-        return fetchBatches();
+        return fetchQueuePage(state.queueOffset);
     }).then(function(results) {
         state.refilling = false;
 
-        var statsRes = results[2];
+        var statsRes = results[1];
         if (statsRes && statsRes.code === 200 && statsRes.data) {
             state.stats = statsRes.data;
         }
 
+        var meta = parseQueueMeta(results[0]);
         var added = 0;
         try {
-            added = state.session.append(results[0], results[1], NEW_BATCH_SIZE);
+            added = state.session.append(results[0], JSON.stringify(buildPlanOptions(loadTodayPlan())));
         } catch (e) {
-            setStatus('补词失败：' + e);
-            console.error('补词失败:', e);
+            setStatus('补卡失败：' + e);
+            console.error('补卡失败:', e);
             return;
         }
+        state.queueOffset += meta.count;
 
         if (added > 0) {
-            renderCardNow(); // 接着学下一批
+            renderCardNow(); // 接着往下翻
             return;
         }
-        // 确实抽不到新卡了：保留结束文案（此时状态是「已学 N 张」或「词库都学完了」）
+        // 这一页没有新卡（例如全都在待办区里了）：直接看还有没有下一页
+        if (state.queueOffset < state.queueTotal && meta.count > 0) {
+            state.refilling = false;
+            maybeRefill();
+            return;
+        }
         showFinishMessage();
     }).catch(function(err) {
         state.refilling = false;
-        setStatus('补词失败（刷新页面可重试）：' + err);
-        console.error('自动补词失败:', err);
+        setStatus('补卡失败（刷新页面可重试）：' + err);
+        console.error('自动补卡失败:', err);
     });
 }
 
@@ -370,6 +579,75 @@ function renderStats(stats) {
     setText('statTodayNew', stats.today_new || 0);
     setText('statTodayReview', stats.today_review || 0);
     setText('statRest', stats.new_words || 0);
+}
+
+// ---------- 左下角：今日计划进度 ----------
+
+// 计划文案的切换定时器（换卡 / 离开页面时要清掉）
+var planSwapTimer = null;
+
+// 画出左下角小字。
+// 两个阶段：
+//   plan   —— 今日计划还没走完：「新词 3/5 · 抽查 2/5」
+//   review —— 计划区的卡全部评完了：「计划完成 · 进入复习阶段」（带动效切换）
+// 阶段切换只在真的跨过去时播一次动画。
+function renderPlanProgress() {
+    var session = state.session;
+    var info = state.planInfo;
+    if (!session || !info) return;
+
+    var done = session.done();
+    var phase = done >= info.plan_len ? 'review' : 'plan';
+    var text;
+
+    if (phase === 'review') {
+        text = '计划完成 · 进入复习阶段';
+    } else {
+        var plan = loadTodayPlan();
+        var totals = state.planTotals || { new: 0, probe: 0 };
+        var parts = [];
+        if (totals.new > 0) parts.push('新词 ' + plan.newDone + '/' + totals.new);
+        if (totals.probe > 0) parts.push('抽查 ' + plan.probeDone + '/' + totals.probe);
+        // 两类都没有（例如词库空了）：小字不显示，保持界面干净
+        text = parts.join(' · ');
+    }
+
+    setPlanText(text, phase !== state.planPhase && state.planPhase !== '');
+    state.planPhase = phase;
+}
+
+// 设置左下角文案：阶段变化时先淡出旧文案、再浮入新文案（见 english.css 的 planOut / planIn）
+function setPlanText(text, animate) {
+    var el = document.getElementById('studyPlanText');
+    if (!el) return;
+
+    // 文案没变就什么都不做。
+    // ⚠️ 这里**不能**顺手清掉动画类：切换动画播到一半时如果有一次多余的渲染
+    // （换卡、统计刷新等）进来，就会把动画掐断，看上去像「没播」。
+    if (el.textContent === text) return;
+
+    clearTimeout(planSwapTimer);
+    planSwapTimer = null;
+
+    if (!animate) {
+        el.textContent = text;
+        el.classList.remove('is-out', 'is-in');
+        return;
+    }
+
+    el.classList.remove('is-in');
+    void el.offsetWidth;
+    el.classList.add('is-out');
+    planSwapTimer = setTimeout(function() {
+        el.textContent = text;
+        el.classList.remove('is-out');
+        void el.offsetWidth; // 强制重排，保证入场动画能重新播放
+        el.classList.add('is-in');
+        planSwapTimer = setTimeout(function() {
+            el.classList.remove('is-in');
+            planSwapTimer = null;
+        }, 260);
+    }, PLAN_SWAP_OUT_MS);
 }
 
 // 右上角记忆元信息：难度 / 稳定性 / 状态 / 复习次数 / 上次 / 预计记住
@@ -394,7 +672,8 @@ function renderMeta(meta) {
     }
     if (typeof meta.difficulty === 'number') line('难度', formatNumber(meta.difficulty, 1));
     if (typeof meta.stability === 'number') line('稳定性', formatNumber(meta.stability, 1) + ' 天');
-    line('状态', '已到期');
+    // 抽查：这个词本来是几十天后才轮到，被提前抽出来「体检」的
+    line('状态', meta.status === 'probe' ? '抽查' : '复习');
     if (typeof meta.reps === 'number') line('复习', meta.reps + ' 次');
     if (typeof meta.days_since_last === 'number') line('上次', meta.days_since_last + ' 天');
     if (typeof meta.retrievability === 'number') {
@@ -540,7 +819,7 @@ function revealAnswer() {
     // 「揭晓按钮退场 → 评分按钮入场」也在这条时间线上，所以这里不再直接 hide/show 按钮
     playRevealAnimation();
 
-    var sourceLabel = state.card && state.card.source === 'new' ? '新词' : '到期';
+    var sourceLabel = sourceLabelOf(state.card ? state.card.source : '');
     setStatus('已学 ' + state.session.done() + ' 张 · ' + sourceLabel + ' · 请根据回忆情况评分');
 }
 
@@ -683,6 +962,8 @@ function handleReviewRating(rating) {
     }
 
     // 引擎内部完成：换算距上次复习天数 → FSRS 计算 → 取对应分支 → 推进游标
+    // 抽查卡在引擎里按「新卡」重算（返回体里带 is_probe 标记）
+    var cardSource = state.card ? state.card.source : '';
     var payload;
     try {
         payload = session.rate(rating, Date.now());
@@ -691,9 +972,22 @@ function handleReviewRating(rating) {
         return;
     }
 
+    // 算一次今日计划的账：新词 / 抽查各自用掉一个额度，抽查还要记下冷却时间
+    var body = null;
+    try {
+        body = JSON.parse(payload);
+    } catch (e) {
+        body = null;
+    }
+    if (cardSource === 'new') {
+        markPlanDone('new');
+    } else if (cardSource === 'probe' || (body && body.is_probe)) {
+        markPlanDone('probe', body ? body.word_id : 0);
+    }
+
     advanceCard(); // 带动效推进到下一张（内部会先上锁，防止过渡期间重复评分）
 
-    // 记下这次提交：补词前要等它落库，否则刚评过的卡会被当成到期卡再抽一次
+    // 记下这次提交：翻页前要等它落库，否则刚评过的卡会被当成到期卡再抽一次
     state.pendingSubmit = fetch('/api/reviews/submit', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

@@ -72,8 +72,9 @@ document.addEventListener('DOMContentLoaded', function() {
     // 避免出现「新脚本 + 旧页面结构」导致功能不可用
     // 历史：v1 初版；v2 英语页新增「显示答案」按钮；v3 英语页迁到 modules/english/；
     //       v4 英语复习界面改版（极简全屏：顶栏统计 / 大字号单词 / 例句高亮 / 粉彩评分按钮）；
-    //       v5 英语页顶栏改成「沉浸模式」开关（隐藏站点导航栏），揭晓区改为每条释义一块
-    const CACHE_VERSION = 5;
+    //       v5 英语页顶栏改成「沉浸模式」开关（隐藏站点导航栏），揭晓区改为每条释义一块；
+    //       v6 英语页底部新增左下角「今日计划」小字
+    const CACHE_VERSION = 6;
     // CACHE_VERSION_KEY: 记录当前缓存版本的键名
     const CACHE_VERSION_KEY = 'pageCache_version';
     

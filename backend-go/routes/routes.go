@@ -52,6 +52,8 @@ func SetupRouter(db *gorm.DB) *gin.Engine {
 		{
 			reviews.GET("/due", rv.DueReviews)
 			reviews.GET("/new", rv.NewWords)
+			reviews.GET("/queue", rv.QueueReviews)     // 整库按紧迫度排序（含未到期）
+			reviews.GET("/probes", rv.ProbeCandidates) // 每日抽查候选（到期最远的）
 			reviews.POST("/submit", rv.SubmitReview)
 			reviews.GET("/stats", rv.ReviewStats)
 		}

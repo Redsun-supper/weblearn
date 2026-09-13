@@ -26,22 +26,30 @@ JS 侧只负责 DOM 渲染、事件绑定、`fetch`、`localStorage` 与语音�
 import init, { ReviewSession } from './engine/pkg/guangxue_wasm.js';
 await init(); // wasm-bindgen --target web 产物必须先实例化
 
-// 直接用接口返回的 JSON 原文建会话（内部完成洗牌、抽新词、时间解析）
-// 第三个参数是**本次抽取的新词批量**（默认 20），不是每日上限
-const session = new ReviewSession(dueJsonText, newJsonText, 20);
+// 用四份接口返回的 JSON 原文建会话（内部完成编排、抽样、时间解析）
+//   queueText：/api/reviews/queue  —— 整库按紧迫度升序（含未到期）
+//   newText  ：/api/reviews/new    —— 新词候选
+//   probeText：/api/reviews/probes —— 到期最远的候选（每日抽查用）
+//   planText ：{new_limit, probe_limit, probed_ids, now_ms}
+//              ⚠️ 两个 limit 是「今天还剩多少额度」，不是每日上限本身；
+//              额度记在浏览器 localStorage 里（没有登录系统，服务端分不清是谁的）
+const session = new ReviewSession(queueText, newText, probeText, planText);
 
 session.total();             // 队列总张数（会随 append 增长）
 session.done();              // 已完成张数
 session.is_finished();       // 当前队列是否已走完
 session.progress_percent();  // 0~100
 session.current_word_id();   // 当前词条 id（无卡时 0）
+session.plan_json();         // {"new_target":5,"probe_target":5,"plan_len":10}
+// 计划区长度：done() >= plan_len 就说明今日计划做完了、进入复习阶段（前端据此切左下角文案）
+
 session.current_json(Date.now());
 // 当前卡片展示数据：
-//   word / phonetic / source
+//   word / phonetic / source（"new" | "probe" | "due"）
 //   example_parts  主例句按目标词切分的片段（空 = 该词条没有例句，前端整块不渲染）
 //   example_translation  主例句的中文翻译（空则不输出该字段）
 //   senses         释义块数组 [{pos, meaning, example_parts?, translation?}]，有释义时至少一块
-//   meta           记忆元信息（难度/稳定性/复习次数/距上次天数/预计记住）
+//   meta           记忆元信息（难度/稳定性/复习次数/距上次天数/预计记住；抽查卡的 status 是 "probe"）
 // 说明：卡片 JSON 刻意不带冗余字段（meaning/example 原文、下标等），多释义本来就比单词条重，
 //       JS 那边也不再需要它们。
 //
@@ -54,11 +62,13 @@ session.current_json(Date.now());
 // 评分：1=Again 2=Hard 3=Good 4=Easy；now_ms 传 Date.now()
 const body = session.rate(3, Date.now());
 // body 就是 POST /api/reviews/submit 的请求体：
-// {"word_id":42,"rating":3,"stability":2.3065,"difficulty":2.1181,"interval_days":2.3065}
+// {"word_id":42,"rating":3,"stability":2.3065,"difficulty":2.1181,"interval_days":2.3065,"is_probe":false}
+// ⚠️ 抽查卡（source === "probe"）在引擎里**按新卡重算**：丢掉原 stability/difficulty、天数按 0 算，
+//    请求体里 is_probe 为 true。所以一张稳定到 60 天的卡被抽查时，Good 也只给 2.3065 天。
 
-// 队列走完后继续抽：追加一批（游标不动），返回实际追加数量；0 表示没得抽了
-const added = session.append(dueJsonText, newJsonText, 20);
-// 「不限制每日新词」就是靠它实现：前端在 is_finished() 时再取一批交进来即可
+// 队列走完后继续翻：追加复习区的下一页（游标不动），返回实际追加数量；0 表示没得抽了
+const added = session.append(queueText, planText);
+// ⚠️ 只追加**复习区**：新词与抽查受每日配额限制，不会因为翻页而变多
 
 session.free();  // 离开英语页时释放（wasm-bindgen 生成）
 ```
@@ -66,8 +76,26 @@ session.free();  // 离开英语页时释放（wasm-bindgen 生成）
 `append` 的去重规则：跳过 id 已经在**待办区**（尚未评分的部分）里的卡片；
 游标之前已评完的卡不算重复——到期后再次抽到属于正常复习。
 
-另有 `ReviewSession.with_seed(dueJson, newJson, newLimit, seed)` 与
+另有 `ReviewSession.with_seed(queueJson, newJson, probeJson, planJson, seed)` 与
 `append_with_seed(..., seed)`：显式指定随机种子，便于复现与测试。
+
+### 纯计算层：`plan_day` / `chunk_shuffle`
+
+```rust
+// 编排今日队列：新词 → 抽查 → 复习区（详见函数文档）
+pub fn plan_day(queue: Vec<QueueInput>, new: Vec<ApiCard>, probes: Vec<ApiCard>,
+                opts: &PlanOptions, seed: u32) -> DayPlan;
+
+// 梯度乱序：每 10 个一块，块内打乱、块间顺序不变
+pub fn chunk_shuffle(items: &mut [usize], chunk: usize, seed: u32);
+
+// 复习区翻页追加（只做复习区，不碰新词与抽查）
+pub fn append_queue_plan(existing: &[PlannedCard], cursor: usize, queue: Vec<QueueInput>,
+                         opts: &PlanOptions, seed: u32) -> Vec<PlannedCard>;
+```
+
+`QueueInput` 同时带 `last_ms`（评分时算天数）与 `due_ms`（排序与切分），
+两者都是**已解析好的毫秒**——纯计算层不碰时间字符串，宿主测试才能覆盖排序与切分逻辑。
 
 ### 低层 API（仍在导出，供引擎复用与调试）
 
@@ -127,13 +155,16 @@ wasm-bindgen --target web --out-dir pkg --out-name guangxue_wasm `
 ## 单元测试
 
 ```powershell
-cargo test            # 94 个测试：会话编排 / 天数换算 / 进度 / 解析 / FSRS / 随机器 / 多释义拆分 / 词形匹配
+cargo test            # 106 个测试：会话编排 / 每日计划 / 梯度乱序 / 天数换算 / 解析 / FSRS / 多释义 / 词形匹配
 cargo test -- --nocapture
 ```
 
 测试全部跑在**纯计算层**，不依赖浏览器：
 
-- `plan_session` / `days_elapsed` / `progress_percent` / `pick_branch`
+- `plan_day`（新词→抽查→复习区的顺序、额度受限、抽查跳过刚抽过的、抽查卡不在复习区重复出现）
+- `plan_overdue_keeps_urgency_order_strictly` / `plan_upcoming_is_chunk_shuffled` / `chunk_shuffle_*`（梯度乱序）
+- `probe_rating_resets_memory_state` / `normal_review_keeps_memory_state`（抽查按新卡重算的对比测试）
+- `plan_session` 时代留下的：`days_elapsed` / `progress_percent` / `pick_branch`
 - `ReviewSession::build` / `ReviewSession::try_rate`（错误类型是 `String`）
 - `parse_items`（含 Go 空结果返回 `"items": null`、`"senses": null` 的场景）
 - `split_senses`（一行多个义项、连续词性标签、`num.` 不被 `n.` 抢、括号里的标签不误判）

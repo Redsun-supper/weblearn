@@ -81,8 +81,12 @@ func main() {
 	var logs []models.ReviewLog
 	db.Model(&models.ReviewLog{}).Order("id ASC").Find(&logs)
 	for _, l := range logs {
-		fmt.Printf("  word_id=%d rating=%d %.4f→%.4f interval=%.4f天 at=%s\n",
+		flag := ""
+		if l.IsProbe {
+			flag = "  [抽查]"
+		}
+		fmt.Printf("  word_id=%d rating=%d %.4f→%.4f interval=%.4f天 at=%s%s\n",
 			l.WordID, l.Rating, l.StabilityBefore, l.StabilityAfter, l.IntervalDays,
-			l.ReviewedAt.Format("2006-01-02 15:04:05"))
+			l.ReviewedAt.Format("2006-01-02 15:04:05"), flag)
 	}
 }

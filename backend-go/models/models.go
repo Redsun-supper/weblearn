@@ -163,6 +163,10 @@ type ReviewLog struct {
 	DifficultyAfter float64   `json:"difficulty_after"`
 	IntervalDays    float64   `json:"interval_days"` // 引擎算出的下次间隔（天）
 	ReviewedAt      time.Time `json:"reviewed_at" gorm:"index"`
+	// IsProbe 是否为「每日抽查」：抽查卡按新卡重算记忆状态，
+	// 其 stability_after 会明显低于 before（相当于把间隔压缩了）。
+	// 日后做 FSRS 参数优化（compute_parameters）时应当排除这批记录，否则参数会被带偏。
+	IsProbe bool `json:"is_probe"`
 }
 
 // TableName 指定数据库表名

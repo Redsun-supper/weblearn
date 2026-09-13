@@ -69,8 +69,28 @@ go build -o server main.go
 | GET | /api/word-options | 词条中已使用的词书 / 单元列表（后台筛选下拉用） |
 | GET | /api/reviews/due | 到期复习卡列表（limit/now） |
 | GET | /api/reviews/new | 尚未加入复习的新词 |
+| GET | /api/reviews/queue | 复习队列：**所有已学词**按 `due_at` 升序（**含未到期**），分页带 `total` |
+| GET | /api/reviews/probes | 每日抽查候选：已学词按 `due_at` **倒序**（越轮不到复习的越靠前） |
 | POST | /api/reviews/submit | 提交复习结果（FSRS 状态持久化） |
 | GET | /api/reviews/stats | 复习统计 |
+
+### 复习队列接口说明（供学生端调度使用）
+
+`queue` 与 `probes` 是同一份数据的两端：
+
+- `queue` 给「整库按紧迫度排好序」的列表（`due_at ASC`），客户端引擎在这里面切「已过期 / 未到期」，
+  再做梯度乱序（未到期每 10 个一块、块内打乱）。**到期与否只影响顺序，不影响是否有资格出现**——
+  想多学就能一直往下翻，所以它同时承担了「到期卡」和「未到期但想提前复习」两种需求。
+- `probes` 给「到期最远」的那几个，用于**每日抽查**：每天固定抽 5 个最轮不到复习的词提前确认，
+  避免「总是快要过期的那些天天出现、间隔长的永远不出现」。客户端还会按 localStorage 里
+  最近抽过的词再过滤一次，所以这里按 `due_at DESC` 多给几条候选。
+- 两者字段与 `/api/reviews/due` 一致（复用 `dueCard` 结构），客户端解析代码无需区分。
+
+`POST /api/reviews/submit` 请求体多一个 `is_probe`（默认 `false`）：抽查卡按新卡重算记忆状态，
+其 `stability_after` 会明显低于 `before`。日志里记下这个标记，日后做 FSRS 参数优化
+（`compute_parameters`）时应当排除这批记录，否则参数会被带偏。
+⚠️ 日志里的 `stability_before` 取的是**库里那一行的真实旧值**，不是引擎的输入状态——
+所以抽查不会被「今日新学」的统计（按 `stability_before = 0` 判定）误算成新词。
 
 ### 词条管理接口说明（供后台使用）
 
