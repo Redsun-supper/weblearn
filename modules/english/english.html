@@ -3,74 +3,65 @@
 <!-- 逻辑在同目录的 english.js，样式在同目录的 english.css，调度引擎在同目录的 engine/ -->
 <link rel="stylesheet" href="modules/english/english.css">
 
-<h1>英语</h1>
-<p>英语科目内容</p>
+<!-- 复习界面：极简全屏风格，大量留白，不做事卡片包裹 -->
+<!-- 关键设计：进入卡片只显示单词与音标；点「显示答案」后才揭晓例句（目标词高亮）与释义， -->
+<!-- 并放出评分按钮，保证评分基于真实回忆结果，避免「看着答案打分」污染 FSRS 记忆状态。 -->
+<div class="study" id="reviewApp">
 
-<!-- 单词间隔复习（FSRS）：主动回忆流程，由 english.js 中的 initReviewApp() 驱动 -->
-<!-- 关键设计：进入卡片时只显示单词与音标，点「显示答案」后才揭晓释义/例句并出现评分按钮， -->
-<!-- 保证评分基于真实回忆结果，避免「看着答案打分」污染 FSRS 记忆状态。 -->
-<div class="review-app" id="reviewApp">
-    <div class="review-header">
-        <span class="review-title">单词复习</span>
-        <span class="review-status" id="reviewStatus">正在加载复习内容...</span>
-    </div>
+    <!-- 顶栏：返回 / 今日统计 / 当前卡片的记忆元信息 -->
+    <header class="study-top">
+        <a class="study-back" href="index.html">← 返回</a>
+        <div class="study-counts">
+            <div class="study-count"><b id="statTodayNew">0</b><span>今日新学</span></div>
+            <div class="study-count"><b id="statTodayReview">0</b><span>今日复习</span></div>
+            <div class="study-count"><b id="statRest">0</b><span>剩余待学</span></div>
+        </div>
+        <div class="study-meta" id="studyMeta"></div>
+    </header>
 
-    <!-- 复习统计面板（数据来自 GET /api/reviews/stats） -->
-    <div class="review-stats" id="reviewStats" style="display:none;">
-        <div class="review-stat">
-            <span class="review-stat-value" id="statToday">0</span>
-            <span class="review-stat-label">今日已复习</span>
-        </div>
-        <div class="review-stat">
-            <span class="review-stat-value" id="statDue">0</span>
-            <span class="review-stat-label">到期待复习</span>
-        </div>
-        <div class="review-stat">
-            <span class="review-stat-value" id="statNew">0</span>
-            <span class="review-stat-label">未学新词</span>
-        </div>
-        <div class="review-stat">
-            <span class="review-stat-value" id="statStreak">0</span>
-            <span class="review-stat-label">连续天数</span>
-        </div>
-        <div class="review-stat">
-            <span class="review-stat-value" id="statRetention">—</span>
-            <span class="review-stat-label">记忆保持率</span>
-        </div>
-        <!-- 本轮队列进度条 -->
-        <div class="review-progress" title="本轮复习进度">
-            <div class="review-progress-bar" id="statProgressBar"></div>
-        </div>
-        <div class="review-stat-total" id="statTotal">词库共 0 词</div>
-    </div>
+    <!-- 主体：单词 + 音标（揭晓后在此追加例句与释义） -->
+    <main class="study-stage" id="studyStage">
+        <div class="study-word" id="reviewWord"></div>
 
-    <!-- 单词卡片：答案区默认隐藏 -->
-    <div class="review-card" id="reviewCard" style="display:none;">
-        <h2 id="reviewWord"></h2>
-        <div class="review-pronounce-row">
-            <button class="review-pronounce-btn" id="reviewSpeakWordBtn" title="朗读单词（快捷键 P）">🔊 单词</button>
-            <button class="review-pronounce-btn" id="reviewSpeakExampleBtn" title="朗读例句（快捷键 E）">🔊 例句</button>
-            <label class="review-autospeak" title="出现新卡片时自动朗读单词">
+        <div class="study-phonetic" id="reviewPhoneticRow">
+            <span class="study-ipa" id="reviewPhonetic"></span>
+            <button class="study-sound" id="reviewSpeakWordBtn" type="button"
+                    title="朗读单词（P）" aria-label="朗读单词">🔊</button>
+        </div>
+
+        <div class="study-answer" id="reviewAnswer" style="display:none;">
+            <!-- 例句：由引擎切成片段，目标词高亮 -->
+            <blockquote class="study-quote" id="reviewExample"></blockquote>
+            <!-- 释义：词性 + 释义正文（当前数据只有一条，结构已按多条准备） -->
+            <div class="study-senses" id="reviewSenses"></div>
+        </div>
+
+        <!-- 无卡片时（加载中 / 已完成 / 出错）的提示，避免销毁上面的结构 -->
+        <div class="study-message" id="studyMessage" style="display:none;"></div>
+    </main>
+
+    <!-- 底部：揭晓前是「点击显示答案」，揭晓后是四个评分按钮 -->
+    <footer class="study-foot">
+        <div class="study-reveal" id="reviewReveal" style="display:none;">
+            <button class="study-reveal-btn" id="reviewRevealBtn" type="button">
+                点击显示答案 <span>(Space)</span>
+            </button>
+        </div>
+
+        <div class="study-ratings" id="reviewButtons" style="display:none;">
+            <button class="rating rating-again" data-rating="1" type="button">陌生 <span>(Q)</span></button>
+            <button class="rating rating-hard" data-rating="2" type="button">困难 <span>(W)</span></button>
+            <button class="rating rating-good" data-rating="3" type="button">一般 <span>(E)</span></button>
+            <button class="rating rating-easy" data-rating="4" type="button">简单 <span>(R)</span></button>
+        </div>
+
+        <div class="study-footbar">
+            <span class="study-status" id="reviewStatus">正在加载复习内容...</span>
+            <button class="study-sound study-sound-text" id="reviewSpeakExampleBtn" type="button"
+                    title="朗读例句（L）">🔊 例句</button>
+            <label class="study-autospeak" title="出现新卡片时自动朗读单词">
                 <input type="checkbox" id="reviewAutoSpeak"> 自动朗读
             </label>
         </div>
-        <p id="reviewPhonetic" class="review-phonetic"></p>
-        <div class="review-answer" id="reviewAnswer" style="display:none;">
-            <p id="reviewMeaning" class="review-meaning"></p>
-            <p id="reviewExample" class="review-example"></p>
-        </div>
-    </div>
-
-    <!-- 显示答案按钮：揭晓前唯一可点的操作 -->
-    <div class="review-reveal" id="reviewReveal" style="display:none;">
-        <button class="review-reveal-btn" id="reviewRevealBtn">显示答案（空格）</button>
-    </div>
-
-    <!-- 评分按钮：揭晓答案后才出现 -->
-    <div class="review-buttons" id="reviewButtons" style="display:none;">
-        <button class="review-btn" data-rating="1" title="快捷键 1">忘记</button>
-        <button class="review-btn" data-rating="2" title="快捷键 2">困难</button>
-        <button class="review-btn" data-rating="3" title="快捷键 3">良好</button>
-        <button class="review-btn" data-rating="4" title="快捷键 4">简单</button>
-    </div>
+    </footer>
 </div>

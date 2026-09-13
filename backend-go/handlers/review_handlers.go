@@ -563,6 +563,18 @@ func (h *ReviewHandler) ReviewStats(c *gin.Context) {
 		Where("reviewed_at >= ?", startOfToday).
 		Count(&todayReviewed)
 
+	// 今日新学 / 今日复习：首次复习的日志里 stability_before 为 0（当时还是新卡），
+	// 之后的复习都带上前一次的稳定度。据此把今日的复习拆成两类，供界面顶部展示。
+	var todayNew int64
+	h.db.Model(&models.ReviewLog{}).
+		Where("reviewed_at >= ? AND stability_before = 0", startOfToday).
+		Count(&todayNew)
+
+	var todayReview int64
+	h.db.Model(&models.ReviewLog{}).
+		Where("reviewed_at >= ? AND stability_before > 0", startOfToday).
+		Count(&todayReview)
+
 	var againTotal int64
 	h.db.Model(&models.ReviewLog{}).Where("rating = ?", 1).Count(&againTotal)
 
@@ -579,6 +591,8 @@ func (h *ReviewHandler) ReviewStats(c *gin.Context) {
 		"reviewed_words": reviewedCount,
 		"total_reviews":  totalReviews,
 		"today_reviewed": todayReviewed,
+		"today_new":      todayNew,
+		"today_review":   todayReview,
 		"streak_days":    h.calcStreakDays(startOfToday),
 		"retention_rate": retentionRate,
 	}})

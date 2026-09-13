@@ -48,8 +48,9 @@ document.addEventListener('DOMContentLoaded', function() {
     // 用途：当学科页的结构或**路径**发生不兼容改动时，把版本号 +1，
     // 老用户 localStorage 里的旧页面缓存会在启动时被整体清除，
     // 避免出现「新脚本 + 旧页面结构」导致功能不可用
-    // 历史：v1 初版；v2 英语页新增「显示答案」按钮；v3 英语页迁到 modules/english/
-    const CACHE_VERSION = 3;
+    // 历史：v1 初版；v2 英语页新增「显示答案」按钮；v3 英语页迁到 modules/english/；
+    //       v4 英语复习界面改版（极简全屏：顶栏统计 / 大字号单词 / 例句高亮 / 粉彩评分按钮）
+    const CACHE_VERSION = 4;
     // CACHE_VERSION_KEY: 记录当前缓存版本的键名
     const CACHE_VERSION_KEY = 'pageCache_version';
     

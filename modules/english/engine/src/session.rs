@@ -29,7 +29,10 @@
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 
-use crate::fsrs_engine::{compute_next_states, CardState, ItemStateOut, NextStatesOut};
+use crate::card_view::{self, ExamplePart};
+use crate::fsrs_engine::{
+    compute_next_states, compute_retrievability, CardState, ItemStateOut, NextStatesOut,
+};
 use crate::randomizer::{random_indices, random_sample, random_seed};
 
 /// 期望记忆保持率（与原前端一致，固定 0.9）
@@ -72,6 +75,9 @@ pub struct ApiCard {
     /// 上次复习时间（ISO 8601）
     #[serde(default)]
     pub last_review_at: Option<String>,
+    /// 累计复习次数（仅到期卡有）
+    #[serde(default)]
+    pub reps: Option<u32>,
 }
 
 /// `{"data":{"items":[...]}}` 外层信封
@@ -244,6 +250,34 @@ pub fn progress_percent(done: u32, total: u32) -> u32 {
     (done as f64 / total as f64 * 100.0).round() as u32
 }
 
+/// 依据计划卡与当前时间生成记忆元信息。
+///
+/// 新词（无记忆状态）只给 `status = "new"`；到期卡给出难度、稳定度、复习次数、
+/// 距上次天数，并用 FSRS 可提取率算「预计记住」。
+fn card_meta(card: &PlannedCard, now_ms: f64) -> CardMetaOut {
+    let state = match card.state {
+        None => {
+            return CardMetaOut {
+                status: "new",
+                ..Default::default()
+            }
+        }
+        Some(state) => state,
+    };
+    let days = match card.last_ms {
+        Some(last_ms) => days_elapsed(last_ms, now_ms),
+        None => 0,
+    };
+    CardMetaOut {
+        status: "due",
+        difficulty: Some(state.difficulty),
+        stability: Some(state.stability),
+        reps: card.card.reps,
+        days_since_last: Some(days),
+        retrievability: Some(compute_retrievability(&state, days as f32)),
+    }
+}
+
 // ---------- 会话对象：纯计算实现 ----------
 
 /// 提交复习的请求体（与后端 `POST /api/reviews/submit` 对应）
@@ -254,6 +288,31 @@ struct SubmitPayload {
     stability: f32,
     difficulty: f32,
     interval_days: f32,
+}
+
+/// 卡片的记忆元信息（界面右上角展示，与参考产品的「难度/稳定性/预计记住」对应）
+///
+/// 新词没有记忆状态，因此除 `status` 外全部省略（`skip_serializing_if`），
+/// 前端据此决定是否显示这一块。
+#[derive(Debug, Default, Serialize)]
+struct CardMetaOut {
+    /// "due"（到期复习卡）| "new"（新词）
+    status: &'static str,
+    /// 记忆难度 1~10
+    #[serde(skip_serializing_if = "Option::is_none")]
+    difficulty: Option<f32>,
+    /// 记忆稳定度（天）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stability: Option<f32>,
+    /// 累计复习次数
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reps: Option<u32>,
+    /// 距上次复习天数
+    #[serde(skip_serializing_if = "Option::is_none")]
+    days_since_last: Option<u32>,
+    /// 预计记住（0~1）：FSRS 可提取率，即此刻还能回忆起来的概率
+    #[serde(skip_serializing_if = "Option::is_none")]
+    retrievability: Option<f32>,
 }
 
 /// 当前卡片的展示数据（供 JS 直接渲染）
@@ -267,6 +326,14 @@ struct CurrentCardOut {
     source: CardSource,
     /// 在原始数组中的下标
     index: u32,
+    /// 从 meaning 拆出的词性标签（如 "v."，没有则为空串）
+    pos: String,
+    /// 去掉词性前缀后的释义正文
+    meaning_text: String,
+    /// 例句切分片段（前端据此把目标词高亮）
+    example_parts: Vec<ExamplePart>,
+    /// 记忆元信息
+    meta: CardMetaOut,
 }
 
 /// 一次复习会话：持有队列、游标与期望保持率。
@@ -411,17 +478,26 @@ impl ReviewSession {
     }
 
     /// 当前卡片的展示数据（JSON）；无当前卡片时返回空对象 `{}`
-    pub fn current_json(&self) -> String {
+    ///
+    /// `now_ms` 用于换算「距上次复习天数」与「预计记住」，所以由 JS 传 `Date.now()`。
+    pub fn current_json(&self, now_ms: f64) -> String {
         match self.cards.get(self.cursor) {
-            Some(c) => serde_json::to_string(&CurrentCardOut {
-                word: c.card.word.clone(),
-                phonetic: c.card.phonetic.clone(),
-                meaning: c.card.meaning.clone(),
-                example: c.card.example.clone(),
-                source: c.source,
-                index: c.index,
-            })
-            .unwrap_or_else(|_| "{}".to_string()),
+            Some(c) => {
+                let wm = card_view::split_pos(&c.card.meaning);
+                serde_json::to_string(&CurrentCardOut {
+                    word: c.card.word.clone(),
+                    phonetic: c.card.phonetic.clone(),
+                    meaning: c.card.meaning.clone(),
+                    example: c.card.example.clone(),
+                    source: c.source,
+                    index: c.index,
+                    pos: wm.pos,
+                    meaning_text: wm.text,
+                    example_parts: card_view::split_example(&c.card.example, &c.card.word),
+                    meta: card_meta(c, now_ms),
+                })
+                .unwrap_or_else(|_| "{}".to_string())
+            }
             None => "{}".to_string(),
         }
     }
@@ -453,6 +529,7 @@ mod tests {
             difficulty: None,
             due_at: None,
             last_review_at: None,
+            reps: None,
         }
     }
 
@@ -599,7 +676,7 @@ mod tests {
         s.try_rate(1, 0.0).expect("第二张也应能评分");
         assert!(s.is_finished());
         assert_eq!(s.progress_percent(), 100);
-        assert_eq!(s.current_json(), "{}", "队列走完后不再有当前卡片");
+        assert_eq!(s.current_json(0.0), "{}", "队列走完后不再有当前卡片");
         assert!(s.try_rate(3, 0.0).is_err(), "队列走完后评分应报错");
     }
 
@@ -629,8 +706,42 @@ mod tests {
         );
         assert_eq!(s.total(), 1, "默认新词上限 5，但只有一个新词");
         assert_eq!(s.current_word_id(), 9);
-        assert!(s.current_json().contains("decide"));
-        assert!(s.current_json().contains(r#""source":"new""#));
+        assert!(s.current_json(0.0).contains("decide"));
+        assert!(s.current_json(0.0).contains(r#""source":"new""#));
+        // 新词只给 status，不给记忆元信息
+        assert!(s.current_json(0.0).contains(r#""status":"new""#));
+        assert!(!s.current_json(0.0).contains("retrievability"));
+    }
+
+    #[test]
+    fn current_json_exposes_pos_parts_and_meta() {
+        // 到期卡：应带上词性拆分、例句切分与完整记忆元信息
+        let due = vec![due_card(1, "purpose", 2.3, 5.0)];
+        let mut s = session(&due, &[Some(10.0 * MS_PER_DAY)], &[], 1);
+        // 词条文本单独构造（due_card 里没有释义与例句）
+        s.cards[0].card.meaning = "n. 目的；意图".to_string();
+        s.cards[0].card.example = "The purpose of this meeting is to discuss.".to_string();
+        s.cards[0].card.reps = Some(3);
+
+        let now = 12.0 * MS_PER_DAY; // 距上次 2 天
+        let v: serde_json::Value = serde_json::from_str(&s.current_json(now)).unwrap();
+
+        assert_eq!(v["pos"], "n.");
+        assert_eq!(v["meaning_text"], "目的；意图");
+
+        let parts = v["example_parts"].as_array().unwrap();
+        assert_eq!(parts.len(), 3);
+        assert_eq!(parts[1]["text"], "purpose");
+        assert_eq!(parts[1]["hit"], true);
+        assert_eq!(parts[0]["hit"], false);
+
+        assert_eq!(v["meta"]["status"], "due");
+        assert_eq!(v["meta"]["days_since_last"], 2);
+        assert_eq!(v["meta"]["reps"], 3);
+        assert!((v["meta"]["stability"].as_f64().unwrap() - 2.3).abs() < 1e-3);
+        let r = v["meta"]["retrievability"].as_f64().unwrap();
+        assert!((0.0..=1.0).contains(&r), "可提取率应在 0~1：{r}");
+        assert!(r < 1.0, "过了 2 天，预计记住应小于 1：{r}");
     }
 
     #[test]
