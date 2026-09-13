@@ -1,7 +1,12 @@
+<!-- 英语模块 · 学科页片段 -->
+<!-- 由 main.js 通过 fetch 加载并注入 #contentContainer（内容会被 localStorage 缓存） -->
+<!-- 逻辑在同目录的 english.js，样式在同目录的 english.css，调度引擎在同目录的 engine/ -->
+<link rel="stylesheet" href="modules/english/english.css">
+
 <h1>英语</h1>
 <p>英语科目内容</p>
 
-<!-- 单词间隔复习（FSRS）：主动回忆流程，由 main.js 中的 initReviewApp() 驱动 -->
+<!-- 单词间隔复习（FSRS）：主动回忆流程，由 english.js 中的 initReviewApp() 驱动 -->
 <!-- 关键设计：进入卡片时只显示单词与音标，点「显示答案」后才揭晓释义/例句并出现评分按钮， -->
 <!-- 保证评分基于真实回忆结果，避免「看着答案打分」污染 FSRS 记忆状态。 -->
 <div class="review-app" id="reviewApp">

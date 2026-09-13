@@ -1,0 +1,226 @@
+/* ============================================================================
+ * 英语模块 · 样式
+ * 由 modules/english/english.html 通过 <link> 引入，只作用于英语页内的元素。
+ * 全站通用样式（导航栏、内容容器等）在根目录 main.css。
+ * ========================================================================== */
+
+/* ===================== 单词间隔复习（FSRS）简单版样式 ===================== */
+
+/* 复习应用整体容器 */
+.review-app {
+    /* 设置最大宽度，避免卡片在宽屏上过宽 */
+    max-width: 640px;
+    /* 水平居中 */
+    margin: 0 auto;
+}
+
+/* 复习头部：标题 + 状态 */
+.review-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 4px;
+}
+
+/* 复习标题 */
+.review-title {
+    font-size: 20px;
+    font-weight: bold;
+}
+
+/* 复习状态文字 */
+.review-status {
+    color: #888;
+    font-size: 14px;
+}
+
+/* 单词卡片 */
+.review-card {
+    border: 1px solid #e0e0e0;
+    border-radius: 12px;
+    padding: 24px;
+    margin: 12px 0;
+    text-align: center;
+    background-color: #fafafa;
+}
+
+/* 音标 */
+.review-phonetic {
+    color: #777;
+    font-size: 14px;
+}
+
+/* 释义 */
+.review-meaning {
+    font-size: 18px;
+    margin: 10px 0;
+}
+
+/* 例句 */
+.review-example {
+    color: #555;
+    font-style: italic;
+    font-size: 14px;
+}
+
+/* 评分按钮行 */
+.review-buttons {
+    display: flex;
+    gap: 12px;
+    justify-content: center;
+    margin-top: 12px;
+}
+
+/* 评分按钮 */
+.review-btn {
+    padding: 10px 22px;
+    border: none;
+    border-radius: 8px;
+    background-color: #e0e0e0;
+    color: #333;
+    font-size: 15px;
+    cursor: pointer;
+    transition: background-color 0.2s;
+}
+
+.review-btn:hover {
+    background-color: #cfcfcf;
+}
+
+/* 不同评分按钮的区分色 */
+.review-btn[data-rating="1"] { background-color: #f4c7c3; }
+.review-btn[data-rating="2"] { background-color: #f0d9b5; }
+.review-btn[data-rating="3"] { background-color: #c8e6c9; }
+.review-btn[data-rating="4"] { background-color: #b3e5fc; }
+
+/* ===================== 复习统计面板 ===================== */
+
+/* 统计面板容器：横向排列各项指标 */
+.review-stats {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    padding: 12px;
+    margin: 8px 0;
+    border: 1px solid #e0e0e0;
+    border-radius: 12px;
+    background-color: #ffffff;
+}
+
+/* 单个指标 */
+.review-stat {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    min-width: 72px;
+    flex: 1 1 72px;
+}
+
+/* 指标数值 */
+.review-stat-value {
+    font-size: 20px;
+    font-weight: bold;
+    color: #333;
+}
+
+/* 指标名称 */
+.review-stat-label {
+    font-size: 12px;
+    color: #888;
+}
+
+/* 词库总量说明 */
+.review-stat-total {
+    flex: 1 1 100%;
+    font-size: 12px;
+    color: #999;
+    text-align: right;
+}
+
+/* 本轮进度条轨道 */
+.review-progress {
+    flex: 1 1 100%;
+    height: 6px;
+    border-radius: 3px;
+    background-color: #eceff1;
+    overflow: hidden;
+}
+
+/* 进度条填充部分：宽度由 JS 控制 */
+.review-progress-bar {
+    width: 0;
+    height: 100%;
+    background-color: #64b5f6;
+    transition: width 0.3s;
+}
+
+/* ===================== 发音按钮 ===================== */
+
+/* 发音按钮行 */
+.review-pronounce-row {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 8px;
+    margin: 6px 0;
+}
+
+/* 发音按钮 */
+.review-pronounce-btn {
+    padding: 4px 12px;
+    border: 1px solid #d0d0d0;
+    border-radius: 6px;
+    background-color: #ffffff;
+    color: #555;
+    font-size: 13px;
+    cursor: pointer;
+    transition: background-color 0.2s;
+}
+
+.review-pronounce-btn:hover {
+    background-color: #f0f0f0;
+}
+
+/* 自动朗读开关 */
+.review-autospeak {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 13px;
+    color: #888;
+    cursor: pointer;
+}
+
+/* ===================== 主动回忆：答案与揭示按钮 ===================== */
+
+/* 答案区：揭晓后显示释义与例句 */
+.review-answer {
+    border-top: 1px dashed #e0e0e0;
+    margin-top: 14px;
+    padding-top: 10px;
+}
+
+/* 显示答案按钮所在行 */
+.review-reveal {
+    text-align: center;
+    margin-top: 12px;
+}
+
+/* 显示答案按钮 */
+.review-reveal-btn {
+    width: 100%;
+    max-width: 320px;
+    padding: 12px 22px;
+    border: 1px dashed #b0bec5;
+    border-radius: 8px;
+    background-color: #ffffff;
+    color: #37474f;
+    font-size: 15px;
+    cursor: pointer;
+    transition: background-color 0.2s;
+}
+
+.review-reveal-btn:hover {
+    background-color: #eceff1;
+}
