@@ -23,6 +23,7 @@ var state = {
     planInfo: null,      // 引擎给的今日计划规模 {new_target, probe_target, plan_len}
     planTotals: null,    // 今日计划的分母 {new, probe}，建会话时算一次后固定
     planPhase: '',       // 左下角小字当前处于哪一段：'' / 'plan' / 'review'
+    rounds: null,        // 上一次看到的「过完的轮数」（null = 还没记基线）
     queueOffset: 0,      // 复习区已经交给引擎多少张（翻页用）
     queueTotal: 0        // 复习区一共多少张（后端给的总数）
 };
@@ -54,6 +55,12 @@ var PROBE_COOLDOWN_DAYS = 7;
 var QUEUE_PAGE_SIZE = 100;
 var NEW_CANDIDATE_SIZE = 20;
 var PROBE_CANDIDATE_SIZE = 20;
+
+// 本轮还剩这么多张没复习时，就去把复习区的下一页取回来（见 maybePrefetch）
+var PREFETCH_MARGIN = 5;
+
+// 「本轮已过一遍」提示在左下角停留多久（毫秒）
+var ROUND_FLASH_MS = 2600;
 
 // 引擎模块路径（相对本文件所在目录解析）
 var WASM_MODULE_URL = './engine/pkg/guangxue_wasm.js';
@@ -182,7 +189,9 @@ export function unmount() {
     document.body.classList.remove('is-immersive');
     cancelRevealAnimation();
     clearTimeout(planSwapTimer);
+    clearTimeout(roundFlashTimer);
     planSwapTimer = null;
+    roundFlashTimer = null;
     releaseSession();
     state.card = null;
     state.revealed = false;
@@ -192,6 +201,7 @@ export function unmount() {
     state.planInfo = null;
     state.planTotals = null;
     state.planPhase = '';
+    state.rounds = null;
     state.queueOffset = 0;
     state.queueTotal = 0;
     if (window.speechSynthesis) {
@@ -461,8 +471,8 @@ function renderCardNow() {
         hideCardBody();
         setStatus('');
         showFinishMessage();
-        // 队列抽干：还有下一页就接着取，取不到就停在上面的结束文案
-        maybeRefill();
+        // 池子是空的：看看还有没有下一页可取，取到了就能继续
+        maybePrefetch();
         return;
     }
 
@@ -482,12 +492,17 @@ function renderCardNow() {
 
     renderMeta(state.card.meta);
     renderAnswer(state.card);
+    renderPlanProgress();
+    checkRounds(session.rounds());
 
-    // 无限学习的场景下，「队列剩余」比「第 N / M 张」更能反映进度（M 会随翻页增长）
+    // 无限复习：评完的卡会按新到期时间插回池子，所以这里不再有「剩余张数」的概念，
+    // 改为显示本轮已经复习了多少张（越往下翻越大）
     var sourceLabel = sourceLabelOf(state.card.source);
-    setStatus('已学 ' + session.done() + ' 张 · 队列剩余 ' +
-        (session.total() - session.done()) + ' 张 · ' + sourceLabel);
+    setStatus('本轮已复习 ' + session.done() + ' 张 · ' + sourceLabel);
     show('reviewReveal');
+
+    // 本轮快走完时预先取复习区的下一页（词库大时要翻好几页）
+    maybePrefetch();
 
     // 开启自动朗读时，每张新卡出现即朗读单词
     if (isAutoSpeakOn()) speakCurrent('word');
@@ -500,7 +515,7 @@ function sourceLabelOf(source) {
     return '复习';
 }
 
-// 结束文案：区分「本轮学过」「词库学完」「词库为空」三种情况
+// 结束文案：池子空了才会出现（词库没词、或接口什么都没给）
 function showFinishMessage() {
     var session = state.session;
     var stats = state.stats || {};
@@ -510,28 +525,29 @@ function showFinishMessage() {
         showMessage('今天复习完成 ✨', '本轮共学 ' + learned + ' 张');
     } else if ((stats.total_words || 0) === 0) {
         showMessage('词库还是空的', '可以到后台的「批量导入」粘贴词表添加词条');
-    } else if ((stats.new_words || 0) === 0) {
-        showMessage('词库都学完了 🎉', '共 ' + stats.total_words + ' 个词条；可以到后台继续添加');
     } else {
-        showMessage('暂无需要复习的单词', '明天再来 👋');
+        showMessage('暂时没有可复习的词', '稍后再来 👋');
     }
 }
 
-// 队列走完后接着往下翻：复习区还分页没取完就再取一页，取完了就停在结束文案。
-// 注意这里只追加**复习区**：新词与抽查受每日配额限制，不因为翻页而变多。
-function maybeRefill() {
+// 本轮快过完时，预先取复习区的下一页塞进池子。
+//
+// 为什么不是「池子空了才取」：评完的卡会按新的到期时间插回池子，池子永远不会空，
+// 所以「空了再取」的分页条件再也触发不了——词库有几千词时会永远只在前一页里打转。
+// 改成看**本轮的进度**：本轮已复习的卡数逼近池子总量时，提前把下一页取回来。
+function maybePrefetch() {
     if (state.refilling || !state.session) return;
+    if (state.queueOffset >= state.queueTotal) return; // 整库都取回来了
 
-    // 整库都翻完了：没有更多卡片了
-    if (state.queueOffset >= state.queueTotal) {
-        showFinishMessage();
-        return;
-    }
+    // universe = 池中待抽 + 手上这一张；rated = 本轮已评分数
+    var universe = state.session.pending_count() + 1;
+    var rated = state.session.seen_count();
+    if (universe - rated > PREFETCH_MARGIN) return; // 本轮还早，不急着取
 
     state.refilling = true;
 
     // 必须等上一次提交落库：否则刚评过的词在服务端 due_at 还没更新，
-    // 会被当成到期卡再抽一次（引擎侧的待办去重挡不住它，因为它已越过游标）
+    // 取回来的那一页可能又把它当成「早就到期」的卡
     var wait = state.pendingSubmit || Promise.resolve();
 
     wait.then(function() {
@@ -549,27 +565,23 @@ function maybeRefill() {
         try {
             added = state.session.append(results[0], JSON.stringify(buildPlanOptions(loadTodayPlan())));
         } catch (e) {
-            setStatus('补卡失败：' + e);
-            console.error('补卡失败:', e);
+            setStatus('取下一页失败：' + e);
+            console.error('取下一页失败:', e);
             return;
         }
         state.queueOffset += meta.count;
 
-        if (added > 0) {
-            renderCardNow(); // 接着往下翻
-            return;
+        // 追加只是把池子变大，当前这张卡不变，所以不需要重绘；
+        // 本轮因此自然延长，可以一直复习下去
+        if (added === 0) {
+            // 这一页全是池子里已有的卡（例如刚评完又插回去的）：跳过它继续往后取
+            if (state.queueOffset < state.queueTotal && meta.count > 0) {
+                maybePrefetch();
+            }
         }
-        // 这一页没有新卡（例如全都在待办区里了）：直接看还有没有下一页
-        if (state.queueOffset < state.queueTotal && meta.count > 0) {
-            state.refilling = false;
-            maybeRefill();
-            return;
-        }
-        showFinishMessage();
     }).catch(function(err) {
         state.refilling = false;
-        setStatus('补卡失败（刷新页面可重试）：' + err);
-        console.error('自动补卡失败:', err);
+        console.error('取下一页失败:', err);
     });
 }
 
@@ -585,13 +597,15 @@ function renderStats(stats) {
 
 // 计划文案的切换定时器（换卡 / 离开页面时要清掉）
 var planSwapTimer = null;
+// 「本轮已过一遍」提示的定时器
+var roundFlashTimer = null;
 
 // 画出左下角小字。
 // 两个阶段：
 //   plan   —— 今日计划还没走完：「新词 3/5 · 抽查 2/5」
 //   review —— 计划区的卡全部评完了：「计划完成 · 进入复习阶段」（带动效切换）
 // 阶段切换只在真的跨过去时播一次动画。
-function renderPlanProgress() {
+function renderPlanProgress(forceAnimate) {
     var session = state.session;
     var info = state.planInfo;
     if (!session || !info) return;
@@ -612,8 +626,26 @@ function renderPlanProgress() {
         text = parts.join(' · ');
     }
 
-    setPlanText(text, phase !== state.planPhase && state.planPhase !== '');
+    setPlanText(text, !!forceAnimate || (phase !== state.planPhase && state.planPhase !== ''));
     state.planPhase = phase;
+}
+
+// 过完一整轮时的轻提示：左下角小字闪一句「本轮已过一遍」，过一会儿自动切回计划文案
+function checkRounds(rounds) {
+    // 首次进入只记基线，不提示
+    if (state.rounds === null || state.rounds === undefined) {
+        state.rounds = rounds;
+        return;
+    }
+    if (rounds <= state.rounds) return;
+    state.rounds = rounds;
+
+    setPlanText('本轮已过一遍 · 可以继续', true);
+    clearTimeout(roundFlashTimer);
+    roundFlashTimer = setTimeout(function() {
+        roundFlashTimer = null;
+        renderPlanProgress(true); // 切回计划文案（也带动效）
+    }, ROUND_FLASH_MS);
 }
 
 // 设置左下角文案：阶段变化时先淡出旧文案、再浮入新文案（见 english.css 的 planOut / planIn）

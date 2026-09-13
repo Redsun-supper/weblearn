@@ -35,10 +35,14 @@ await init(); // wasm-bindgen --target web 产物必须先实例化
 //              额度记在浏览器 localStorage 里（没有登录系统，服务端分不清是谁的）
 const session = new ReviewSession(queueText, newText, probeText, planText);
 
-session.total();             // 队列总张数（会随 append 增长）
-session.done();              // 已完成张数
-session.is_finished();       // 当前队列是否已走完
-session.progress_percent();  // 0~100
+// 队列总张数（池中待抽 + 手上这一张）；无限复习下它不会归零
+session.total();
+session.done();              // 本轮已评分张数（只增）
+session.pending_count();     // 池中还有多少张没抽
+session.seen_count();        // 本轮已经评过多少张**不同**的卡（前端用它判断该不该取下一页）
+session.rounds();            // 已经过完整轮的次数（每张卡都评过一次 = 一轮）
+session.is_finished();       // 池子空了才会是 true（正常词库下不会）
+session.progress_percent();  // 0~100（无限复习下意义有限，保留给调试）
 session.current_word_id();   // 当前词条 id（无卡时 0）
 session.plan_json();         // {"new_target":5,"probe_target":5,"plan_len":10}
 // 计划区长度：done() >= plan_len 就说明今日计划做完了、进入复习阶段（前端据此切左下角文案）
@@ -55,7 +59,7 @@ session.current_json(Date.now());
 //
 // senses 的来源有两条：
 //   1. 词条填了结构化多释义（后端 words.senses）→ 直接用，每块可带自己的例句与译文；
-//   2. 没填 → 把 meaning 按词性标签自动拆开（"n. 好处；益处 v. 有益于" → 名词、动词两块），
+//   2. 没填 → 把 meaning 按词性标签自动拆开（"n. 好处；有益于 v. 有益于" → 两块），
 //      此时例句只有词条级那一条，显示在顶部。
 // 两件事都在 card_view::split_senses / build_senses 里，纯计算、有单元测试兜住。
 
@@ -65,37 +69,69 @@ const body = session.rate(3, Date.now());
 // {"word_id":42,"rating":3,"stability":2.3065,"difficulty":2.1181,"interval_days":2.3065,"is_probe":false}
 // ⚠️ 抽查卡（source === "probe"）在引擎里**按新卡重算**：丢掉原 stability/difficulty、天数按 0 算，
 //    请求体里 is_probe 为 true。所以一张稳定到 60 天的卡被抽查时，Good 也只给 2.3065 天。
+// ⚠️ 评分不只是算状态：它还会把这张卡**按新的到期时间插回池子**（见下面的「无限复习」）。
 
-// 队列走完后继续翻：追加复习区的下一页（游标不动），返回实际追加数量；0 表示没得抽了
+// 取复习区的下一页塞进池子（按到期时间插好），返回实际新增数量
 const added = session.append(queueText, planText);
 // ⚠️ 只追加**复习区**：新词与抽查受每日配额限制，不会因为翻页而变多
 
 session.free();  // 离开英语页时释放（wasm-bindgen 生成）
 ```
 
-`append` 的去重规则：跳过 id 已经在**待办区**（尚未评分的部分）里的卡片；
-游标之前已评完的卡不算重复——到期后再次抽到属于正常复习。
+`append` 的去重规则：跳过 id 已经**在池子里或手上**的卡片（防竞态导致同一张卡进池两次）。
 
 另有 `ReviewSession.with_seed(queueJson, newJson, probeJson, planJson, seed)` 与
 `append_with_seed(..., seed)`：显式指定随机种子，便于复现与测试。
 
-### 纯计算层：`plan_day` / `chunk_shuffle`
+### 无限复习：池子 + 抽卡规则
+
+会话内部不再是「一次性队列 + 游标」，而是**一个始终按到期时间升序的池子**：
+
+```text
+评完一张 ──► 用「now + 引擎算出的间隔」算出新到期时间
+          ──► insert_sorted() 按顺序插回池子（池子始终有序）
+          ──► 抽下一张
+```
+
+池子因此永远不会空，也就没有「结束页」。抽卡规则（`ReviewSession::pick_index`）：
+
+1. **池首是「已过期 / 今日计划」的卡** → 严格按最旧优先，不打乱
+2. **池首全是未到期的** → 在**最靠前的 `CHUNK_SIZE`（10）张**里随机抽一张
+3. **本轮已经评过的卡不再抽**（它们的到期时间往往就落在最前面，不挡的话会来回循环）；
+   窗口里全是评过的就把窗口逐步放大，保证本轮每张都能轮到
+4. 池子比保护窗口还小（例如只有 3 张）→ 放行，保证永远有卡可出
+
+「同一张卡至少隔多久重复」由第 3 条保证：至少要等到下一轮（词库 ≥ 10 张时一轮至少那么长）。
+**一轮 = 池里每张卡都评过一次**，过完一轮 `rounds()` +1，前端据此提示「本轮已过一遍」。
+
+> ⚠️ 两个踩过的坑，各有一条单元测试锁住：
+> - `round_completes_even_when_some_cards_are_far_in_the_future`：
+>   第 2 步的窗口如果永远不往后放宽，排在后面的卡会被**饿死**，轮次永远凑不齐。
+> - `repeat_gap_holds_across_round_boundaries`：
+>   `try_rate` 里必须**先结算轮次再抽下一张**；反过来的话，新一轮的第一张是在
+>   「整池都评过」的状态下抽的，候选被挡光后退化到兜底分支，刚评过的卡会隔 8 张就重复。
+
+⚠️ **间隔下限要与服务端一致**：插回池子的到期时间是 `now + max(interval_days*86400000, 600000)`，
+其中 600000（10 分钟）对应 `backend-go/handlers/review_handlers.go` 的 `dueSeconds`。
+两处口径不一致会让池子里的排序位置与服务端实际 `due_at` 出现偏差。
+
+### 纯计算层：`plan_day` / `insert_sorted`
 
 ```rust
-// 编排今日队列：新词 → 抽查 → 复习区（详见函数文档）
+// 编排今日的初始池子：新词 → 抽查 → 复习区（按到期时间升序，不打乱）
 pub fn plan_day(queue: Vec<QueueInput>, new: Vec<ApiCard>, probes: Vec<ApiCard>,
                 opts: &PlanOptions, seed: u32) -> DayPlan;
 
-// 梯度乱序：每 10 个一块，块内打乱、块间顺序不变
-pub fn chunk_shuffle(items: &mut [usize], chunk: usize, seed: u32);
+// 按到期时间插回池子（池保持升序；相同到期时间保持相对顺序）
+fn insert_sorted(pool: &mut Vec<PlannedCard>, card: PlannedCard);
 
 // 复习区翻页追加（只做复习区，不碰新词与抽查）
-pub fn append_queue_plan(existing: &[PlannedCard], cursor: usize, queue: Vec<QueueInput>,
-                         opts: &PlanOptions, seed: u32) -> Vec<PlannedCard>;
+impl ReviewSession { pub fn append_page(&mut self, queue: Vec<QueueInput>, now_ms: f64, seed: u32) -> u32; }
 ```
 
-`QueueInput` 同时带 `last_ms`（评分时算天数）与 `due_ms`（排序与切分），
-两者都是**已解析好的毫秒**——纯计算层不碰时间字符串，宿主测试才能覆盖排序与切分逻辑。
+`QueueInput` / `PlannedCard` 都带 `last_ms`（评分时算天数）与 `due_ms`（排序），
+两者都是**已解析好的毫秒**——纯计算层不碰时间字符串，宿主测试才能覆盖排序与抽卡逻辑。
+`PlannedCard.due_ms` 为 `None` 表示「今日计划卡」（新词 / 抽查），排序时按 −∞ 处理，排在最前面。
 
 ### 低层 API（仍在导出，供引擎复用与调试）
 
@@ -155,21 +191,19 @@ wasm-bindgen --target web --out-dir pkg --out-name guangxue_wasm `
 ## 单元测试
 
 ```powershell
-cargo test            # 106 个测试：会话编排 / 每日计划 / 梯度乱序 / 天数换算 / 解析 / FSRS / 多释义 / 词形匹配
+cargo test            # 118 个测试：每日计划 / 抽卡规则 / 插回池子 / 轮次 / 天数换算 / 解析 / FSRS / 多释义 / 词形匹配
 cargo test -- --nocapture
 ```
 
 测试全部跑在**纯计算层**，不依赖浏览器：
 
-- `plan_day`（新词→抽查→复习区的顺序、额度受限、抽查跳过刚抽过的、抽查卡不在复习区重复出现）
-- `plan_overdue_keeps_urgency_order_strictly` / `plan_upcoming_is_chunk_shuffled` / `chunk_shuffle_*`（梯度乱序）
-- `probe_rating_resets_memory_state` / `normal_review_keeps_memory_state`（抽查按新卡重算的对比测试）
-- `plan_session` 时代留下的：`days_elapsed` / `progress_percent` / `pick_branch`
-- `ReviewSession::build` / `ReviewSession::try_rate`（错误类型是 `String`）
-- `parse_items`（含 Go 空结果返回 `"items": null`、`"senses": null` 的场景）
-- `split_senses`（一行多个义项、连续词性标签、`num.` 不被 `n.` 抢、括号里的标签不误判）
-- `split_example` / `word_forms`（词边界优先、变形匹配 `applied` ↔ `apply`、原形优先）
-- `parse_word_list_core`（制表符/竖线/逗号/空格、注释、重复、列错位、第 5 列例句翻译）
+- `plan_day`（新词→抽查→复习区的顺序、额度受限、抽查跳过刚抽过的、池子严格有序、计划卡排最前）
+- `pick_*`（过期严格最旧优先、未到期只在前 10 张里抽、10 张内不重复、池子太小则放行）
+- `rate_reinserts_*`（评完插回池子、按新到期时间排序、间隔下限 10 分钟、记忆状态同步更新）
+- `rounds_*` / `repeat_gap_*`（轮次判定、跨轮边界的重复保护、窗口放宽防止饿死）
+- `append_*`（插页、去重、只追加复习区、空池子追加后能出题）
+- `days_elapsed` / `progress_percent` / `pick_branch` / `parse_items`（含 `"items": null` / `"senses": null`）
+- `split_senses` / `split_example` / `word_forms` / `parse_word_list_core`
 
 > **为什么要有「纯计算层」这一层**：`JsValue` 在非 wasm32 目标上并未实现
 > （调用即 `panic: function not implemented on non-wasm32 targets`，且无法 unwinding，
