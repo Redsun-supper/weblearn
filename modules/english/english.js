@@ -25,6 +25,10 @@ var state = {
 // 自动朗读开关在 localStorage 中的键名
 var AUTO_SPEAK_KEY = 'reviewAutoSpeak';
 
+// 沉浸模式（隐藏站点导航栏）在 localStorage 中的键名
+// 没有记录时默认**开启**：进入复习页就是要专注，导航栏先收起来
+var IMMERSIVE_KEY = 'reviewImmersive';
+
 // 引擎模块路径（相对本文件所在目录解析）
 var WASM_MODULE_URL = './engine/pkg/guangxue_wasm.js';
 
@@ -78,6 +82,10 @@ export function initReviewApp() {
         });
     }
 
+    // 沉浸模式：把站点导航栏收起来，让复习页占满整屏（默认开启）
+    bindClick('studyNavToggle', function() { toggleImmersive(); });
+    setImmersive(isImmersiveOn());
+
     // 浏览器会拦截未经用户交互的语音：首次交互后补读一次当前单词
     if (!unlockBound) {
         unlockBound = true;
@@ -120,6 +128,27 @@ export function initReviewApp() {
         showMessage('复习功能加载失败', String(err) + '（需通过服务器访问，并确认已生成 WASM 引擎）');
         console.error('复习功能初始化失败:', err);
     });
+}
+
+// 离开英语页时的清理。由 main.js 在切换到其他学科之前调用。
+// 为什么必须显式清理：沉浸模式把 is-immersive 类挂在了 document.body 上，
+// 内容容器被换成别的学科后这个类不会自己消失，导航栏会跟着一起不见。
+// 顺带释放引擎侧会话、取消未读完的语音，避免反复进出英语页时内存与声音残留。
+export function unmount() {
+    document.body.classList.remove('is-immersive');
+    releaseSession();
+    state.card = null;
+    state.revealed = false;
+    state.stats = null;
+    state.pendingSubmit = null;
+    state.refilling = false;
+    if (window.speechSynthesis) {
+        try {
+            window.speechSynthesis.cancel();
+        } catch (e) {
+            // 浏览器不支持时忽略
+        }
+    }
 }
 
 // 取一批卡片与统计：会话初始化与「自动补词」共用同一套取数逻辑
@@ -371,15 +400,17 @@ function renderMeta(meta) {
     }
 }
 
-// 揭晓区：例句（目标词高亮）+ 词性释义
+// 揭晓区：主例句（目标词高亮，配中文翻译）+ 一条条释义块
 function renderAnswer(card) {
-    // 例句：引擎已切成「命中 / 未命中」片段，这里只负责拼成 DOM
+    // ---------- 主例句 ----------
+    // 引擎已切成「命中 / 未命中」片段，这里只负责拼成 DOM。
+    // 词条没有例句时不渲染引文块（多释义各自带例句的情况很常见，不能留个空壳）
     var quote = document.getElementById('reviewExample');
+    var parts = card.example_parts || [];
     if (quote) {
         quote.textContent = '';
-        var parts = card.example_parts || [];
         if (parts.length === 0) {
-            quote.textContent = '（该词条暂无例句）';
+            hide('reviewExample');
         } else {
             quote.appendChild(document.createTextNode('“'));
             for (var i = 0; i < parts.length; i++) {
@@ -393,21 +424,43 @@ function renderAnswer(card) {
                 }
             }
             quote.appendChild(document.createTextNode('”'));
+            show('reviewExample');
         }
     }
 
-    // 释义：当前数据只有一条（词性 + 释义正文），结构按多条准备
-    var senses = document.getElementById('reviewSenses');
-    if (!senses) return;
-    senses.textContent = '';
+    // 主例句的中文翻译（没填就不显示这一行）
+    var quoteCn = document.getElementById('reviewExampleCn');
+    if (quoteCn) {
+        if (card.example_translation && parts.length > 0) {
+            quoteCn.textContent = card.example_translation;
+            show('reviewExampleCn');
+        } else {
+            quoteCn.textContent = '';
+            hide('reviewExampleCn');
+        }
+    }
 
-    var meaningText = card.meaning_text || card.meaning || '';
-    if (!meaningText) return;
+    // ---------- 释义块 ----------
+    // 引擎已经把「一个词性一块」拆好了（词条填了多释义就用它，没填就按词性标签自动拆）
+    var sensesBox = document.getElementById('reviewSenses');
+    if (!sensesBox) return;
+    sensesBox.textContent = '';
+
+    var senses = card.senses || [];
+    for (var s = 0; s < senses.length; s++) {
+        sensesBox.appendChild(renderSense(senses[s]));
+    }
+}
+
+// 画一块释义：词性标签 + 释义正文，若这块带自己的例句则再画例句与译文
+function renderSense(sense) {
+    var block = document.createElement('div');
+    block.className = 'sense-block';
 
     var head = document.createElement('div');
     head.className = 'sense-head';
 
-    var posText = formatPos(card.pos);
+    var posText = formatPos(sense.pos);
     if (posText) {
         var posEl = document.createElement('span');
         posEl.className = 'sense-pos';
@@ -417,16 +470,38 @@ function renderAnswer(card) {
 
     var meaningEl = document.createElement('span');
     meaningEl.className = 'sense-meaning';
-    meaningEl.textContent = meaningText;
+    meaningEl.textContent = sense.meaning || '';
     head.appendChild(meaningEl);
-    senses.appendChild(head);
+    block.appendChild(head);
 
-    // 例句在释义块里再出现一次（与参考产品一致）；暂无可用的中文翻译字段，故只显示原文
-    if (card.example) {
+    // 该释义专属例句（缩进对齐到释义正文那一列）
+    var parts = sense.example_parts || [];
+    if (parts.length > 0) {
         var ex = document.createElement('p');
         ex.className = 'sense-example';
-        ex.textContent = '“' + card.example + '”';
-        senses.appendChild(ex);
+        appendHighlighted(ex, parts);
+        block.appendChild(ex);
+    }
+    if (sense.translation) {
+        var cn = document.createElement('p');
+        cn.className = 'sense-translation';
+        cn.textContent = sense.translation;
+        block.appendChild(cn);
+    }
+    return block;
+}
+
+// 把引擎切好的片段拼进元素：命中片段用 <mark> 包起来
+function appendHighlighted(target, parts) {
+    for (var i = 0; i < parts.length; i++) {
+        if (parts[i].hit) {
+            var mark = document.createElement('mark');
+            mark.className = 'study-hit';
+            mark.textContent = parts[i].text;
+            target.appendChild(mark);
+        } else {
+            target.appendChild(document.createTextNode(parts[i].text));
+        }
     }
 }
 
@@ -566,6 +641,47 @@ function setAutoSpeak(on) {
     }
 }
 
+// ---------- 沉浸模式（隐藏站点导航栏） ----------
+
+// 是否开启沉浸模式；没有记录时默认开启
+function isImmersiveOn() {
+    var raw = null;
+    try {
+        raw = localStorage.getItem(IMMERSIVE_KEY);
+    } catch (e) {
+        raw = null; // 隐私模式下读不到，按默认值走
+    }
+    if (raw === null || raw === undefined || raw === '') return true;
+    return raw !== '0';
+}
+
+// 应用沉浸模式：给 body 挂 is-immersive 类，站点级样式（main.css）据此隐藏导航栏并让内容区占满整屏
+// 这里只负责挂/摘类与更新按钮文案，样式一律写在 CSS 里
+function setImmersive(on) {
+    if (on) {
+        document.body.classList.add('is-immersive');
+    } else {
+        document.body.classList.remove('is-immersive');
+    }
+
+    var btn = document.getElementById('studyNavToggle');
+    if (btn) {
+        btn.textContent = on ? '显示导航栏' : '沉浸模式';
+        btn.title = on ? '显示站点导航栏（Esc）' : '隐藏站点导航栏，全屏专注复习（Esc）';
+    }
+
+    try {
+        localStorage.setItem(IMMERSIVE_KEY, on ? '1' : '0');
+    } catch (e) {
+        // 存不下也不影响本次使用
+    }
+}
+
+// 切换沉浸模式（顶栏按钮与 Esc 键共用）
+function toggleImmersive() {
+    setImmersive(!isImmersiveOn());
+}
+
 // 朗读一段英文文本（lang 默认美式英语）
 function speakText(text, lang) {
     if (!text) return;
@@ -599,7 +715,7 @@ function speakCurrent(kind) {
 // ---------- 键盘快捷键 ----------
 
 // 空格/回车：显示答案；Q/W/E/R（或 1~4）：评分（仅揭晓后生效）；
-// P：朗读单词；L：朗读例句（E 已被「一般」评分占用）
+// P：朗读单词；L：朗读例句（E 已被「一般」评分占用）；Esc：切换沉浸模式
 function handleReviewKey(e) {
     // 不在英语复习页时直接忽略
     if (!document.getElementById('reviewStatus')) return;
@@ -607,6 +723,13 @@ function handleReviewKey(e) {
     if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
         return; // 正在操作输入控件时不拦截按键
     }
+
+    // Esc 与卡片状态无关：加载中、已学完时也应该能切换沉浸模式
+    if (e.key === 'Escape') {
+        toggleImmersive();
+        return;
+    }
+
     var wordEl = document.getElementById('reviewWord');
     if (!wordEl || wordEl.style.display === 'none' || !state.card) return;
 

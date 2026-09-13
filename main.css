@@ -158,3 +158,21 @@ body {
     /* 设置上内边距为100像素，使提示文字垂直居中显示 */
     padding-top: 100px;
 }
+
+/* ===================== 沉浸模式（站点级通用能力） ===================== */
+/* 用途：学科页想要「全屏专注」时，只要在 document.body 上挂 is-immersive 类，
+ * 导航栏就会被隐藏、内容区占满整屏；摘掉这个类即恢复原样。
+ * 约定：类名由学科模块自己挂/摘（见 modules/english/english.js），
+ * main.js 在切换学科时调用上一模块的 unmount() 兜底清理，
+ * 因此这里只放通用规则，不掺任何学科逻辑。 */
+body.is-immersive .rectangle {
+    /* 隐藏顶部导航栏（固定定位，不占文档流，隐藏后内容自然上移） */
+    display: none;
+}
+
+body.is-immersive .content-container {
+    /* 去掉为导航栏预留的上外边距与内边距，让学科页占满整屏 */
+    margin-top: 0;
+    padding: 0;
+    min-height: 100vh;
+}

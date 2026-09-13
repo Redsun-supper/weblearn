@@ -8,9 +8,9 @@
 <!-- 并放出评分按钮，保证评分基于真实回忆结果，避免「看着答案打分」污染 FSRS 记忆状态。 -->
 <div class="study" id="reviewApp">
 
-    <!-- 顶栏：返回 / 今日统计 / 当前卡片的记忆元信息 -->
+    <!-- 顶栏：沉浸模式开关 / 今日统计 / 当前卡片的记忆元信息 -->
     <header class="study-top">
-        <a class="study-back" href="index.html">← 返回</a>
+        <button class="study-nav-toggle" id="studyNavToggle" type="button">沉浸模式</button>
         <div class="study-counts">
             <div class="study-count"><b id="statTodayNew">0</b><span>今日新学</span></div>
             <div class="study-count"><b id="statTodayReview">0</b><span>今日复习</span></div>
@@ -30,9 +30,10 @@
         </div>
 
         <div class="study-answer" id="reviewAnswer" style="display:none;">
-            <!-- 例句：由引擎切成片段，目标词高亮 -->
+            <!-- 主例句：由引擎切成片段，目标词高亮；下面一行是它的中文翻译 -->
             <blockquote class="study-quote" id="reviewExample"></blockquote>
-            <!-- 释义：词性 + 释义正文（当前数据只有一条，结构已按多条准备） -->
+            <p class="study-quote-cn" id="reviewExampleCn" style="display:none;"></p>
+            <!-- 释义：一个词性一块（引擎按词性标签拆分），每块可带自己的例句与译文 -->
             <div class="study-senses" id="reviewSenses"></div>
         </div>
 

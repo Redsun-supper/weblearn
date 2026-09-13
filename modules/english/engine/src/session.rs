@@ -46,6 +46,25 @@ const MS_PER_DAY: f64 = 86_400_000.0;
 
 // ---------- 接口数据结构 ----------
 
+/// 后端返回的一条释义（词条的多义项：名词一块、动词一块）
+///
+/// 对应 Go 侧 `models.WordSense`；整列在库里是 JSON 文本，接口里就是数组。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ApiSense {
+    /// 词性标签，如 "n."
+    #[serde(default)]
+    pub pos: String,
+    /// 该词性下的释义正文
+    #[serde(default)]
+    pub meaning: String,
+    /// 该词性专属例句（可空，空了就用词条本身的例句）
+    #[serde(default)]
+    pub example: String,
+    /// 该例句的中文翻译（可空）
+    #[serde(default)]
+    pub example_translation: String,
+}
+
 /// 后端 `/api/reviews/due` 与 `/api/reviews/new` 返回的词条结构。
 ///
 /// 到期卡会带上记忆状态与时间字段，新词则没有，因此这些字段都是 `Option`。
@@ -61,6 +80,13 @@ pub struct ApiCard {
     pub meaning: String,
     #[serde(default)]
     pub example: String,
+    /// 例句的中文翻译（可空）
+    #[serde(default)]
+    pub example_translation: String,
+    /// 多释义（可空）。⚠️ 必须是 `Option`：Go 侧即使保证输出 `[]`，
+    /// 显式 `null` 也会让 serde 的 `#[serde(default)]` 失效（"items": null 已踩过一次）。
+    #[serde(default)]
+    pub senses: Option<Vec<ApiSense>>,
     #[serde(default)]
     pub subject: String,
     /// 记忆稳定度（仅到期卡有）
@@ -358,25 +384,81 @@ struct CardMetaOut {
     retrievability: Option<f32>,
 }
 
+/// 一块释义（界面上一行：词性标签 + 释义正文，可带自己的例句与译文）
+///
+/// 空字段直接不输出，卡片 JSON 尽量小（多释义本来就比单词条重）。
+#[derive(Debug, Serialize)]
+struct SenseOut {
+    /// 词性标签原文（"n." / "n./v."），前端负责转成大写标签
+    pos: String,
+    /// 释义正文
+    meaning: String,
+    /// 该释义自己的例句切分片段；为空表示没有独立例句
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    example_parts: Vec<ExamplePart>,
+    /// 该释义例句的中文翻译
+    #[serde(skip_serializing_if = "String::is_empty")]
+    translation: String,
+}
+
 /// 当前卡片的展示数据（供 JS 直接渲染）
 #[derive(Debug, Serialize)]
 struct CurrentCardOut {
     word: String,
     phonetic: String,
-    meaning: String,
-    example: String,
     /// "due" | "new"
     source: CardSource,
-    /// 在原始数组中的下标
-    index: u32,
-    /// 从 meaning 拆出的词性标签（如 "v."，没有则为空串）
-    pos: String,
-    /// 去掉词性前缀后的释义正文
-    meaning_text: String,
-    /// 例句切分片段（前端据此把目标词高亮）
+    /// 主例句切分片段（前端据此把目标词高亮）；为空表示该词条没有例句
     example_parts: Vec<ExamplePart>,
+    /// 主例句的中文翻译
+    #[serde(skip_serializing_if = "String::is_empty")]
+    example_translation: String,
+    /// 释义块：有释义时至少一块（一个词性一块）
+    senses: Vec<SenseOut>,
     /// 记忆元信息
     meta: CardMetaOut,
+}
+
+/// 组装释义块。
+///
+/// 两条路径：
+/// 1. 词条填了多释义（`senses`）→ 直接用，每块可以有自己的例句与译文；
+/// 2. 没填 → 把 `meaning` 按词性标签**自动拆开**
+///    （`"n. 好处；益处 v. 有益于"` 拆成名词、动词两块），
+///    这样历史数据不用改就能显示成多块，例句仍是词条级那一条。
+fn build_senses(card: &ApiCard) -> Vec<SenseOut> {
+    if let Some(list) = card.senses.as_ref() {
+        let out: Vec<SenseOut> = list
+            .iter()
+            .filter_map(|s| {
+                let pos = s.pos.trim().to_string();
+                let meaning = s.meaning.trim().to_string();
+                if pos.is_empty() && meaning.is_empty() {
+                    return None; // 空条目（后台加了一行没填）跳过
+                }
+                Some(SenseOut {
+                    pos,
+                    meaning,
+                    example_parts: card_view::split_example(&s.example, &card.word),
+                    translation: s.example_translation.trim().to_string(),
+                })
+            })
+            .collect();
+        if !out.is_empty() {
+            return out;
+        }
+        // 填了但清洗后全是空的 → 退回按 meaning 自动拆
+    }
+
+    card_view::split_senses(&card.meaning)
+        .into_iter()
+        .map(|m| SenseOut {
+            pos: m.pos,
+            meaning: m.text,
+            example_parts: Vec::new(),
+            translation: String::new(),
+        })
+        .collect()
 }
 
 /// 一次复习会话：持有队列、游标与期望保持率。
@@ -547,17 +629,13 @@ impl ReviewSession {
     pub fn current_json(&self, now_ms: f64) -> String {
         match self.cards.get(self.cursor) {
             Some(c) => {
-                let wm = card_view::split_pos(&c.card.meaning);
                 serde_json::to_string(&CurrentCardOut {
                     word: c.card.word.clone(),
                     phonetic: c.card.phonetic.clone(),
-                    meaning: c.card.meaning.clone(),
-                    example: c.card.example.clone(),
                     source: c.source,
-                    index: c.index,
-                    pos: wm.pos,
-                    meaning_text: wm.text,
                     example_parts: card_view::split_example(&c.card.example, &c.card.word),
+                    example_translation: c.card.example_translation.trim().to_string(),
+                    senses: build_senses(&c.card),
                     meta: card_meta(c, now_ms),
                 })
                 .unwrap_or_else(|_| "{}".to_string())
@@ -588,6 +666,8 @@ mod tests {
             phonetic: String::new(),
             meaning: String::new(),
             example: String::new(),
+            example_translation: String::new(),
+            senses: None,
             subject: "english".to_string(),
             stability: None,
             difficulty: None,
@@ -778,20 +858,27 @@ mod tests {
     }
 
     #[test]
-    fn current_json_exposes_pos_parts_and_meta() {
-        // 到期卡：应带上词性拆分、例句切分与完整记忆元信息
+    fn current_json_exposes_senses_parts_and_meta() {
+        // 到期卡：应带上释义块、例句切分与完整记忆元信息
         let due = vec![due_card(1, "purpose", 2.3, 5.0)];
         let mut s = session(&due, &[Some(10.0 * MS_PER_DAY)], &[], 1);
         // 词条文本单独构造（due_card 里没有释义与例句）
         s.cards[0].card.meaning = "n. 目的；意图".to_string();
         s.cards[0].card.example = "The purpose of this meeting is to discuss.".to_string();
+        s.cards[0].card.example_translation = "这次会议的目的是讨论。".to_string();
         s.cards[0].card.reps = Some(3);
 
         let now = 12.0 * MS_PER_DAY; // 距上次 2 天
         let v: serde_json::Value = serde_json::from_str(&s.current_json(now)).unwrap();
 
-        assert_eq!(v["pos"], "n.");
-        assert_eq!(v["meaning_text"], "目的；意图");
+        // 没填多释义时，由 meaning 自动拆成一块
+        let senses = v["senses"].as_array().unwrap();
+        assert_eq!(senses.len(), 1);
+        assert_eq!(senses[0]["pos"], "n.");
+        assert_eq!(senses[0]["meaning"], "目的；意图");
+        assert!(senses[0].get("example_parts").is_none(), "没有独立例句时不该输出该字段");
+
+        assert_eq!(v["example_translation"], "这次会议的目的是讨论。");
 
         let parts = v["example_parts"].as_array().unwrap();
         assert_eq!(parts.len(), 3);
@@ -806,6 +893,93 @@ mod tests {
         let r = v["meta"]["retrievability"].as_f64().unwrap();
         assert!((0.0..=1.0).contains(&r), "可提取率应在 0~1：{r}");
         assert!(r < 1.0, "过了 2 天，预计记住应小于 1：{r}");
+    }
+
+    #[test]
+    fn current_json_splits_legacy_multi_sense_meaning() {
+        // 历史数据把两个义项写在一行：应拆成名词、动词两块
+        let mut c = card(1, "benefit");
+        c.meaning = "n. 好处；益处 v. 有益于".to_string();
+        let s = session(&[], &[], &[c], 1);
+
+        let v: serde_json::Value = serde_json::from_str(&s.current_json(0.0)).unwrap();
+        let senses = v["senses"].as_array().unwrap();
+        assert_eq!(senses.len(), 2);
+        assert_eq!(senses[0]["pos"], "n.");
+        assert_eq!(senses[0]["meaning"], "好处；益处");
+        assert_eq!(senses[1]["pos"], "v.");
+        assert_eq!(senses[1]["meaning"], "有益于");
+        // 词条级例句为空 → 不输出 example_parts，前端整块不渲染
+        assert!(v.get("example_parts").is_none() || v["example_parts"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn current_json_prefers_explicit_senses() {
+        // 词条填了多释义时，直接用它们（每块可带自己的例句与译文），不再按 meaning 拆
+        let mut c = card(1, "benefit");
+        c.meaning = "n. 好处；益处 v. 有益于".to_string();
+        c.example = "Exercise has many benefits.".to_string();
+        c.senses = Some(vec![
+            ApiSense {
+                pos: "n.".to_string(),
+                meaning: "好处；益处".to_string(),
+                example: "Exercise has many benefits.".to_string(),
+                example_translation: "锻炼有很多好处。".to_string(),
+            },
+            ApiSense {
+                pos: "v.".to_string(),
+                meaning: "有益于".to_string(),
+                example: String::new(),
+                example_translation: String::new(),
+            },
+        ]);
+        let s = session(&[], &[], &[c], 1);
+
+        let v: serde_json::Value = serde_json::from_str(&s.current_json(0.0)).unwrap();
+        let senses = v["senses"].as_array().unwrap();
+        assert_eq!(senses.len(), 2);
+        assert_eq!(senses[0]["translation"], "锻炼有很多好处。");
+        let parts = senses[0]["example_parts"].as_array().unwrap();
+        assert_eq!(parts.iter().find(|p| p["hit"] == true).unwrap()["text"], "benefits");
+        // 第二块没有独立例句与译文 → 两个字段都不输出
+        assert!(senses[1].get("example_parts").is_none());
+        assert!(senses[1].get("translation").is_none());
+    }
+
+    #[test]
+    fn current_json_skips_blank_senses_and_falls_back() {
+        // 后台加了一行没填 → 整条空释义被跳过
+        let mut c = card(1, "apply");
+        c.meaning = "v. 申请；应用".to_string();
+        c.senses = Some(vec![ApiSense::default(), ApiSense::default()]);
+        let s = session(&[], &[], &[c], 1);
+
+        let v: serde_json::Value = serde_json::from_str(&s.current_json(0.0)).unwrap();
+        let senses = v["senses"].as_array().unwrap();
+        assert_eq!(senses.len(), 1, "全是空条目时应退回按 meaning 自动拆");
+        assert_eq!(senses[0]["meaning"], "申请；应用");
+    }
+
+    #[test]
+    fn parse_items_tolerates_null_senses() {
+        // Go 侧即使输出 "senses": null 也不能让整批卡片解析失败
+        let json = r#"{"data":{"items":[{"id":1,"word":"apply","senses":null}]}}"#;
+        let items = parse_items(json).unwrap();
+        assert_eq!(items.len(), 1);
+        assert!(items[0].senses.is_none());
+    }
+
+    #[test]
+    fn parses_senses_from_api_payload() {
+        let json = r#"{"data":{"items":[{"id":1,"word":"benefit",
+            "example_translation":"锻炼有很多好处。",
+            "senses":[{"pos":"n.","meaning":"好处","example":"Benefits here.","example_translation":"这里的好处。"}]}]}}"#;
+        let items = parse_items(json).unwrap();
+        assert_eq!(items[0].example_translation, "锻炼有很多好处。");
+        let senses = items[0].senses.as_ref().unwrap();
+        assert_eq!(senses.len(), 1);
+        assert_eq!(senses[0].pos, "n.");
+        assert_eq!(senses[0].example_translation, "这里的好处。");
     }
 
     #[test]

@@ -9,9 +9,11 @@
 
 | 文件 | 职责 |
 |------|------|
-| `session.rs` | **会话编排（主入口）**：队列构建、记忆上下文换算、评分决策、进度统计 |
+| `session.rs` | **会话编排（主入口）**：队列构建、记忆上下文换算、评分决策、进度统计、卡片输出 |
 | `fsrs_engine.rs` | FSRS 记忆调度计算：单卡状态推进（`compute_next_states`）、可提取率 |
 | `randomizer.rs` | 随机器：XorShift32 + Fisher–Yates 洗牌 / 无放回抽样 / 系统种子 |
+| `wordlist.rs` | 词表文本解析（后台批量导入：制表符 / 竖线 / 逗号 / 空格，容错规则可测） |
+| `card_view.rs` | 卡片文本：多释义拆分（`split_senses`，一个词性一块）与例句高亮切分（`split_example`） |
 
 JS 侧只负责 DOM 渲染、事件绑定、`fetch`、`localStorage` 与语音合成——
 队列与游标由 Rust 持有，**JS 不再保存卡片数组**。
@@ -34,9 +36,20 @@ session.is_finished();       // 当前队列是否已走完
 session.progress_percent();  // 0~100
 session.current_word_id();   // 当前词条 id（无卡时 0）
 session.current_json(Date.now());
-// 当前卡片展示数据：word/phonetic/meaning/example/source/index，
-// 外加 pos（词性）、meaning_text（去掉词性前缀的释义）、
-// example_parts（例句按目标词切分，供高亮）、meta（难度/稳定性/复习次数/预计记住）
+// 当前卡片展示数据：
+//   word / phonetic / source
+//   example_parts  主例句按目标词切分的片段（空 = 该词条没有例句，前端整块不渲染）
+//   example_translation  主例句的中文翻译（空则不输出该字段）
+//   senses         释义块数组 [{pos, meaning, example_parts?, translation?}]，有释义时至少一块
+//   meta           记忆元信息（难度/稳定性/复习次数/距上次天数/预计记住）
+// 说明：卡片 JSON 刻意不带冗余字段（meaning/example 原文、下标等），多释义本来就比单词条重，
+//       JS 那边也不再需要它们。
+//
+// senses 的来源有两条：
+//   1. 词条填了结构化多释义（后端 words.senses）→ 直接用，每块可带自己的例句与译文；
+//   2. 没填 → 把 meaning 按词性标签自动拆开（"n. 好处；益处 v. 有益于" → 名词、动词两块），
+//      此时例句只有词条级那一条，显示在顶部。
+// 两件事都在 card_view::split_senses / build_senses 里，纯计算、有单元测试兜住。
 
 // 评分：1=Again 2=Hard 3=Good 4=Easy；now_ms 传 Date.now()
 const body = session.rate(3, Date.now());
@@ -79,9 +92,11 @@ modules/english/engine/
 ├── Cargo.lock
 ├── src/
 │   ├── lib.rs          # 模块导出
-│   ├── session.rs      # 会话编排（ReviewSession / plan_session / days_elapsed）
+│   ├── session.rs      # 会话编排（ReviewSession / plan_session / days_elapsed / build_senses）
 │   ├── fsrs_engine.rs  # FSRS 调度计算（CardState / NextStatesOut）
-│   └── randomizer.rs   # 随机器
+│   ├── randomizer.rs   # 随机器
+│   ├── wordlist.rs     # 词表文本解析（parse_word_list）
+│   └── card_view.rs    # 多释义拆分 + 例句高亮切分
 ├── pkg/                # wasm-bindgen 产物（已 gitignore，需自行生成）
 └── target/             # cargo 构建缓存（已 gitignore）
 ```
@@ -112,7 +127,7 @@ wasm-bindgen --target web --out-dir pkg --out-name guangxue_wasm `
 ## 单元测试
 
 ```powershell
-cargo test            # 26 个测试：会话编排 / 天数换算 / 进度 / 解析 / FSRS / 随机器
+cargo test            # 94 个测试：会话编排 / 天数换算 / 进度 / 解析 / FSRS / 随机器 / 多释义拆分 / 词形匹配
 cargo test -- --nocapture
 ```
 
@@ -120,7 +135,10 @@ cargo test -- --nocapture
 
 - `plan_session` / `days_elapsed` / `progress_percent` / `pick_branch`
 - `ReviewSession::build` / `ReviewSession::try_rate`（错误类型是 `String`）
-- `parse_items`（含 Go 空结果返回 `"items": null` 的场景）
+- `parse_items`（含 Go 空结果返回 `"items": null`、`"senses": null` 的场景）
+- `split_senses`（一行多个义项、连续词性标签、`num.` 不被 `n.` 抢、括号里的标签不误判）
+- `split_example` / `word_forms`（词边界优先、变形匹配 `applied` ↔ `apply`、原形优先）
+- `parse_word_list_core`（制表符/竖线/逗号/空格、注释、重复、列错位、第 5 列例句翻译）
 
 > **为什么要有「纯计算层」这一层**：`JsValue` 在非 wasm32 目标上并未实现
 > （调用即 `panic: function not implemented on non-wasm32 targets`，且无法 unwinding，

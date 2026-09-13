@@ -22,10 +22,32 @@ document.addEventListener('DOMContentLoaded', function() {
     // 首屏不再携带学科逻辑。
     const ENGLISH_PAGE = 'modules/english/english.html';
     
+    // 当前已初始化的学科模块命名空间（用于切页时调用其可选的 unmount()）
+    let activeSubjectModule = null;
+    
+    // 切页前清理上一个学科模块：模块若导出了 unmount() 就调用它
+    // 为什么框架要做这件事：学科页可以往 body / document 上挂全局状态
+    // （例如英语复习页的「沉浸模式」会给 body 加 is-immersive 类来隐藏导航栏），
+    // 内容容器换成别的学科后这些状态不会自己消失，必须由模块自己收回。
+    // 放在这里而不是各学科里，是为了让「切页」这条路径只有一个收口点。
+    function teardownSubjectModule() {
+        const mod = activeSubjectModule;
+        activeSubjectModule = null;
+        if (mod && typeof mod.unmount === 'function') {
+            try {
+                mod.unmount();
+            } catch (err) {
+                console.error('学科模块清理失败:', err);
+            }
+        }
+    }
+    
     // 按 pageName 加载并初始化对应学科模块；尚无独立模块的学科直接返回
     function initSubjectModule(pageName) {
+        teardownSubjectModule(); // 先收拾上一个学科留下的全局状态
         if (pageName !== ENGLISH_PAGE) return; // 目前只有英语有独立模块
         import('./modules/english/english.js').then(function(mod) {
+            activeSubjectModule = mod;
             mod.initReviewApp();
         }).catch(function(err) {
             // 模块本身加载失败（路径错误 / 网络问题）：就地提示，便于定位
@@ -49,8 +71,9 @@ document.addEventListener('DOMContentLoaded', function() {
     // 老用户 localStorage 里的旧页面缓存会在启动时被整体清除，
     // 避免出现「新脚本 + 旧页面结构」导致功能不可用
     // 历史：v1 初版；v2 英语页新增「显示答案」按钮；v3 英语页迁到 modules/english/；
-    //       v4 英语复习界面改版（极简全屏：顶栏统计 / 大字号单词 / 例句高亮 / 粉彩评分按钮）
-    const CACHE_VERSION = 4;
+    //       v4 英语复习界面改版（极简全屏：顶栏统计 / 大字号单词 / 例句高亮 / 粉彩评分按钮）；
+    //       v5 英语页顶栏改成「沉浸模式」开关（隐藏站点导航栏），揭晓区改为每条释义一块
+    const CACHE_VERSION = 5;
     // CACHE_VERSION_KEY: 记录当前缓存版本的键名
     const CACHE_VERSION_KEY = 'pageCache_version';
     

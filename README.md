@@ -89,14 +89,15 @@ e:\porject\4/
 │       ├── README.md            #   模块说明
 │       ├── admin/               #   词条管理后台模块（列表/搜索/编辑/批量导入）
 │       │   └── english-admin.js
-│       └── engine/              #   Rust/WASM 引擎（队列编排 + FSRS 调度 + 随机化 + 词表解析）
+│       └── engine/              #   Rust/WASM 引擎（队列编排 + FSRS 调度 + 随机化 + 词表解析 + 卡片文本）
 │           ├── Cargo.toml
 │           ├── src/
 │           │   ├── lib.rs           # 模块导出
-│           │   ├── session.rs       # 会话编排（ReviewSession：队列/游标/评分/进度）
+│           │   ├── session.rs       # 会话编排（ReviewSession：队列/游标/评分/进度/卡片输出）
 │           │   ├── fsrs_engine.rs   # FSRS 调度计算
 │           │   ├── randomizer.rs    # 随机器（洗牌/抽样/种子）
-│           │   └── wordlist.rs      # 词表文本解析（后台批量导入用）
+│           │   ├── wordlist.rs      # 词表文本解析（后台批量导入用）
+│           │   └── card_view.rs     # 卡片文本：多释义拆分（一个词性一块）与例句高亮切分
 │           └── README.md            # 引擎说明与构建命令
 │
 ├── backend-go/                  # Go后端服务
@@ -135,13 +136,18 @@ e:\porject\4/
 |------|------|
 | `<学科>.html` | 学科页片段，由 `main.js` fetch 后注入 `#contentContainer` |
 | `<学科>.css` | 模块样式，只作用于该学科页内的元素 |
-| `<学科>.js` | 模块逻辑（ES module），导出初始化函数，由 `main.js` **按需动态 import** |
+| `<学科>.js` | 模块逻辑（ES module），导出初始化函数，由 `main.js` **按需动态 import**；可选导出 `unmount()` 做切页清理 |
 | `engine/` | 该学科的 Rust/WASM 引擎（纯计算：调度、随机化、统计等） |
 | `admin/` | 该学科的管理后台模块，由根目录 `admin/` 的通用后台按需加载 |
 
 `main.js` 里只保留一处学科相关代码——`initSubjectModule(pageName)`：按 `data-page`
 判断并动态 `import()` 对应模块。**好处是学科逻辑不会回流到 `main.js`，且只有真正进入
 该学科页才会加载它的模块与引擎。**
+
+切换学科前，`main.js` 会调用上一个模块可选的 `unmount()`（模块没导出就跳过）。
+这是框架层面的收口点：学科页可能往 `body` / `document` 上挂全局状态
+（例如英语复习页的沉浸模式会给 `body` 加 `is-immersive` 来隐藏导航栏），
+内容容器被换掉后这些状态不会自己消失，必须由模块自己收回。
 
 > 目前只有 `modules/english/` 建好了；其余 8 门仍是 `pages/<学科>.html` 占位页。
 > 将来把某门学科做成模块时，把它从 `pages/` 移进 `modules/<学科>/`，
@@ -163,7 +169,7 @@ modules/<学科>/admin/  各学科自己的后台模块，按需动态加载
 | 入口 | `admin/index.html`，与学生站完全独立（不走 `main.js`，也不使用学科页的 localStorage 缓存） |
 | 新增学科后台 | 在 `modules/<学科>/admin/` 写模块并导出 `mount(container, ctx)`，再到 `admin/admin.js` 的 `SUBJECT_ADMINS` 登记一行 |
 | 通用能力 | `ctx.api` / `toast` / `confirm` / `el` / `escapeHtml` / `setTitle`，避免各学科重复实现 |
-| 英语后台 | 词条列表（搜索 / 词书 / 单元筛选 / 分页）、新增编辑删除、**批量导入**（粘贴词表 → 引擎解析 → 预览 → 分批导入） |
+| 英语后台 | 词条列表（搜索 / 词书 / 单元筛选 / 分页）、新增编辑删除、**多释义编辑**（一个词性一块，每块可带自己的例句与译文）、**批量导入**（粘贴词表 → 引擎解析 → 预览 → 分批导入） |
 
 > ⚠️ **当前没有登录校验**：任何能访问 `/admin/` 的人都能修改词条，**接入登录前请勿部署到公网**。
 > 前端预留位是 `admin/admin.js` 的 `checkAuth()` 与 `admin/index.html` 的 `#adminAuthGate`；
@@ -261,6 +267,18 @@ modules/<学科>/admin/  各学科自己的后台模块，按需动态加载
 | GET | `/api/reviews/new` | 未加入复习的新词 | ✅ 可用 |
 | POST | `/api/reviews/submit` | 提交复习结果（持久化 FSRS 状态） | ✅ 可用 |
 | GET | `/api/reviews/stats` | 复习统计（词库概览 / 今日进度 / 连续天数 / 记忆保持率） | ✅ 可用 |
+
+词条字段（`/api/words*`、`/api/reviews/*` 通用）：
+
+| 字段 | 说明 |
+|------|------|
+| `word` / `phonetic` / `meaning` / `example` | 单词 / 音标 / 释义 / 例句 |
+| `example_translation` | 例句的中文翻译（可空） |
+| `senses` | 多释义数组 `[{pos, meaning, example, translation}]`（可空；空数组即「没有结构化义项」） |
+| `book` / `unit` | 词书 / 单元（后台分组用，可空） |
+
+> `senses` 为空时，复习界面由引擎按 `meaning` 里的词性标签自动分块；
+> 后端保证「空」序列化成 `[]` 而不是 `null`（`models.WordSenses` 的 `Scan` / `MarshalJSON`）。
 
 ---
 
@@ -365,12 +383,21 @@ go run ./cmd/seed -file my_words.json -db guangxue.db
 ```json
 {
   "words": [
-    {"word": "apple", "phonetic": "/ˈæp.əl/", "meaning": "n. 苹果", "example": "I eat an apple.", "subject": "english"}
+    {"word": "apple", "phonetic": "/ˈæp.əl/", "meaning": "n. 苹果", "example": "I eat an apple.",
+     "example_translation": "我吃一个苹果。", "subject": "english"},
+    {"word": "benefit", "phonetic": "/ˈben.ɪ.fɪt/", "meaning": "n. 好处；益处 v. 有益于",
+     "example": "Exercise has many benefits.", "example_translation": "锻炼有很多好处。",
+     "senses": [
+       {"pos": "n.", "meaning": "好处；益处", "example": "Exercise has many benefits.", "translation": "锻炼有很多好处。"},
+       {"pos": "v.", "meaning": "有益于", "example": "Regular exercise benefits your heart.", "translation": "规律锻炼对心脏有益。"}
+     ], "subject": "english"}
   ]
 }
 ```
 
 - `subject` 省略时默认为 `english`，为将来其他学科的词汇留出扩展位。
+- `example_translation` 与 `senses` 都是可选的：`senses` 留空时，复习界面会按 `meaning` 里的
+  词性标签自动分块（上面 `benefit` 那行不写 `senses` 也会显示成名词、动词两块）。
 - `words.word` 是唯一索引，重复单词自动跳过，因此命令**可反复执行**（幂等）。
 - 换成自己的词表（中考 / 高考 / 四六级等）时，保持同样的 JSON 结构即可。
 - SQLite 文件与词表都是本地数据：`*.db` 已在 `.gitignore` 中忽略，词表 JSON 则在版本控制内。
@@ -379,9 +406,10 @@ go run ./cmd/seed -file my_words.json -db guangxue.db
 
 ## 复习页交互（英语）
 
-界面为「极简全屏」风格：顶栏是今日统计与当前卡片的记忆元信息，主体只有大字号单词与音标，
+界面为「极简全屏」风格：顶栏是沉浸模式开关、今日统计与当前卡片的记忆元信息，主体只有大字号单词与音标，
 底部是操作区。揭晓后，例句中的目标词会高亮（支持常见变形：例句里的 `applied` 也能对应词条 `apply`），
-并显示「词性 + 释义」。换卡与揭晓都有过渡动效，系统开启「减少动态效果」时自动关掉。
+例句下方是它的中文翻译，再往下是**一条条释义块**（一个词性一块）。换卡与揭晓都有过渡动效，
+系统开启「减少动态效果」时自动关掉。
 
 | 操作 | 说明 |
 |------|------|
@@ -390,10 +418,34 @@ go run ./cmd/seed -file my_words.json -db guangxue.db
 | `1` / `2` / `3` / `4` | 同上，等效的备选键位 |
 | `P` | 朗读当前单词 |
 | `L` | 朗读当前例句（`E` 被「一般」占用，故用 `L`） |
+| `Esc` | 切换沉浸模式（等同点顶栏那个开关） |
 | 自动朗读 | 底部开关，**默认开启**；关掉后保存在 localStorage（`reviewAutoSpeak`） |
 
 顶栏右侧的记忆元信息（难度 / 稳定性 / 状态 / 复习次数 / 上次 / **预计记住**）中，
 「预计记住」由引擎用 FSRS 可提取率算出；新词没有记忆状态，只显示「状态 新词」。
+
+### 沉浸模式（隐藏站点导航栏）
+
+进复习页默认进入沉浸模式：站点顶部导航栏收起来，复习界面占满整屏（`body.is-immersive` + `main.css`
+里的通用规则），点顶栏左上角的「显示导航栏」（或按 `Esc`）即可叫回来，选择记在 localStorage
+（`reviewImmersive`）。切到别的学科时，`main.js` 会调用英语模块导出的 `unmount()` 把这个状态收回去，
+否则导航栏会跟着消失到别的学科页上。
+
+> 实现约定：学科页只负责「挂/摘 `body` 上的类」，样式一律写在 `main.css`（通用）与学科 CSS（自己的留白）里，
+> 学科逻辑不回流到 `main.js`。
+
+### 多释义与例句翻译
+
+一个词条可以有多个义项，复习时**一个词性显示一块**（名词一块、动词一块），每块还能带自己的例句与译文：
+
+- 词库里的历史数据把多个义项写在一行（`n. 好处；益处 v. 有益于`）时，引擎会**按词性标签自动拆开**，
+  不填结构化数据也能得到多块效果；
+- 在后台「编辑词条 → 多释义」里逐条填写时，以结构化数据为准（可覆盖自动拆分），
+  每块可填自己的例句与例句翻译；
+- 例句的中文翻译有两个落点：词条级（`words.example_translation`，配主例句）与释义级
+  （`senses[].translation`，配该义项自己的例句）；没填就不显示那一行。
+- 存储：多释义在 SQLite 里是 `words.senses` 一列 JSON 文本（`models.WordSenses`），
+  不单开子表——释义永远跟着词条一起读写，存 JSON 省掉一次 join，传输也少带 `id`/`word_id`。
 
 ### 不限制每日新词数量
 
@@ -506,6 +558,9 @@ go build -o server main.go
 - [x] 换卡与揭晓过渡动效（尊重系统的「减少动态效果」设置）
 - [x] 取消每日新词上限：队列抽干后自动补词，可一直学到词库学完
 - [x] 例句变形匹配（`applied` 也能对应词条 `apply`；原形优先）
+- [x] 沉浸模式（默认隐藏站点导航栏，全屏复习；`Esc` 或顶栏开关切换，切学科自动收回）
+- [x] 一词多义：复习界面一个词性一块（历史数据按词性标签自动分块，后台可逐条结构化录入）
+- [x] 例句中文翻译（词条级 `example_translation` + 释义级 `senses[].translation`，后台可编辑、批量导入第 5 列可带）
 - [x] 复习统计面板（今日进度、连续天数、记忆保持率、本轮进度条）
 - [x] 英语种子词表与导入命令（`backend-go/cmd/seed`，100 词）
 - [ ] 复习页面 UI（进阶：完整词义卡交互、统计曲线图表等）

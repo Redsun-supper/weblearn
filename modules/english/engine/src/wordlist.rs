@@ -8,14 +8,14 @@
 //! ```text
 //! abandon                                          # 只有单词
 //! abandon	/əˈbæn.dən/	v. 放弃；抛弃	He abandoned it.  # 制表符（Excel 粘贴）
-//! abandon | /əˈbæn.dən/ | v. 放弃；抛弃 | He...     # 竖线
-//! abandon, /əˈbæn.dən/, v. 放弃；抛弃, He...        # 逗号（CSV）
+//! abandon | /əˈbæn.dən/ | v. 放弃；抛弃 | He... | 他放弃了。  # 竖线（第 5 列是例句翻译）
+//! abandon, /əˈbæn.dən/, v. 放弃；抛弃, He..., 他放弃了。     # 逗号（CSV）
 //! abandon /əˈbæn.dən/ v. 放弃；抛弃                 # 空格：第二个词像音标就当音标
 //! abandon 放弃；抛弃                                # 空格：第二个词不像音标就当释义
 //! ```
 //!
 //! - 以 `#` 或 `//` 开头的行、空行会被跳过
-//! - 字段按位置对应：单词 / 音标 / 释义 / 例句，多出的字段忽略
+//! - 字段按位置对应：单词 / 音标 / 释义 / 例句 / 例句翻译，多出的字段忽略
 //! - 同一文件内重复的单词会被单独列出，不进入待导入列表
 //! - 单词列整列都是非 ASCII（例如误把中文列放在第一列）会作为错误行提示
 
@@ -35,6 +35,8 @@ pub struct ParsedWord {
     pub phonetic: String,
     pub meaning: String,
     pub example: String,
+    /// 例句的中文翻译（第 5 列，可空）
+    pub example_translation: String,
     /// 来源行号（从 1 开始），便于前端定位
     pub line: usize,
 }
@@ -211,6 +213,7 @@ pub fn parse_word_list_core(text: &str) -> WordListParse {
             phonetic: field(1),
             meaning: field(2),
             example: field(3),
+            example_translation: field(4),
             line: line_no,
         });
     }
@@ -346,10 +349,26 @@ mod tests {
     }
 
     #[test]
-    fn ignores_extra_fields_beyond_four() {
-        let out = parse_word_list_core("apple|/ˈæp.əl/|n. 苹果|I eat an apple.|多余字段|再来一个");
+    fn parses_example_translation_column() {
+        // 第 5 列是例句的中文翻译
+        let out = parse_word_list_core("abandon\t/əˈbæn.dən/\tv. 放弃；抛弃\tHe abandoned it.\t他放弃了它。");
+        let r = &out.rows[0];
+        assert_eq!(r.example, "He abandoned it.");
+        assert_eq!(r.example_translation, "他放弃了它。");
+    }
+
+    #[test]
+    fn missing_translation_column_is_empty() {
+        let out = parse_word_list_core("apple|/ˈæp.əl/|n. 苹果|I eat an apple.");
+        assert!(out.rows[0].example_translation.is_empty());
+    }
+
+    #[test]
+    fn ignores_extra_fields_beyond_five() {
+        let out = parse_word_list_core("apple|/ˈæp.əl/|n. 苹果|I eat an apple.|我吃苹果。|多余字段|再来一个");
         let r = &out.rows[0];
         assert_eq!(r.example, "I eat an apple.");
+        assert_eq!(r.example_translation, "我吃苹果。");
         assert_eq!(out.rows.len(), 1);
     }
 

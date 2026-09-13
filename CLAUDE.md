@@ -27,7 +27,9 @@
 - ⚠️ **接口空结果返回 `"items": null`**（Go 的 nil 切片）：解析层必须容忍 null，否则「今天没有到期卡」这种正常状态会直接报错（已踩过一次）。
 - ⚠️ `fsrs` 6.6.2 只公开 `next_states()`，内部一次算四个分支、**无单评分入口**，所以 `rate()` 是「算四个取一个」。
 - 引擎是确定性算术、不依赖系统时钟；`fsrs` 的 rayon/getrandom 已通过 getrandom `wasm_js` 特性适配 wasm32。
-- **复习 UI**：`modules/english/english.html` 含 `#reviewApp`，由 `english.js` 的 `initReviewApp()` 驱动（`main.js` 的 `initSubjectModule()` 动态 import）。界面为**极简全屏**风格：顶栏（今日新学 / 今日复习 / 剩余待学 + 记忆元信息）、大字号单词 + 音标胶囊、底部操作区；揭晓后例句目标词高亮 + 「词性 + 释义」。键位：空格揭晓，`Q/W/E/R`（或 `1~4`）评分，`P` 读单词，`L` 读例句（`E` 被「一般」占用）。⚠️ `engine/pkg/` 由 wasm-bindgen 生成（已 gitignore），缺失时需在 `modules/english/engine/` 下重新构建，命令见 `modules/english/README.md`。
+- **复习 UI**：`modules/english/english.html` 含 `#reviewApp`，由 `english.js` 的 `initReviewApp()` 驱动（`main.js` 的 `initSubjectModule()` 动态 import）。界面为**极简全屏**风格：顶栏（沉浸模式开关 / 今日新学 / 今日复习 / 剩余待学 + 记忆元信息）、大字号单词 + 音标胶囊、底部操作区；揭晓后主例句目标词高亮 + 中文翻译，下面是**一条条释义块**（一个词性一块，可各带例句与译文）。键位：空格揭晓，`Q/W/E/R`（或 `1~4`）评分，`P` 读单词，`L` 读例句（`E` 被「一般」占用），`Esc` 切换沉浸模式。⚠️ `engine/pkg/` 由 wasm-bindgen 生成（已 gitignore），缺失时需在 `modules/english/engine/` 下重新构建，命令见 `modules/english/README.md`。
+- **沉浸模式**：进复习页默认给 `body` 挂 `is-immersive`（隐藏站点导航栏、内容区占满整屏），样式在 `main.css` 的通用规则 + `english.css` 自己的留白里，偏好存 `reviewImmersive`。**切学科时必须摘掉**，由 `main.js` 的 `teardownSubjectModule()` 调用模块导出的 `unmount()` 完成（框架级收口点，别把清理逻辑写回 `main.js` 各学科判断里）。
+- **一词多义**：`words.senses` 是**一列 JSON 文本**（`models.WordSenses`，实现了 `Value`/`Scan`/`MarshalJSON`），不单开子表——释义永远跟着词条走，省一次 join、少传 `id`/`word_id`。空值必须序列化成 `[]` 而非 `null`（`Scan` 里先重置为非 nil 空切片）；Rust 侧对应字段仍用 `Option<Vec<ApiSense>>` 兜一层。填了 `senses` 就用它，没填则引擎按 `meaning` 里的词性标签自动分块（`card_view::split_senses`，历史数据不用改）。
 
 ### 前端要点
 - 导航栏 `rectangle` 内含头像 + 9 个导航项，字段 `data-page="<学科页路径>"`。
@@ -40,12 +42,13 @@
 - **入口**：`admin/index.html`（本地 `/admin/`）。与学生站**完全独立**：不走 `main.js`、不使用学科页的 localStorage 缓存。
 - **约定**：学科后台放 `modules/<学科>/admin/`，导出 `mount(container, ctx)`（可选 `unmount()`），再到 `admin/admin.js` 的 `SUBJECT_ADMINS` 登记一行；框架用动态 `import()` 按需加载。通用能力通过 `ctx` 注入：`api` / `toast` / `confirm` / `el` / `escapeHtml` / `setTitle`。
 - ⚠️ **登录未实现**：前端预留位是 `checkAuth()` 与 `#adminAuthGate`，**后端也还没有鉴权中间件**；接入登录必须两端一起做，只拦前端挡不住直接调接口的人。**在此之前不要把 `/admin/` 部署到公网**（页面上常驻提示条）。
-- **英语后台**（`modules/english/admin/english-admin.js`）：词条列表（搜索 / 词书 / 单元 / 分页）、增删改查、批量导入（粘贴 → `engine` 的 `parse_word_list` 解析 → 预览 → 前端每 200 条分批 POST）。
+- **英语后台**（`modules/english/admin/english-admin.js`）：词条列表（搜索 / 词书 / 单元 / 分页）、增删改查、**多释义编辑**（一个词性一块，每块可带自己的例句与译文；全空的行提交前会被丢掉，后端 `normalizeSenses` 再清一遍）、批量导入（粘贴 → `engine` 的 `parse_word_list` 解析 → 预览 → 前端每 200 条分批 POST）。导入字段按位置对应 **单词 / 音标 / 释义 / 例句 / 例句翻译**，多出的忽略；导入只填单条释义，多释义在编辑页补。
 - **词条接口**：`GET/POST /api/words`、`GET/PUT/DELETE /api/words/:id`、`GET /api/word-options`。
   - `PUT` 是全量更新；改名撞车返回 409。
   - `DELETE` **会连带删除该词的 `word_reviews` 与 `review_logs`**（日志留着会让 stats 虚高）。改错别字用 `PUT`，别删了重建。
   - `POST /api/words` 查重**大小写不敏感**。
   - `word-options` 刻意不在 `/api/words/options`，避免与 `/api/words/:id` 通配路由冲突。
+  - 词条带 `example_translation`（词条级例句翻译）与 `senses`（多释义数组）两个字段；两者都可空。`/api/reviews/due` 的 `dueCard` 里 `senses` 用 `models.WordSenses` 直接扫列，GORM 认 `sql.Scanner`，不需要额外 join。
 
 ### 后端要点
 - API 前缀 `/api`：`/health`、`/hello`、`/user/*`、`/data/*`。
@@ -62,7 +65,7 @@
 4. **`go.sum` 已生成**：后端已有 `go.sum`（GORM + glebarez/sqlite 等依赖已通过 `go mod tidy` 固化）；新增依赖时用 `go mod tidy` 同步即可。
 5. **`image/avatar.png`**：当前视觉增强关闭，无法查看绘制内容；按元信息（WebP，约 1330×1146）处理即可，如需主题替换先问用户。
 6. **本机工具链**：Go 已装为便携版 `C:\Users\22629\go-portable\go\bin\go.exe`（go1.27.1，已 `go env -w GOPROXY=https://goproxy.cn,direct GOSUMDB=off`，直接 `go build` 即可）；Rust `cargo 1.97` 且 `wasm32-unknown-unknown` target 已装；wasm-bindgen CLI 在 `C:\Users\22629\.local\bin\wasm-bindgen-0.2.128-*\wasm-bindgen.exe`（须与 Cargo.toml 的 wasm-bindgen 版本一致 0.2.128）。
-   ✅ **宿主 `cargo test` 现在可以运行**（2026-09-13 实测 75 个测试通过；本文档此前记录的「缺 mingw `as`/MSVC SDK 无法链接」已不再成立）。完整验证路径：`cargo test` → `cargo check --target wasm32-unknown-unknown` → `cargo build --target wasm32-unknown-unknown --release` → `wasm-bindgen` 生成 `pkg/` → 浏览器端到端。
+   ✅ **宿主 `cargo test` 现在可以运行**（2026-09-13 实测 94 个测试通过；本文档此前记录的「缺 mingw `as`/MSVC SDK 无法链接」已不再成立）。完整验证路径：`cargo test` → `cargo check --target wasm32-unknown-unknown` → `cargo build --target wasm32-unknown-unknown --release` → `wasm-bindgen` 生成 `pkg/` → 浏览器端到端。
    ⚠️ 但 `JsValue` 在非 wasm32 目标上未实现（调用即 `panic: function not implemented on non-wasm32 targets`，无法 unwinding 会直接 abort）：**纯计算层不要碰 `JsValue`**，把它留在 wasm 导出方法的边界上。
 7. **`word_reviews` 行是懒创建**：单词由 `POST /api/words` 写入 `words` 表；首次提交复习时才创建对应 `word_reviews` 行。`/api/reviews/new` = 无复习行的词。
 

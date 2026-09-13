@@ -1,8 +1,9 @@
 //! 卡片展示文本处理（纯计算，可在宿主上单元测试）
 //!
-//! 两件事：
+//! 三件事：
 //! 1. **拆词性**：词库里 `meaning` 存的是 `"v. 放弃；抛弃"` 这种形态，界面上要显示成
-//!    `v.` 小标签 + 释义正文；
+//!    `v.` 小标签 + 释义正文；一个词有多个义项时（`"n. 好处；益处 v. 有益于"`）
+//!    还要拆成多块，一块一个词性——这就是 `split_senses`；
 //! 2. **例句切分**：把例句按目标词切成「命中 / 未命中」片段，供前端把目标词高亮。
 //!    这件事放 Rust 而不是 JS，是因为大小写与词边界的判断很容易写错，需要测试兜住
 //!    （例如 `purpose` 不应该命中 `purposed`）。
@@ -18,6 +19,19 @@ const POS_TAGS: &[&str] = &[
 /// 词性标签之间的分隔符
 const POS_SEPARATORS: &[char] = &['/', '、', ','];
 
+/// 词性标签内外都算分隔的字符：空白 / 斜杠 / 顿号 / 逗号 / 分号
+///
+/// 用途有二：判断标签是否「独立成词」，以及把释义正文尾部多余的分隔符剪掉
+/// （`"n. 好处； v. 益处"` 里的 `好处；` 要剪成 `好处`）。
+fn is_tag_separator(c: char) -> bool {
+    c.is_whitespace() || POS_SEPARATORS.contains(&c) || c == '；' || c == ';'
+}
+
+/// 剪掉首尾空白与尾部的分隔符
+fn trim_body(text: &str) -> &str {
+    text.trim().trim_end_matches(is_tag_separator)
+}
+
 /// 拆出的词性 + 释义
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct WordMeaning {
@@ -27,9 +41,42 @@ pub struct WordMeaning {
     pub text: String,
 }
 
+/// 判断 `text` 的 `i` 位置是不是一个词性标签，是则返回标签的字节长度。
+///
+/// 要求标签**独立成词**：前面是开头 / 空白 / 分隔符，后面是结尾 / 空白 / 分隔符。
+/// 没有这条约束的话，释义正文里出现的英文（例如 `"vt. 相当于 not."`）会被误当成词性。
+fn match_pos_tag(text: &str, i: usize) -> Option<usize> {
+    if i > 0 {
+        let prev = text[..i].chars().next_back()?;
+        if !is_tag_separator(prev) {
+            return None;
+        }
+    }
+    for tag in POS_TAGS {
+        let end = i + tag.len();
+        // 用 get() 而不是切片索引：避免在多字节字符中间切断而 panic
+        let head = match text.get(i..end) {
+            Some(h) => h,
+            None => continue,
+        };
+        if !head.eq_ignore_ascii_case(tag) {
+            continue;
+        }
+        let next_ok = match text[end..].chars().next() {
+            None => true,
+            Some(c) => is_tag_separator(c),
+        };
+        if next_ok {
+            return Some(tag.len());
+        }
+    }
+    None
+}
+
 /// 把 `meaning` 拆成词性 + 正文。
 ///
-/// 支持连续多个词性（`n./v.`、`adj. adv.`），也支持完全没有词性（直接返回原文）。
+/// 只处理**开头的连续词性标签**（`"n./v. 影响"` → `pos = "n./v."`）。
+/// 一个词条里塞了多个义项时请用 [`split_senses`]。
 pub fn split_pos(meaning: &str) -> WordMeaning {
     let mut rest = meaning.trim();
     let mut pos = String::new();
@@ -66,6 +113,80 @@ pub fn split_pos(meaning: &str) -> WordMeaning {
         pos,
         text: rest.trim().to_string(),
     }
+}
+
+/// 把一个词条的 `meaning` 拆成**多条释义**：每遇到一个词性标签就另起一块。
+///
+/// 词库里历史数据把多个义项写在同一行里（`"n. 好处；益处 v. 有益于"`），
+/// 后台也允许这么填，所以展示层要能把它们拆开——界面上就是「名词一块、动词一块」。
+///
+/// 规则：
+/// - 连续的多个标签归下一块释义（`"adj. adv. 好的"` → 一块，词性显示 `adj./adv.`）；
+/// - 正文出现在任何标签之前时，自成一块且词性为空；
+/// - 释义正文尾部的分隔符会被剪掉（`"好处；"` → `"好处"`）；
+/// - 空串返回空列表（前端据此不渲染释义区）。
+pub fn split_senses(meaning: &str) -> Vec<WordMeaning> {
+    let text = meaning.trim();
+    if text.is_empty() {
+        return Vec::new();
+    }
+
+    let mut senses: Vec<WordMeaning> = Vec::new();
+    // 已收集、尚未配到正文的词性标签
+    let mut pending_pos: Vec<String> = Vec::new();
+    // 当前这块正文的起点
+    let mut cursor = 0usize;
+    let mut i = 0usize;
+
+    while i < text.len() {
+        if !text.is_char_boundary(i) {
+            i += 1;
+            continue;
+        }
+        let len = match match_pos_tag(text, i) {
+            None => {
+                i += 1;
+                continue;
+            }
+            Some(len) => len,
+        };
+
+        // 标签之前攒下的正文归上一块
+        let body = trim_body(&text[cursor..i]);
+        if !body.is_empty() {
+            senses.push(WordMeaning {
+                pos: pending_pos.join("/"),
+                text: body.to_string(),
+            });
+            pending_pos.clear();
+        }
+
+        pending_pos.push(text[i..i + len].to_string());
+        i += len;
+        // 跳过标签后面的分隔符（含中文分号）
+        while i < text.len() {
+            let c = match text[i..].chars().next() {
+                Some(c) => c,
+                None => break,
+            };
+            if !is_tag_separator(c) {
+                break;
+            }
+            i += c.len_utf8();
+        }
+        cursor = i;
+    }
+
+    // 收尾：最后一段正文（词性是前面攒下的那些标签）
+    let tail = trim_body(&text[cursor..]);
+    if !tail.is_empty() {
+        senses.push(WordMeaning {
+            pos: pending_pos.join("/"),
+            text: tail.to_string(),
+        });
+    }
+
+    senses
 }
 
 /// 例句片段
@@ -286,6 +407,107 @@ mod tests {
         let m = split_pos("   ");
         assert_eq!(m.pos, "");
         assert_eq!(m.text, "");
+    }
+
+    // ---------- 多条释义拆分 ----------
+
+    #[test]
+    fn splits_two_senses_in_one_line() {
+        // 词库里的真实数据：名词一块、动词一块
+        let s = split_senses("n. 好处；益处 v. 有益于");
+        assert_eq!(s.len(), 2);
+        assert_eq!(s[0].pos, "n.");
+        assert_eq!(s[0].text, "好处；益处");
+        assert_eq!(s[1].pos, "v.");
+        assert_eq!(s[1].text, "有益于");
+    }
+
+    #[test]
+    fn splits_two_senses_with_ellipsis_text() {
+        let s = split_senses("n. 挑战 v. 向……挑战");
+        assert_eq!(s.len(), 2);
+        assert_eq!(s[0].text, "挑战");
+        assert_eq!(s[1].pos, "v.");
+        assert_eq!(s[1].text, "向……挑战");
+    }
+
+    #[test]
+    fn single_sense_stays_single() {
+        let s = split_senses("v. 放弃；抛弃");
+        assert_eq!(s.len(), 1);
+        assert_eq!(s[0].pos, "v.");
+        assert_eq!(s[0].text, "放弃；抛弃");
+    }
+
+    #[test]
+    fn sense_without_pos_is_kept() {
+        let s = split_senses("目的；意图");
+        assert_eq!(s.len(), 1);
+        assert_eq!(s[0].pos, "");
+        assert_eq!(s[0].text, "目的；意图");
+    }
+
+    #[test]
+    fn consecutive_tags_share_one_sense() {
+        let s = split_senses("adj. adv. 好的");
+        assert_eq!(s.len(), 1);
+        assert_eq!(s[0].pos, "adj./adv.");
+        assert_eq!(s[0].text, "好的");
+    }
+
+    #[test]
+    fn slash_separated_tags_share_one_sense() {
+        let s = split_senses("n./v. 影响");
+        assert_eq!(s.len(), 1);
+        assert_eq!(s[0].pos, "n./v.");
+        assert_eq!(s[0].text, "影响");
+    }
+
+    #[test]
+    fn longest_tag_wins_in_multi_sense() {
+        // num. 不能被 n. 抢先匹配，否则会拆成 "n." + "um. 数字"
+        let s = split_senses("num. 数字");
+        assert_eq!(s.len(), 1);
+        assert_eq!(s[0].pos, "num.");
+        assert_eq!(s[0].text, "数字");
+    }
+
+    #[test]
+    fn tag_inside_parentheses_is_not_split() {
+        // 括号里的 abbr. 前后不是分隔符，不该被当成新义项
+        let s = split_senses("adv. 副词（abbr. 缩写）");
+        assert_eq!(s.len(), 1);
+        assert_eq!(s[0].pos, "adv.");
+        assert_eq!(s[0].text, "副词（abbr. 缩写）");
+    }
+
+    #[test]
+    fn trailing_separators_are_trimmed() {
+        let s = split_senses("n. 好处； v. 益处");
+        assert_eq!(s.len(), 2);
+        assert_eq!(s[0].text, "好处", "尾部的中文分号应剪掉");
+        assert_eq!(s[1].text, "益处");
+    }
+
+    #[test]
+    fn meaning_of_only_tags_yields_no_sense() {
+        assert!(split_senses("n. v.").is_empty());
+    }
+
+    #[test]
+    fn empty_meaning_has_no_senses() {
+        assert!(split_senses("").is_empty());
+        assert!(split_senses("   ").is_empty());
+    }
+
+    #[test]
+    fn does_not_panic_on_multibyte() {
+        let s = split_senses("中文释义直接写 v. 动词义");
+        assert_eq!(s.len(), 2);
+        assert_eq!(s[0].pos, "");
+        assert_eq!(s[0].text, "中文释义直接写");
+        assert_eq!(s[1].pos, "v.");
+        assert_eq!(s[1].text, "动词义");
     }
 
     #[test]

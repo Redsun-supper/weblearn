@@ -27,25 +27,29 @@ func NewReviewHandler(db *gorm.DB) *ReviewHandler {
 // ---------- 请求/响应结构 ----------
 
 type addWordItem struct {
-	Word     string `json:"word"`
-	Phonetic string `json:"phonetic"`
-	Meaning  string `json:"meaning"`
-	Example  string `json:"example"`
-	Subject  string `json:"subject"`
-	Book     string `json:"book"` // 词书/册（可选）
-	Unit     string `json:"unit"` // 单元（可选）
+	Word               string            `json:"word"`
+	Phonetic           string            `json:"phonetic"`
+	Meaning            string            `json:"meaning"`
+	Example            string            `json:"example"`
+	ExampleTranslation string            `json:"example_translation"` // 例句中文翻译（可选）
+	Senses             models.WordSenses `json:"senses"`              // 多释义（可选）
+	Subject            string            `json:"subject"`
+	Book               string            `json:"book"` // 词书/册（可选）
+	Unit               string            `json:"unit"` // 单元（可选）
 }
 
 // updateWordRequest 更新词条请求
 // 语义为全量更新：后台表单会把所有字段一起提交，未填的字段即视为清空
 type updateWordRequest struct {
-	Word     string `json:"word"`
-	Phonetic string `json:"phonetic"`
-	Meaning  string `json:"meaning"`
-	Example  string `json:"example"`
-	Subject  string `json:"subject"`
-	Book     string `json:"book"`
-	Unit     string `json:"unit"`
+	Word               string            `json:"word"`
+	Phonetic           string            `json:"phonetic"`
+	Meaning            string            `json:"meaning"`
+	Example            string            `json:"example"`
+	ExampleTranslation string            `json:"example_translation"`
+	Senses             models.WordSenses `json:"senses"`
+	Subject            string            `json:"subject"`
+	Book               string            `json:"book"`
+	Unit               string            `json:"unit"`
 }
 
 type addWordsRequest struct {
@@ -54,26 +58,48 @@ type addWordsRequest struct {
 
 type submitReviewRequest struct {
 	WordID        uint    `json:"word_id"`
-	Rating        uint8   `json:"rating"`         // 1=Again 2=Hard 3=Good 4=Easy
-	Stability     float64 `json:"stability"`      // 引擎算出的新记忆状态
-	Difficulty    float64 `json:"difficulty"`     // 引擎算出的新记忆状态
-	IntervalDays  float64 `json:"interval_days"`  // 引擎算出的下次间隔（天）
+	Rating        uint8   `json:"rating"`        // 1=Again 2=Hard 3=Good 4=Easy
+	Stability     float64 `json:"stability"`     // 引擎算出的新记忆状态
+	Difficulty    float64 `json:"difficulty"`    // 引擎算出的新记忆状态
+	IntervalDays  float64 `json:"interval_days"` // 引擎算出的下次间隔（天）
 	DesiredRetain float64 `json:"desired_retention"`
 }
 
 // 到期复习卡（单词 + FSRS 记忆状态）
 type dueCard struct {
-	ID           uint       `json:"id" gorm:"column:word_id"`
-	Word         string     `json:"word" gorm:"column:word"`
-	Phonetic     string     `json:"phonetic" gorm:"column:phonetic"`
-	Meaning      string     `json:"meaning" gorm:"column:meaning"`
-	Example      string     `json:"example" gorm:"column:example"`
-	Subject      string     `json:"subject" gorm:"column:subject"`
-	Stability    float64    `json:"stability" gorm:"column:stability"`
-	Difficulty   float64    `json:"difficulty" gorm:"column:difficulty"`
-	DueAt        *time.Time `json:"due_at" gorm:"column:due_at"`
-	LastReviewAt *time.Time `json:"last_review_at" gorm:"column:last_review_at"`
-	Reps         uint       `json:"reps" gorm:"column:reps"`
+	ID                 uint              `json:"id" gorm:"column:word_id"`
+	Word               string            `json:"word" gorm:"column:word"`
+	Phonetic           string            `json:"phonetic" gorm:"column:phonetic"`
+	Meaning            string            `json:"meaning" gorm:"column:meaning"`
+	Example            string            `json:"example" gorm:"column:example"`
+	ExampleTranslation string            `json:"example_translation" gorm:"column:example_translation"`
+	Senses             models.WordSenses `json:"senses" gorm:"column:senses"`
+	Subject            string            `json:"subject" gorm:"column:subject"`
+	Stability          float64           `json:"stability" gorm:"column:stability"`
+	Difficulty         float64           `json:"difficulty" gorm:"column:difficulty"`
+	DueAt              *time.Time        `json:"due_at" gorm:"column:due_at"`
+	LastReviewAt       *time.Time        `json:"last_review_at" gorm:"column:last_review_at"`
+	Reps               uint              `json:"reps" gorm:"column:reps"`
+}
+
+// normalizeSenses 清洗多释义：去空白、丢掉整条为空的项
+// 后台表单里「加了一行又没填」不应该在库里留下一条空释义
+func normalizeSenses(list models.WordSenses) models.WordSenses {
+	out := make(models.WordSenses, 0, len(list))
+	for _, s := range list {
+		item := models.WordSense{
+			Pos:         strings.TrimSpace(s.Pos),
+			Meaning:     strings.TrimSpace(s.Meaning),
+			Example:     strings.TrimSpace(s.Example),
+			Translation: strings.TrimSpace(s.Translation),
+		}
+		// 词性与释义都空：这一行没填（只填了例句也算），丢弃
+		if item.Pos == "" && item.Meaning == "" {
+			continue
+		}
+		out = append(out, item)
+	}
+	return out
 }
 
 // ---------- 接口实现 ----------
@@ -232,6 +258,8 @@ func (h *ReviewHandler) UpdateWord(c *gin.Context) {
 	record.Phonetic = strings.TrimSpace(req.Phonetic)
 	record.Meaning = strings.TrimSpace(req.Meaning)
 	record.Example = strings.TrimSpace(req.Example)
+	record.ExampleTranslation = strings.TrimSpace(req.ExampleTranslation)
+	record.Senses = normalizeSenses(req.Senses)
 	record.Book = strings.TrimSpace(req.Book)
 	record.Unit = strings.TrimSpace(req.Unit)
 	if subject := strings.TrimSpace(req.Subject); subject != "" {
@@ -342,13 +370,15 @@ func (h *ReviewHandler) AddWords(c *gin.Context) {
 			subject = "english"
 		}
 		records = append(records, models.Word{
-			Word:     word,
-			Phonetic: strings.TrimSpace(item.Phonetic),
-			Meaning:  strings.TrimSpace(item.Meaning),
-			Example:  strings.TrimSpace(item.Example),
-			Subject:  subject,
-			Book:     strings.TrimSpace(item.Book),
-			Unit:     strings.TrimSpace(item.Unit),
+			Word:               word,
+			Phonetic:           strings.TrimSpace(item.Phonetic),
+			Meaning:            strings.TrimSpace(item.Meaning),
+			Example:            strings.TrimSpace(item.Example),
+			ExampleTranslation: strings.TrimSpace(item.ExampleTranslation),
+			Senses:             normalizeSenses(item.Senses),
+			Subject:            subject,
+			Book:               strings.TrimSpace(item.Book),
+			Unit:               strings.TrimSpace(item.Unit),
 		})
 	}
 
@@ -389,7 +419,8 @@ func (h *ReviewHandler) DueReviews(c *gin.Context) {
 	var cards []dueCard
 	err := h.db.Model(&models.Word{}).
 		Select(`
-			words.id AS word_id, words.word, words.phonetic, words.meaning, words.example, words.subject,
+			words.id AS word_id, words.word, words.phonetic, words.meaning, words.example,
+			words.example_translation, words.senses, words.subject,
 			word_reviews.stability, word_reviews.difficulty, word_reviews.due_at,
 			word_reviews.last_review_at, word_reviews.reps
 		`).

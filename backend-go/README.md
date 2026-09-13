@@ -82,6 +82,22 @@ go build -o server main.go
 | `POST /api/words` | 查重**大小写不敏感**（`Abandon` 与 `abandon` 视为同一个词）；先一次性取回现有单词建索引再分批插入，适合一次导入上千词 |
 | `GET /api/word-options` | 放在 `/api/word-options` 而非 `/api/words/options`，是为了避开与 `/api/words/:id` 的通配路由冲突 |
 
+### 词条字段（`words` 表）
+
+| 字段 | 说明 |
+|------|------|
+| `word` / `phonetic` / `meaning` / `example` | 单词 / 音标 / 释义 / 例句（`word` 唯一索引） |
+| `example_translation` | 例句的中文翻译（可空） |
+| `senses` | 多释义数组（可空）：`[{"pos":"n.","meaning":"好处；益处","example":"...","translation":"..."}]` |
+| `book` / `unit` | 词书 / 单元，后台分组与筛选用（可空） |
+
+`senses` 在 SQLite 里是**一列 JSON 文本**（`models.WordSenses`，实现了 `Value` / `Scan` / `MarshalJSON`）。
+
+- 为什么不单开子表：释义永远跟着词条一起读写、从不单独查询，存 JSON 省掉一次 join，传输也少带 `id` / `word_id`；代价是不能用 SQL 直接查某条释义（本项目无此需求）。
+- ⚠️ **空值必须序列化成 `[]` 而不是 `null`**（`Scan` 里先把接收者重置为非 nil 空切片）：前端 Rust 引擎按数组解析，遇到 `null` 会直接报错（`"items": null` 已经踩过一次）。
+- 写入时 `normalizeSenses` 会去空白并丢掉「词性与释义都空」的行，后台表单留空的行不会进库。
+- 读取时对坏 JSON 宽容（按「没有多释义」处理）：手工改坏一行的 JSON 不该让整个复习页打不开。
+
 ### `/api/reviews/stats` 返回字段
 
 | 字段 | 说明 |
@@ -109,11 +125,17 @@ go run ./cmd/seed
 go run ./cmd/seed -file seed/my_words.json -db guangxue.db
 ```
 
-词表 JSON 结构（`subject` 可省略，默认 `english`）：
+词表 JSON 结构（`subject` 可省略，默认 `english`；`example_translation` 与 `senses` 都可选）：
 
 ```json
-{"words":[{"word":"apple","phonetic":"/ˈæp.əl/","meaning":"n. 苹果","example":"I eat an apple.","subject":"english"}]}
+{"words":[{"word":"apple","phonetic":"/ˈæp.əl/","meaning":"n. 苹果","example":"I eat an apple.",
+           "example_translation":"我吃一个苹果。","subject":"english"},
+          {"word":"benefit","phonetic":"/ˈben.ɪ.fɪt/","meaning":"n. 好处；益处 v. 有益于",
+           "example":"Exercise has many benefits.","example_translation":"锻炼有很多好处。",
+           "senses":[{"pos":"n.","meaning":"好处；益处"},{"pos":"v.","meaning":"有益于"}]}]}
 ```
+
+`senses` 留空时不影响使用：复习界面会按 `meaning` 里的词性标签自动分块展示。
 
 `words.word` 为唯一索引，重复词条自动跳过，因此该命令可反复执行。
 
@@ -121,6 +143,8 @@ go run ./cmd/seed -file seed/my_words.json -db guangxue.db
 
 - 使用 [GORM](https://gorm.io) + [glebarez/sqlite](https://github.com/glebarez/sqlite)（纯 Go，无需 CGO）。
 - 首次启动自动建表：`words`（词条）、`word_reviews`（每词 FSRS 记忆状态）、`review_logs`（复习日志）。
+- `AutoMigrate` 只新增缺失的表与**列**，不动已有数据：给 `words` 加 `example_translation` / `senses` 时，
+  老库里的行会被补上 NULL（读出来即「没有翻译 / 没有多释义」），无需手工迁移。
 - 数据文件路径由环境变量 `DB_PATH` 控制，默认 `guangxue.db`。
 
 ### 词条示例
@@ -128,7 +152,10 @@ go run ./cmd/seed -file seed/my_words.json -db guangxue.db
 ```bash
 curl -X POST http://localhost:8080/api/words -H "Content-Type: application/json" -d '{
   "words": [
-    {"word":"apple","phonetic":"/ˈæp.əl/","meaning":"n. 苹果","example":"I eat an apple."}
+    {"word":"apple","phonetic":"/ˈæp.əl/","meaning":"n. 苹果","example":"I eat an apple.",
+     "example_translation":"我吃一个苹果。"},
+    {"word":"benefit","phonetic":"/ˈben.ɪ.fɪt/","meaning":"n. 好处；益处 v. 有益于",
+     "senses":[{"pos":"n.","meaning":"好处；益处","example":"Exercise has many benefits.","translation":"锻炼有很多好处。"}]}
   ]
 }'
 ```

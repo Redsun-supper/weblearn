@@ -1,6 +1,12 @@
 package models
 
-import "time"
+import (
+	"database/sql/driver"
+	"encoding/json"
+	"fmt"
+	"strings"
+	"time"
+)
 
 // User 用户数据模型
 // 用途：定义用户信息的结构，用于数据库操作和API响应
@@ -30,19 +36,95 @@ func (DataItem) TableName() string {
 	return "data_items"
 }
 
+// WordSense 一条释义：一个词性一块（名词一块、动词一块），可以带自己的例句与中文翻译
+type WordSense struct {
+	Pos         string `json:"pos"`         // 词性标签，如 "n."、"v."、"adj."
+	Meaning     string `json:"meaning"`     // 该词性下的释义正文
+	Example     string `json:"example"`     // 该词性专属例句，可空（空了就沿用词条本身的例句）
+	Translation string `json:"translation"` // 该例句的中文翻译，可空
+}
+
+// WordSenses 多条释义。
+//
+// 存储方式：在 words 表里存成**一列 JSON 文本**（words.senses），不单独开子表。
+// 取舍依据：释义永远跟着词条一起读写、从不单独查询。存 JSON 省掉一次 join，
+// 传输上也更小——子表方案每条释义还得额外带 id / word_id。
+// 代价是不能用 SQL 直接查某条释义（本项目没有这种需求）。
+type WordSenses []WordSense
+
+// Value 写入数据库：空列表统一存 "[]"，
+// 避免 NULL 与空串两种「没有释义」的状态混着来
+func (s WordSenses) Value() (driver.Value, error) {
+	if len(s) == 0 {
+		return "[]", nil
+	}
+	b, err := json.Marshal([]WordSense(s))
+	if err != nil {
+		return nil, err
+	}
+	return string(b), nil
+}
+
+// Scan 从数据库读取
+//
+// ⚠️ 无论读到什么都先把接收者重置为**非 nil 的空切片**：
+// 只有这样序列化成 JSON 时才是 `[]` 而不是 `null`，
+// 而前端 Rust 引擎按数组解析，遇到 null 会直接报错（"items": null 已经踩过一次）。
+func (s *WordSenses) Scan(src interface{}) error {
+	*s = WordSenses{}
+	if src == nil {
+		return nil
+	}
+	var raw string
+	switch v := src.(type) {
+	case string:
+		raw = v
+	case []byte:
+		raw = string(v)
+	default:
+		return fmt.Errorf("senses 列类型不支持: %T", src)
+	}
+	raw = strings.TrimSpace(raw)
+	if raw == "" || raw == "null" {
+		return nil
+	}
+	var list []WordSense
+	if err := json.Unmarshal([]byte(raw), &list); err != nil {
+		// 读时宽容：手工把某一行的 JSON 改坏，不应该让整个复习页打不开。
+		// 这一行按「没有多释义」处理，界面退回单词条展示；写入口是严格校验的。
+		return nil
+	}
+	if list != nil {
+		*s = list
+	}
+	return nil
+}
+
+// MarshalJSON 保证 nil 也输出成 `[]`，前端拿到的永远是数组
+func (s WordSenses) MarshalJSON() ([]byte, error) {
+	if s == nil {
+		return []byte("[]"), nil
+	}
+	return json.Marshal([]WordSense(s))
+}
+
 // Word 单词词条（词汇库）
 // 说明：纯词条数据，与复习记忆状态分离存储
 type Word struct {
-	ID        uint      `json:"id" gorm:"primaryKey"`
-	Word      string    `json:"word" gorm:"uniqueIndex;size:100"`
-	Phonetic  string    `json:"phonetic" gorm:"size:200"`
-	Meaning   string    `json:"meaning" gorm:"type:text"`
-	Example   string    `json:"example" gorm:"type:text"`
-	Subject   string    `json:"subject" gorm:"size:30;default:english;index"`
-	Book      string    `json:"book" gorm:"size:60;index"` // 词书/册（如「必修一」），后台分组用，可空
-	Unit      string    `json:"unit" gorm:"size:60;index"` // 单元（如「Unit 1」），后台分组用，可空
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID       uint   `json:"id" gorm:"primaryKey"`
+	Word     string `json:"word" gorm:"uniqueIndex;size:100"`
+	Phonetic string `json:"phonetic" gorm:"size:200"`
+	Meaning  string `json:"meaning" gorm:"type:text"`
+	Example  string `json:"example" gorm:"type:text"`
+	// ExampleTranslation 例句的中文翻译（可空）
+	ExampleTranslation string `json:"example_translation" gorm:"type:text"`
+	// Senses 多释义（JSON 文本，可空）。为空时前端按 Meaning 里的词性标签自动拆分展示
+	Senses    WordSenses `json:"senses" gorm:"type:text"`
+	Subject   string     `json:"subject" gorm:"size:30;default:english;index"`
+	Book      string     `json:"book" gorm:"size:60;index"` // 词书/册（如「必修一」），后台分组用，可空
+	Unit      string     `json:"unit" gorm:"size:60;index"` // 单元（如「Unit 1」），后台分组用，可空
+	CreatedAt time.Time  `json:"created_at"`
+	UpdatedAt time.Time  `json:"updated_at"`
 }
 
 // TableName 指定数据库表名
@@ -55,8 +137,8 @@ func (Word) TableName() string {
 type WordReview struct {
 	ID               uint       `json:"id" gorm:"primaryKey"`
 	WordID           uint       `json:"word_id" gorm:"uniqueIndex"`
-	Stability        float64    `json:"stability"`        // 记忆稳定度（天）
-	Difficulty       float64    `json:"difficulty"`       // 记忆难度 1~10
+	Stability        float64    `json:"stability"`                            // 记忆稳定度（天）
+	Difficulty       float64    `json:"difficulty"`                           // 记忆难度 1~10
 	DesiredRetention float64    `json:"desired_retention" gorm:"default:0.9"` // 期望记忆保持率
 	DueAt            *time.Time `json:"due_at" gorm:"index"`                  // 下次到期时间
 	LastReviewAt     *time.Time `json:"last_review_at"`

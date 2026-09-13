@@ -58,13 +58,24 @@
     color: #9ca3af;
 }
 
-.study-back {
-    color: #9ca3af;
-    text-decoration: none;
+/* 顶栏左侧：沉浸模式开关（原本是「← 返回」，返回的语义改由这个开关承担：
+ * 点一下就把站点导航栏叫回来，再点一下收起） */
+.study-nav-toggle {
+    padding: 3px 10px;
+    border: 1px solid #e5e7eb;
+    border-radius: 999px;
+    background-color: #ffffff;
+    font-size: 12px;
+    font-family: inherit;
+    color: #6b7280;
     white-space: nowrap;
+    cursor: pointer;
 }
 
-.study-back:hover { color: #374151; }
+.study-nav-toggle:hover {
+    border-color: #d1d5db;
+    color: #374151;
+}
 
 /* 今日统计：三个数字 */
 .study-counts {
@@ -191,12 +202,24 @@
     color: #1a1a1a;
 }
 
+/* 主例句的中文翻译：比原文小一号、浅一点，紧跟在引文块下方 */
+.study-quote-cn {
+    margin: -14px 0 0 16px; /* 抵消 .study-answer 的 gap，让它贴着上方的例句 */
+    font-size: 14px;
+    line-height: 1.7;
+    color: #9ca3af;
+}
+
 /* 释义块 */
 .study-senses {
     display: flex;
     flex-direction: column;
     gap: 18px;
 }
+
+/* 一块释义：词性 + 释义正文，若这块带自己的例句/译文则一起包在里面
+ * （一个词有几个义项就有几块，间距由上面的 gap 控制） */
+.sense-block { display: block; }
 
 .sense-head {
     display: flex;
@@ -321,4 +344,13 @@
 .study-message-sub {
     font-size: 13px;
     color: #9ca3af;
+}
+
+/* ===================== 沉浸模式 ===================== */
+
+/* 站点导航栏被隐藏后（main.css 的 body.is-immersive 规则把内容容器的
+ * margin/padding 都清零了），这里补回自己的留白并占满整屏 */
+body.is-immersive .study {
+    min-height: 100vh;
+    padding: 16px 24px 20px;
 }

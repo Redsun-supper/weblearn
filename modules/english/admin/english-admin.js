@@ -201,12 +201,28 @@ function renderList() {
 
 function renderRow(item) {
     var el = ctx.el;
+    var senses = item.senses || [];
+
+    // 释义列：多条释义时补一个角标，方便一眼看出这个词已经拆过义项
+    var meaningCell = el('td', { class: 'col-text' }, [
+        el('span', { text: item.meaning || '—' }),
+        senses.length > 1 ? el('span', { class: 'admin-badge admin-badge-sm', text: senses.length + ' 条释义' }) : null
+    ]);
+
+    // 例句列：第二行显示中文翻译；没填的标出来，方便逐条补齐
+    var exampleCell = el('td', { class: 'col-text' }, [
+        el('div', { text: item.example || '—' }),
+        item.example_translation
+            ? el('div', { class: 'col-sub', text: '译：' + item.example_translation })
+            : el('div', { class: 'col-sub col-sub-missing', text: '（缺例句翻译）' })
+    ]);
+
     return el('tr', null, [
         el('td', { text: item.id }),
         el('td', { text: item.word }),
         el('td', { text: item.phonetic || '—' }),
-        el('td', { class: 'col-text', text: item.meaning || '—' }),
-        el('td', { class: 'col-text', text: item.example || '—' }),
+        meaningCell,
+        exampleCell,
         el('td', { text: item.book || '—' }),
         el('td', { text: item.unit || '—' }),
         el('td', { class: 'col-actions' }, [
@@ -229,16 +245,81 @@ function openEditor(item) {
     if (item) {
         state.editing = {
             id: item.id, word: item.word, phonetic: item.phonetic, meaning: item.meaning,
-            example: item.example, book: item.book, unit: item.unit
+            example: item.example, example_translation: item.example_translation || '',
+            // 深拷贝一份释义数组：编辑时直接改 state，取消编辑不会污染列表数据
+            senses: (item.senses || []).map(function (s) {
+                return {
+                    pos: s.pos || '', meaning: s.meaning || '',
+                    example: s.example || '', translation: s.translation || ''
+                };
+            }),
+            book: item.book, unit: item.unit
         };
     } else {
         // 新增时把当前的筛选条件带进去，方便连续录入同一单元的词
         state.editing = {
-            id: 0, word: '', phonetic: '', meaning: '', example: '',
+            id: 0, word: '', phonetic: '', meaning: '', example: '', example_translation: '',
+            senses: [],
             book: state.book, unit: state.unit
         };
     }
     renderEditor();
+}
+
+// 画「多释义」编辑区：一行一个义项（词性 / 释义 / 例句 / 译文），可增可删
+function renderSenseEditor(container) {
+    var el = ctx.el;
+    var list = state.editing.senses;
+
+    function rerender() {
+        container.textContent = '';
+        build();
+    }
+
+    function build() {
+        // 每条释义一张小卡片：词性窄、释义宽，例句与译文各占一行
+        for (var i = 0; i < list.length; i++) {
+            (function (index) {
+                var sense = list[index];
+                function field(label, key, attrs) {
+                    var input = el('input', attrs || { type: 'text' });
+                    input.value = sense[key] || '';
+                    input.addEventListener('input', function () { sense[key] = input.value; });
+                    return el('div', { class: 'admin-field' }, [el('label', { text: label }), input]);
+                }
+                container.appendChild(el('div', { class: 'admin-sense-row' }, [
+                    el('div', { class: 'admin-sense-head' }, [
+                        el('span', { text: '释义 ' + (index + 1) }),
+                        el('button', {
+                            class: 'admin-btn admin-btn-sm admin-btn-danger', text: '删除这条',
+                            onclick: function () {
+                                list.splice(index, 1);
+                                rerender();
+                            }
+                        })
+                    ]),
+                    el('div', { class: 'admin-grid-2' }, [
+                        field('词性', 'pos', { type: 'text', placeholder: 'n. / v. / adj.' }),
+                        field('释义', 'meaning', { type: 'text', placeholder: '好处；益处' })
+                    ]),
+                    field('例句（可空，空了用上面那条例句）', 'example', { type: 'text', placeholder: 'Exercise has many benefits.' }),
+                    field('例句翻译（可空）', 'translation', { type: 'text', placeholder: '锻炼有很多好处。' })
+                ]));
+            })(i);
+        }
+
+        container.appendChild(el('div', { class: 'admin-actions' }, [
+            el('button', {
+                class: 'admin-btn admin-btn-sm', text: '＋ 添加一条释义',
+                onclick: function () {
+                    list.push({ pos: '', meaning: '', example: '', translation: '' });
+                    rerender();
+                }
+            })
+        ]));
+    }
+
+    build();
 }
 
 function renderEditor() {
@@ -259,6 +340,8 @@ function renderEditor() {
     textarea.value = e.example || '';
     textarea.addEventListener('input', function () { e.example = textarea.value; });
 
+    var senseBox = el('div', { class: 'admin-senses' });
+
     root.appendChild(el('div', { class: 'admin-card' }, [
         el('div', { class: 'admin-card-title', text: isNew ? '新增词条' : ('编辑词条 #' + e.id) }),
         el('div', { class: 'admin-grid-2' }, [
@@ -267,6 +350,11 @@ function renderEditor() {
         ]),
         el('div', { class: 'admin-field' }, [el('label', { text: '释义' }), bind('meaning', { type: 'text', placeholder: 'v. 放弃；抛弃' })]),
         el('div', { class: 'admin-field' }, [el('label', { text: '例句' }), textarea]),
+        el('div', { class: 'admin-field' }, [el('label', { text: '例句翻译' }), bind('example_translation', { type: 'text', placeholder: '他放弃了他那辆旧车。' })]),
+        el('div', { class: 'admin-card-title', style: 'margin-top:6px', text: '多释义（可选）' }),
+        el('div', { class: 'admin-hint', text: '一个词有多个义项时在这里一条条填（名词一块、动词一块），复习时就会分块显示；' +
+            '每条还能带自己的例句与译文。留空则按上面「释义」里的词性标签自动分块（例如「n. 好处；益处 v. 有益于」拆成两块）。' }),
+        senseBox,
         el('div', { class: 'admin-grid-2' }, [
             el('div', { class: 'admin-field' }, [el('label', { text: '词书' }), bind('book', { type: 'text', placeholder: '如：必修一', list: 'admBooks' })]),
             el('div', { class: 'admin-field' }, [el('label', { text: '单元' }), bind('unit', { type: 'text', placeholder: '如：Unit 1', list: 'admUnits' })])
@@ -279,6 +367,22 @@ function renderEditor() {
         ]),
         el('div', { class: 'admin-hint', text: '提示：词书 / 单元可留空；同名词条已存在时会提示而不是新增。' })
     ]));
+
+    renderSenseEditor(senseBox);
+}
+
+// 提交前清洗释义：丢掉「词性和释义都没填」的空行（后端也会再清一遍）
+function cleanSenses() {
+    return (state.editing.senses || []).map(function (s) {
+        return {
+            pos: (s.pos || '').trim(),
+            meaning: (s.meaning || '').trim(),
+            example: (s.example || '').trim(),
+            translation: (s.translation || '').trim()
+        };
+    }).filter(function (s) {
+        return s.pos || s.meaning;
+    });
 }
 
 function saveWord() {
@@ -293,6 +397,8 @@ function saveWord() {
         phonetic: (e.phonetic || '').trim(),
         meaning: (e.meaning || '').trim(),
         example: (e.example || '').trim(),
+        example_translation: (e.example_translation || '').trim(),
+        senses: cleanSenses(),
         book: (e.book || '').trim(),
         unit: (e.unit || '').trim()
     };
@@ -361,7 +467,7 @@ function renderImport() {
         style: 'min-height:200px;font-family:Consolas,monospace',
         placeholder: '在此粘贴词表，一行一个词。例如：\n' +
             'abandon\n' +
-            'ability\t/əˈbɪl.ə.ti/\tn. 能力；才能\tShe has the ability to lead.\n' +
+            'ability\t/əˈbɪl.ə.ti/\tn. 能力；才能\tShe has the ability to lead.\t她有领导团队的能力。\n' +
             'achieve | /əˈtʃiːv/ | v. 实现；达到\n' +
             'adapt, /əˈdæpt/, v. 适应'
     });
@@ -381,8 +487,9 @@ function renderImport() {
         el('div', { class: 'admin-hint', html:
             '支持的格式（自动识别，按优先级）：<br>' +
             '① 制表符（从 Excel 直接粘贴最省事）　② 竖线 <code>|</code>　③ 逗号 <code>,</code>　④ 空格<br>' +
-            '字段按位置对应：<b>单词 / 音标 / 释义 / 例句</b>，多出的字段忽略。<br>' +
-            '以 <code>#</code> 或 <code>//</code> 开头的行与空行会被跳过；只有单词一行也能导入。' }),
+            '字段按位置对应：<b>单词 / 音标 / 释义 / 例句 / 例句翻译</b>，多出的字段忽略。<br>' +
+            '以 <code>#</code> 或 <code>//</code> 开头的行与空行会被跳过；只有单词一行也能导入。<br>' +
+            '导入只填「单条释义」；多释义请在列表里逐个词用「编辑」补（一个词一块词性）。' }),
         el('div', { class: 'admin-field' }, [el('label', { text: '词表内容' }), textarea]),
         el('div', { class: 'admin-grid-2' }, [
             el('div', { class: 'admin-field' }, [el('label', { text: '本次导入的词书（应用到全部）' }), bookInput]),
@@ -420,7 +527,7 @@ function renderParseResult() {
         box.appendChild(el('div', { class: 'admin-table-wrap' }, el('table', { class: 'admin-table' }, [
             el('thead', null, el('tr', null, [
                 el('th', { text: '行' }), el('th', { text: '单词' }), el('th', { text: '音标' }),
-                el('th', { text: '释义' }), el('th', { text: '例句' })
+                el('th', { text: '释义' }), el('th', { text: '例句' }), el('th', { text: '例句翻译' })
             ])),
             el('tbody', null, preview.map(function (r) {
                 return el('tr', null, [
@@ -428,7 +535,8 @@ function renderParseResult() {
                     el('td', { text: r.word }),
                     el('td', { text: r.phonetic || '—' }),
                     el('td', { class: 'col-text', text: r.meaning || '—' }),
-                    el('td', { class: 'col-text', text: r.example || '—' })
+                    el('td', { class: 'col-text', text: r.example || '—' }),
+                    el('td', { class: 'col-text', text: r.example_translation || '—' })
                 ]);
             }))
         ])));
@@ -535,6 +643,7 @@ function importChunks(rows, index, acc, onProgress) {
     var words = slice.map(function (r) {
         return {
             word: r.word, phonetic: r.phonetic, meaning: r.meaning, example: r.example,
+            example_translation: r.example_translation,
             book: state.importBook, unit: state.importUnit
         };
     });
