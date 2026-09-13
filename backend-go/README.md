@@ -61,12 +61,26 @@ go build -o server main.go
 | POST | /api/user/update | 更新用户信息 |
 | GET | /api/data/list | 获取数据列表 |
 | POST | /api/data/submit | 提交数据 |
-| GET | /api/words | 单词列表（limit/offset/subject） |
-| POST | /api/words | 批量添加单词 |
+| GET | /api/words | 词条列表（limit/offset/subject/book/unit/search） |
+| POST | /api/words | 批量添加词条（已存在的跳过） |
+| GET | /api/words/:id | 获取单个词条 |
+| PUT | /api/words/:id | 更新词条内容（全量；改名冲突返回 409） |
+| DELETE | /api/words/:id | 删除词条（连带删除其复习状态与日志） |
+| GET | /api/word-options | 词条中已使用的词书 / 单元列表（后台筛选下拉用） |
 | GET | /api/reviews/due | 到期复习卡列表（limit/now） |
 | GET | /api/reviews/new | 尚未加入复习的新词 |
 | POST | /api/reviews/submit | 提交复习结果（FSRS 状态持久化） |
 | GET | /api/reviews/stats | 复习统计 |
+
+### 词条管理接口说明（供后台使用）
+
+| 接口 | 要点 |
+|------|------|
+| `GET /api/words` | 返回 `{items, total, limit, offset}`；`search` 同时匹配**单词与释义**；`book`/`unit` 为精确匹配筛选 |
+| `PUT /api/words/:id` | **全量更新**（后台表单会把所有字段一起提交，未填即清空）；`word` 为空返回 400，与其它词条重名返回 409 |
+| `DELETE /api/words/:id` | ⚠️ **会连带删除该词的 `word_reviews` 与 `review_logs`**：日志留着会变成指向不存在词条的脏数据，使 `/api/reviews/stats` 的累计次数与保持率虚高。只是改错别字请用 `PUT`，不要删了重建 |
+| `POST /api/words` | 查重**大小写不敏感**（`Abandon` 与 `abandon` 视为同一个词）；先一次性取回现有单词建索引再分批插入，适合一次导入上千词 |
+| `GET /api/word-options` | 放在 `/api/word-options` 而非 `/api/words/options`，是为了避开与 `/api/words/:id` 的通配路由冲突 |
 
 ### `/api/reviews/stats` 返回字段
 

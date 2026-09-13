@@ -4,23 +4,30 @@
 
 ```
 modules/english/
-├── english.html   学科页片段（被 main.js fetch 后注入 #contentContainer，可被 localStorage 缓存）
-├── english.css    模块样式（只作用于英语页内的元素）
-├── english.js     模块逻辑（ES module，由 main.js 动态 import）
-├── engine/        Rust/WASM 引擎（队列编排 + FSRS 调度 + 随机化）
-└── README.md      本文件
+├── english.html       学科页片段（被 main.js fetch 后注入 #contentContainer，可被 localStorage 缓存）
+├── english.css        模块样式（只作用于英语页内的元素）
+├── english.js         模块逻辑（ES module，由 main.js 动态 import）
+├── engine/            Rust/WASM 引擎（队列编排 + FSRS 调度 + 随机化 + 词表解析）
+├── admin/             词条管理后台模块（由 admin/ 的通用后台按需加载）
+│   └── english-admin.js
+└── README.md          本文件
 ```
 
 ## 职责划分
 
 | 层 | 负责 | 不负责 |
 |----|------|--------|
-| `english.js` | DOM 渲染、事件绑定、取数与提交（`fetch`）、`localStorage`、语音合成 | 任何计算 |
-| `engine/`（Rust） | 队列构建（洗牌 / 抽新词）、`days_elapsed` 换算、FSRS 调度、评分决策、进度统计 | 任何 DOM |
+| `english.js` | 学生端：DOM 渲染、事件绑定、取数与提交（`fetch`）、`localStorage`、语音合成 | 任何计算 |
+| `engine/`（Rust） | 队列构建（洗牌 / 抽新词）、`days_elapsed` 换算、FSRS 调度、评分决策、进度统计、**词表文本解析** | 任何 DOM |
+| `admin/english-admin.js` | 管理端：词条列表 / 搜索 / 分页、新增编辑删除、批量导入的预览与分批提交 | 任何计算 |
 
 具体地说，**队列与游标由 Rust 侧的 `ReviewSession` 持有**，JS 只在渲染时向它索取
 当前卡片的字段、在评分时拿到一个可直接 POST 的请求体。详见
 [`engine/README.md`](engine/README.md)。
+
+后台（`admin/`）是**独立入口页**，与学科页互不影响：它不经过 `main.js`，而是由根目录
+`admin/` 下的通用后台框架按需 `import` 本目录的 `admin/english-admin.js`。
+详见 [`../../admin/README.md`](../../admin/README.md)。
 
 ## 与主框架的接口
 

@@ -23,10 +23,11 @@
 // 本文件保持 ES5 写法（var / function），仅使用 export / import 做模块化。
 
 // ===================== 学科后台注册表 =====================
-// main 分支上这里**保持为空**（只有通用骨架）；学科后台随各自模块分支加入。
-// 示例（英语后台合并进来后会长这样）：
-//   { id: 'english', name: '英语', description: '词条管理', module: '../modules/english/admin/english-admin.js' }
-var SUBJECT_ADMINS = [];
+// 每新增一个学科后台，就在这里加一行。
+// 注意：main 分支上这里是空的（只有通用骨架），学科后台随各自模块分支加入。
+var SUBJECT_ADMINS = [
+    { id: 'english', name: '英语', description: '词条管理', module: '../modules/english/admin/english-admin.js' }
+];
 
 // 模块路径相对本文件所在目录（/admin/）解析，因此学科后台写 '../modules/<学科>/admin/...'
 var state = {

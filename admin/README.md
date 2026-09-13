@@ -28,12 +28,10 @@ admin/
 
 ## 新增一个学科后台
 
-**第一步**：在 `modules/<学科>/admin/` 下写模块，导出：
+**第一步**：在 `modules/<学科>/admin/` 下写模块，导出 `mount` 与（可选的）`unmount`：
 
 ```js
 // modules/english/admin/english-admin.js
-export var meta = { id: 'english', name: '英语', description: '词条管理' }; // 可选，用于侧栏
-
 export function mount(container, ctx) {
     // 把界面渲染进 container
     container.appendChild(ctx.el('div', { class: 'admin-card', text: '英语后台' }));
@@ -44,7 +42,7 @@ export function unmount() {
 }
 ```
 
-**第二步**：在 `admin/admin.js` 的 `SUBJECT_ADMINS` 注册表里登记一行：
+**第二步**：在 `admin/admin.js` 的 `SUBJECT_ADMINS` 注册表里登记一行（学科名称与描述写在注册表里，模块本身不需要再导出一份）：
 
 ```js
 var SUBJECT_ADMINS = [

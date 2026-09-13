@@ -39,6 +39,8 @@ type Word struct {
 	Meaning   string    `json:"meaning" gorm:"type:text"`
 	Example   string    `json:"example" gorm:"type:text"`
 	Subject   string    `json:"subject" gorm:"size:30;default:english;index"`
+	Book      string    `json:"book" gorm:"size:60;index"` // 词书/册（如「必修一」），后台分组用，可空
+	Unit      string    `json:"unit" gorm:"size:60;index"` // 单元（如「Unit 1」），后台分组用，可空
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }

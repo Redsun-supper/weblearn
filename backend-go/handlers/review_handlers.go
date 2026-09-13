@@ -32,6 +32,20 @@ type addWordItem struct {
 	Meaning  string `json:"meaning"`
 	Example  string `json:"example"`
 	Subject  string `json:"subject"`
+	Book     string `json:"book"` // 词书/册（可选）
+	Unit     string `json:"unit"` // 单元（可选）
+}
+
+// updateWordRequest 更新词条请求
+// 语义为全量更新：后台表单会把所有字段一起提交，未填的字段即视为清空
+type updateWordRequest struct {
+	Word     string `json:"word"`
+	Phonetic string `json:"phonetic"`
+	Meaning  string `json:"meaning"`
+	Example  string `json:"example"`
+	Subject  string `json:"subject"`
+	Book     string `json:"book"`
+	Unit     string `json:"unit"`
 }
 
 type addWordsRequest struct {
@@ -64,8 +78,38 @@ type dueCard struct {
 
 // ---------- 接口实现 ----------
 
-// ListWords 获取单词列表
-// GET /api/words?limit=20&offset=0&subject=english
+// wordQuery 依据查询参数构造词条过滤条件
+// 列表与总数共用同一个条件，保证分页信息与实际结果口径一致
+// 支持参数：subject / book / unit / search（关键词匹配单词或释义）
+func (h *ReviewHandler) wordQuery(c *gin.Context) *gorm.DB {
+	q := h.db.Model(&models.Word{})
+	if subject := strings.TrimSpace(c.Query("subject")); subject != "" {
+		q = q.Where("subject = ?", subject)
+	}
+	if book := strings.TrimSpace(c.Query("book")); book != "" {
+		q = q.Where("book = ?", book)
+	}
+	if unit := strings.TrimSpace(c.Query("unit")); unit != "" {
+		q = q.Where("unit = ?", unit)
+	}
+	if search := strings.TrimSpace(c.Query("search")); search != "" {
+		like := "%" + search + "%"
+		q = q.Where("word LIKE ? OR meaning LIKE ?", like, like)
+	}
+	return q
+}
+
+// parseIDParam 解析路径参数 :id，返回 0 表示不合法
+func parseIDParam(c *gin.Context) uint {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil {
+		return 0
+	}
+	return uint(id)
+}
+
+// ListWords 获取单词列表（后台表格用）
+// GET /api/words?limit=20&offset=0&subject=english&book=必修一&unit=Unit 1&search=apple
 func (h *ReviewHandler) ListWords(c *gin.Context) {
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
 	if limit <= 0 || limit > 500 {
@@ -75,21 +119,180 @@ func (h *ReviewHandler) ListWords(c *gin.Context) {
 	if offset < 0 {
 		offset = 0
 	}
-	subject := c.Query("subject")
+
+	// 总数：供前端分页使用
+	var total int64
+	if err := h.wordQuery(c).Count(&total).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "统计失败:" + err.Error()})
+		return
+	}
 
 	var words []models.Word
-	q := h.db.Model(&models.Word{}).Order("id ASC").Limit(limit).Offset(offset)
-	if subject != "" {
-		q = q.Where("subject = ?", subject)
-	}
-	if err := q.Find(&words).Error; err != nil {
+	if err := h.wordQuery(c).Order("id ASC").Limit(limit).Offset(offset).Find(&words).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "查询失败:" + err.Error()})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"code": 200, "message": "获取成功", "data": gin.H{
 		"items":  words,
+		"total":  total,
 		"limit":  limit,
 		"offset": offset,
+	}})
+}
+
+// GetWord 获取单个词条
+// GET /api/words/:id
+func (h *ReviewHandler) GetWord(c *gin.Context) {
+	id := parseIDParam(c)
+	if id == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "id 不合法"})
+		return
+	}
+	var word models.Word
+	if err := h.db.First(&word, id).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"code": 404, "message": "词条不存在"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "查询失败:" + err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"code": 200, "message": "获取成功", "data": word})
+}
+
+// WordOptions 获取词条中已使用的词书 / 单元去重列表（后台筛选下拉用）
+// GET /api/word-options
+// 注：放在 /api/word-options 而不是 /api/words/options，是为了避免与 /api/words/:id 的通配路由冲突
+func (h *ReviewHandler) WordOptions(c *gin.Context) {
+	// 显式初始化成空切片：Go 的 nil 切片会被序列化成 null，前端要额外兜底
+	books := []string{}
+	units := []string{}
+	if err := h.db.Model(&models.Word{}).Where("book <> ''").
+		Distinct().Order("book ASC").Pluck("book", &books).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "查询失败:" + err.Error()})
+		return
+	}
+	if err := h.db.Model(&models.Word{}).Where("unit <> ''").
+		Distinct().Order("unit ASC").Pluck("unit", &units).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "查询失败:" + err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"code": 200, "message": "获取成功", "data": gin.H{
+		"books": books,
+		"units": units,
+	}})
+}
+
+// UpdateWord 更新词条内容
+// PUT /api/words/:id
+// 说明：全量更新；改名时会先检查是否与其它词条重名（words.word 是唯一索引），
+// 冲突返回 409 而不是让数据库报错，便于后台给出友好提示。
+func (h *ReviewHandler) UpdateWord(c *gin.Context) {
+	id := parseIDParam(c)
+	if id == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "id 不合法"})
+		return
+	}
+	var req updateWordRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "请求体格式错误: " + err.Error()})
+		return
+	}
+	word := strings.TrimSpace(req.Word)
+	if word == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "word 不能为空"})
+		return
+	}
+
+	var record models.Word
+	if err := h.db.First(&record, id).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"code": 404, "message": "词条不存在"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "查询失败:" + err.Error()})
+		return
+	}
+
+	// 改名时检查唯一性
+	if word != record.Word {
+		var dup models.Word
+		err := h.db.Where("word = ?", word).First(&dup).Error
+		if err == nil {
+			c.JSON(http.StatusConflict, gin.H{"code": 409, "message": "已存在同名单词：" + word})
+			return
+		}
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "查询失败:" + err.Error()})
+			return
+		}
+	}
+
+	record.Word = word
+	record.Phonetic = strings.TrimSpace(req.Phonetic)
+	record.Meaning = strings.TrimSpace(req.Meaning)
+	record.Example = strings.TrimSpace(req.Example)
+	record.Book = strings.TrimSpace(req.Book)
+	record.Unit = strings.TrimSpace(req.Unit)
+	if subject := strings.TrimSpace(req.Subject); subject != "" {
+		record.Subject = subject
+	}
+
+	if err := h.db.Save(&record).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "保存失败:" + err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"code": 200, "message": "更新成功", "data": record})
+}
+
+// DeleteWord 删除词条
+// DELETE /api/words/:id
+//
+// ⚠️ 会连同该词的复习状态（word_reviews）与复习日志（review_logs）一并删除。
+// 日志若不删，会变成指向不存在词条的脏数据，导致 /api/reviews/stats 的
+// 累计复习次数与记忆保持率虚高。
+// 只是想改错别字的话请用 PUT 更新，不要删了重建（否则记忆进度会丢失）。
+func (h *ReviewHandler) DeleteWord(c *gin.Context) {
+	id := parseIDParam(c)
+	if id == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "id 不合法"})
+		return
+	}
+
+	var record models.Word
+	if err := h.db.First(&record, id).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"code": 404, "message": "词条不存在"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "查询失败:" + err.Error()})
+		return
+	}
+
+	// 先记下要连带删除的数量，便于前端提示
+	var reviewCount int64
+	h.db.Model(&models.WordReview{}).Where("word_id = ?", id).Count(&reviewCount)
+	var logCount int64
+	h.db.Model(&models.ReviewLog{}).Where("word_id = ?", id).Count(&logCount)
+
+	err := h.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("word_id = ?", id).Delete(&models.WordReview{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("word_id = ?", id).Delete(&models.ReviewLog{}).Error; err != nil {
+			return err
+		}
+		return tx.Delete(&models.Word{}, id).Error
+	})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "删除失败:" + err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"code": 200, "message": "删除成功", "data": gin.H{
+		"deleted_word":    record.Word,
+		"removed_reviews": reviewCount,
+		"removed_logs":    logCount,
 	}})
 }
 
@@ -106,47 +309,64 @@ func (h *ReviewHandler) AddWords(c *gin.Context) {
 		return
 	}
 
-	created := 0
+	// 一次性取出已存在的单词建索引，避免逐条 SELECT
+	// （导入几千词时差别很大：原来是 N 次查询 + N 次插入）
+	var existingWords []string
+	if err := h.db.Model(&models.Word{}).Pluck("word", &existingWords).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "查询失败:" + err.Error()})
+		return
+	}
+	// 用「小写」做键：把 Abandon / abandon 视为同一个词，避免词库里出现仅大小写不同的重复项
+	seen := make(map[string]bool, len(existingWords))
+	for _, w := range existingWords {
+		seen[strings.ToLower(w)] = true
+	}
+
 	skipped := 0
-	var err error
+	records := make([]models.Word, 0, len(req.Words))
 	for _, item := range req.Words {
 		word := strings.TrimSpace(item.Word)
 		if word == "" {
 			skipped++
 			continue
 		}
-		record := models.Word{
-			Word:     word,
-			Phonetic: item.Phonetic,
-			Meaning:  item.Meaning,
-			Example:  item.Example,
-			Subject:  item.Subject,
-		}
-		if record.Subject == "" {
-			record.Subject = "english"
-		}
-		// 单词重复则跳过（不报错）
-		var existing models.Word
-		findErr := h.db.Where("word = ?", record.Word).First(&existing).Error
-		if findErr == nil {
+		key := strings.ToLower(word)
+		if seen[key] {
 			skipped++
 			continue
 		}
-		if !errors.Is(findErr, gorm.ErrRecordNotFound) {
-			err = findErr
-			break
+		seen[key] = true // 同一批内部也去重
+
+		subject := strings.TrimSpace(item.Subject)
+		if subject == "" {
+			subject = "english"
 		}
-		if createErr := h.db.Create(&record).Error; createErr != nil {
-			err = createErr
-			break
-		}
-		created++
+		records = append(records, models.Word{
+			Word:     word,
+			Phonetic: strings.TrimSpace(item.Phonetic),
+			Meaning:  strings.TrimSpace(item.Meaning),
+			Example:  strings.TrimSpace(item.Example),
+			Subject:  subject,
+			Book:     strings.TrimSpace(item.Book),
+			Unit:     strings.TrimSpace(item.Unit),
+		})
 	}
 
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "写入失败:" + err.Error()})
-		return
+	// 分批插入，避免单条 SQL 的参数过多
+	created := 0
+	const batchSize = 200
+	for i := 0; i < len(records); i += batchSize {
+		end := i + batchSize
+		if end > len(records) {
+			end = len(records)
+		}
+		if err := h.db.Create(records[i:end]).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "写入失败:" + err.Error()})
+			return
+		}
+		created += end - i
 	}
+
 	c.JSON(http.StatusOK, gin.H{"code": 200, "message": "添加成功", "data": gin.H{
 		"created": created,
 		"skipped": skipped,

@@ -7,8 +7,9 @@
 //! - [`fsrs_engine`]：FSRS 记忆调度计算（单卡状态推进、可提取率）
 //! - [`session`]：复习会话编排（队列构建 / 评分决策 / 进度统计），
 //!   由 `ReviewSession` 持有会话状态，JS 侧只负责渲染与取数
+//! - [`wordlist`]：词表文本解析（后台批量导入用，容错各种粘贴格式）
 //!
-//! 宿主（非 wasm）环境下，[`session`] 与 [`fsrs_engine`] 的纯计算部分可直接单元测试：
+//! 宿主（非 wasm）环境下，各模块的纯计算部分可直接单元测试：
 //!
 //! ```text
 //! cargo test                                  # 需要可用的宿主链接工具链（见 README）
@@ -18,3 +19,4 @@
 pub mod fsrs_engine;
 pub mod randomizer;
 pub mod session;
+pub mod wordlist;

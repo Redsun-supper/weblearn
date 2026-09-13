@@ -347,6 +347,12 @@ body {
     white-space: nowrap;
 }
 
+/* 长文本列（释义/例句）：限制宽度并允许折行，避免把表格撑破 */
+.admin-table td.col-text {
+    max-width: 320px;
+    overflow-wrap: anywhere;
+}
+
 /* ===================== 通用组件：徽章 / 空状态 / 分页 ===================== */
 
 .admin-badge {

@@ -12,9 +12,10 @@
 | 组成部分 | 说明 |
 |----------|------|
 | 前端（根目录） | `index.html`（主页）、`main.css`（全站样式）、`main.js`（导航与缓存）、`dev-server.js`（本地开发服务器）、`image/`、`pages/`（8 个占位学科页） |
-| 学科模块（`modules/<学科>/`） | 学科自己的页面 / 样式 / 逻辑 / 引擎；目前只有 `modules/english/` |
+| 学科模块（`modules/<学科>/`） | 学科自己的页面 / 样式 / 逻辑 / 引擎 / 后台模块；目前只有 `modules/english/` |
+| 通用后台（`admin/`） | 独立入口页（`/admin/`）：布局、侧栏导航、hash 路由、通用组件、登录鉴权预留位 |
 | 后端（`backend-go/`） | Go 1.21 + Gin + **GORM/SQLite**（`database/`、`handlers/review_handlers.go`），入口 `main.go` |
-| 复习引擎（`modules/english/engine/`） | Rust/WASM crate `guangxue_wasm`：`session.rs`（会话编排）+ `fsrs_engine.rs`（FSRS 调度）+ `randomizer.rs`（随机器），浏览器内运行 |
+| 复习引擎（`modules/english/engine/`） | Rust/WASM crate `guangxue_wasm`：`session.rs`（会话编排）+ `fsrs_engine.rs`（FSRS 调度）+ `randomizer.rs`（随机器）+ `wordlist.rs`（词表解析），浏览器内运行 |
 | 部署 | Nginx 反代：`/` → 前端静态文件，`/api/` → `localhost:8080` |
 
 ### 复习引擎（词汇间隔重复）
@@ -35,6 +36,17 @@
 - **学科模块约定**：放在 `modules/<学科>/` 下并导出初始化函数，`main.js` 的 `initSubjectModule()` 按需动态 `import()`；**学科逻辑不得回流到 `main.js`**。
 - 本地起站点用仓库根目录的 `dev-server.js`（Node 内置模块实现，静态文件 + `/api` 同源代理，等价线上 Nginx 形态）；不能直接双击 `index.html`（`file://` 下 `/api` 与 WASM 模块都会失败）。
 
+### 管理后台
+- **入口**：`admin/index.html`（本地 `/admin/`）。与学生站**完全独立**：不走 `main.js`、不使用学科页的 localStorage 缓存。
+- **约定**：学科后台放 `modules/<学科>/admin/`，导出 `mount(container, ctx)`（可选 `unmount()`），再到 `admin/admin.js` 的 `SUBJECT_ADMINS` 登记一行；框架用动态 `import()` 按需加载。通用能力通过 `ctx` 注入：`api` / `toast` / `confirm` / `el` / `escapeHtml` / `setTitle`。
+- ⚠️ **登录未实现**：前端预留位是 `checkAuth()` 与 `#adminAuthGate`，**后端也还没有鉴权中间件**；接入登录必须两端一起做，只拦前端挡不住直接调接口的人。**在此之前不要把 `/admin/` 部署到公网**（页面上常驻提示条）。
+- **英语后台**（`modules/english/admin/english-admin.js`）：词条列表（搜索 / 词书 / 单元 / 分页）、增删改查、批量导入（粘贴 → `engine` 的 `parse_word_list` 解析 → 预览 → 前端每 200 条分批 POST）。
+- **词条接口**：`GET/POST /api/words`、`GET/PUT/DELETE /api/words/:id`、`GET /api/word-options`。
+  - `PUT` 是全量更新；改名撞车返回 409。
+  - `DELETE` **会连带删除该词的 `word_reviews` 与 `review_logs`**（日志留着会让 stats 虚高）。改错别字用 `PUT`，别删了重建。
+  - `POST /api/words` 查重**大小写不敏感**。
+  - `word-options` 刻意不在 `/api/words/options`，避免与 `/api/words/:id` 通配路由冲突。
+
 ### 后端要点
 - API 前缀 `/api`：`/health`、`/hello`、`/user/*`、`/data/*`。
 - 用户/数据相关 handler 目前多为 TODO 占位（返回固定 JSON）。
@@ -50,7 +62,7 @@
 4. **`go.sum` 已生成**：后端已有 `go.sum`（GORM + glebarez/sqlite 等依赖已通过 `go mod tidy` 固化）；新增依赖时用 `go mod tidy` 同步即可。
 5. **`image/avatar.png`**：当前视觉增强关闭，无法查看绘制内容；按元信息（WebP，约 1330×1146）处理即可，如需主题替换先问用户。
 6. **本机工具链**：Go 已装为便携版 `C:\Users\22629\go-portable\go\bin\go.exe`（go1.27.1，已 `go env -w GOPROXY=https://goproxy.cn,direct GOSUMDB=off`，直接 `go build` 即可）；Rust `cargo 1.97` 且 `wasm32-unknown-unknown` target 已装；wasm-bindgen CLI 在 `C:\Users\22629\.local\bin\wasm-bindgen-0.2.128-*\wasm-bindgen.exe`（须与 Cargo.toml 的 wasm-bindgen 版本一致 0.2.128）。
-   ✅ **宿主 `cargo test` 现在可以运行**（2026-09-13 实测 26 个测试通过；本文档此前记录的「缺 mingw `as`/MSVC SDK 无法链接」已不再成立）。完整验证路径：`cargo test` → `cargo check --target wasm32-unknown-unknown` → `cargo build --target wasm32-unknown-unknown --release` → `wasm-bindgen` 生成 `pkg/` → 浏览器端到端。
+   ✅ **宿主 `cargo test` 现在可以运行**（2026-09-13 实测 42 个测试通过；本文档此前记录的「缺 mingw `as`/MSVC SDK 无法链接」已不再成立）。完整验证路径：`cargo test` → `cargo check --target wasm32-unknown-unknown` → `cargo build --target wasm32-unknown-unknown --release` → `wasm-bindgen` 生成 `pkg/` → 浏览器端到端。
    ⚠️ 但 `JsValue` 在非 wasm32 目标上未实现（调用即 `panic: function not implemented on non-wasm32 targets`，无法 unwinding 会直接 abort）：**纯计算层不要碰 `JsValue`**，把它留在 wasm 导出方法的边界上。
 7. **`word_reviews` 行是懒创建**：单词由 `POST /api/words` 写入 `words` 表；首次提交复习时才创建对应 `word_reviews` 行。`/api/reviews/new` = 无复习行的词。
 

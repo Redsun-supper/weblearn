@@ -75,19 +75,28 @@ e:\porject\4/
 │
 ├── dev-server.js                # 本地开发服务器（静态文件 + /api 反向代理，仅开发用）
 │
+├── admin/                       # 通用后台骨架（独立入口，与学生站互不影响）
+│   ├── index.html               #   入口页（布局 + 鉴权遮罩预留位）
+│   ├── admin.css                #   后台样式与通用组件（表格/表单/按钮/空状态/提示条）
+│   ├── admin.js                 #   框架：侧栏导航、hash 路由、学科后台按需加载、鉴权预留
+│   └── README.md                #   后台约定与「新增学科后台」步骤
+│
 ├── modules/                     # 学科模块（每个学科一个目录，独立管理）
 │   └── english/                 # 英语模块（唯一已实现的学科）
 │       ├── english.html         #   学科页片段（由 main.js 注入 #contentContainer）
 │       ├── english.css          #   模块样式（只作用于英语页）
-│       ├── english.js           #   模块逻辑：DOM / fetch / 存储 / 语音
+│       ├── english.js           #   学生端逻辑：DOM / fetch / 存储 / 语音
 │       ├── README.md            #   模块说明
-│       └── engine/              #   Rust/WASM 引擎（队列编排 + FSRS 调度 + 随机化）
+│       ├── admin/               #   词条管理后台模块（列表/搜索/编辑/批量导入）
+│       │   └── english-admin.js
+│       └── engine/              #   Rust/WASM 引擎（队列编排 + FSRS 调度 + 随机化 + 词表解析）
 │           ├── Cargo.toml
 │           ├── src/
 │           │   ├── lib.rs           # 模块导出
 │           │   ├── session.rs       # 会话编排（ReviewSession：队列/游标/评分/进度）
 │           │   ├── fsrs_engine.rs   # FSRS 调度计算
-│           │   └── randomizer.rs    # 随机器（洗牌/抽样/种子）
+│           │   ├── randomizer.rs    # 随机器（洗牌/抽样/种子）
+│           │   └── wordlist.rs      # 词表文本解析（后台批量导入用）
 │           └── README.md            # 引擎说明与构建命令
 │
 ├── backend-go/                  # Go后端服务
@@ -128,6 +137,7 @@ e:\porject\4/
 | `<学科>.css` | 模块样式，只作用于该学科页内的元素 |
 | `<学科>.js` | 模块逻辑（ES module），导出初始化函数，由 `main.js` **按需动态 import** |
 | `engine/` | 该学科的 Rust/WASM 引擎（纯计算：调度、随机化、统计等） |
+| `admin/` | 该学科的管理后台模块，由根目录 `admin/` 的通用后台按需加载 |
 
 `main.js` 里只保留一处学科相关代码——`initSubjectModule(pageName)`：按 `data-page`
 判断并动态 `import()` 对应模块。**好处是学科逻辑不会回流到 `main.js`，且只有真正进入
@@ -136,6 +146,32 @@ e:\porject\4/
 > 目前只有 `modules/english/` 建好了；其余 8 门仍是 `pages/<学科>.html` 占位页。
 > 将来把某门学科做成模块时，把它从 `pages/` 移进 `modules/<学科>/`，
 > 并在 `index.html` 的 `data-page` 与 `main.js` 的 `ENGLISH_PAGE` 旁登记即可。
+
+---
+
+## 管理后台
+
+独立入口，本地地址 **http://127.0.0.1:8899/admin/**。
+
+```
+admin/                 通用骨架（布局、侧栏导航、hash 路由、通用组件、鉴权预留位）
+modules/<学科>/admin/  各学科自己的后台模块，按需动态加载
+```
+
+| 项 | 说明 |
+|----|------|
+| 入口 | `admin/index.html`，与学生站完全独立（不走 `main.js`，也不使用学科页的 localStorage 缓存） |
+| 新增学科后台 | 在 `modules/<学科>/admin/` 写模块并导出 `mount(container, ctx)`，再到 `admin/admin.js` 的 `SUBJECT_ADMINS` 登记一行 |
+| 通用能力 | `ctx.api` / `toast` / `confirm` / `el` / `escapeHtml` / `setTitle`，避免各学科重复实现 |
+| 英语后台 | 词条列表（搜索 / 词书 / 单元筛选 / 分页）、新增编辑删除、**批量导入**（粘贴词表 → 引擎解析 → 预览 → 分批导入） |
+
+> ⚠️ **当前没有登录校验**：任何能访问 `/admin/` 的人都能修改词条，**接入登录前请勿部署到公网**。
+> 前端预留位是 `admin/admin.js` 的 `checkAuth()` 与 `admin/index.html` 的 `#adminAuthGate`；
+> 但后端目前也没有鉴权中间件，**登录实现时两端要一起做**（只拦前端挡不住直接调接口的人）。
+> 详见 [`admin/README.md`](admin/README.md)。
+
+> 💡 批量导入的解析规则（支持制表符 / 竖线 / 逗号 / 空格、注释行、重复与错误行提示）由
+> 引擎的 `wordlist.rs` 实现，有 16 个单元测试覆盖各种粘贴格式。
 
 ---
 
@@ -215,8 +251,12 @@ e:\porject\4/
 | POST | `/api/user/update` | 更新用户信息 | 🔄 待实现 |
 | GET | `/api/data/list` | 获取数据列表 | 🔄 待实现 |
 | POST | `/api/data/submit` | 提交数据 | 🔄 待实现 |
-| GET | `/api/words` | 单词列表 | ✅ 可用 |
-| POST | `/api/words` | 批量添加单词 | ✅ 可用 |
+| GET | `/api/words` | 词条列表（搜索 / 词书 / 单元筛选 + 分页） | ✅ 可用 |
+| POST | `/api/words` | 批量添加词条（已存在跳过） | ✅ 可用 |
+| GET | `/api/words/:id` | 获取单个词条 | ✅ 可用 |
+| PUT | `/api/words/:id` | 更新词条内容 | ✅ 可用 |
+| DELETE | `/api/words/:id` | 删除词条（连带复习状态与日志） | ✅ 可用 |
+| GET | `/api/word-options` | 已有词书 / 单元列表 | ✅ 可用 |
 | GET | `/api/reviews/due` | 到期复习卡列表 | ✅ 可用 |
 | GET | `/api/reviews/new` | 未加入复习的新词 | ✅ 可用 |
 | POST | `/api/reviews/submit` | 提交复习结果（持久化 FSRS 状态） | ✅ 可用 |
@@ -435,7 +475,12 @@ go build -o server main.go
 - [ ] 响应式优化
 - [x] 复习页面 UI（简单版：`modules/english/english.html` + WASM 引擎）
 - [x] 英语模块独立成 `modules/english/`（页面/样式/逻辑/引擎集中管理）
-- [x] 计算下沉 Rust：会话编排、日期换算、FSRS 调度、进度统计移入引擎（26 个单元测试）
+- [x] 计算下沉 Rust：会话编排、日期换算、FSRS 调度、进度统计移入引擎（42 个单元测试）
+- [x] 通用后台骨架 `admin/`（布局 / 导航 / 路由 / 通用组件 + 登录鉴权预留位）
+- [x] 英语后台：词条增删改查 + 批量导入（粘贴词表 → Rust 解析 → 预览 → 分批导入）
+- [x] 词书 / 单元分组（`words.book` / `words.unit` + 列表筛选）
+- [ ] 登录鉴权（前端 `checkAuth()` + 后端鉴权中间件，需两端一起做）
+- [ ] 按词书 / 单元限定复习范围（目前复习队列不看分组）
 - [x] 主动回忆流程（先回想 → 显示答案 → 评分，避免「看着答案打分」污染 FSRS 状态）
 - [x] 单词 / 例句发音（Web Speech API）与键盘快捷键（空格、1~4、P、E）
 - [x] 复习统计面板（今日进度、连续天数、记忆保持率、本轮进度条）

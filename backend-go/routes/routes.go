@@ -39,10 +39,14 @@ func SetupRouter(db *gorm.DB) *gin.Engine {
 
 		// ---- 词汇间隔复习（FSRS）相关路由 ----
 		rv := handlers.NewReviewHandler(db)
+		// 词条管理：集合用 GET/POST，单条用 GET/PUT/DELETE（供后台增删改查）
 		words := api.Group("/words")
 		{
 			words.GET("", rv.ListWords)
 			words.POST("", rv.AddWords)
+			words.GET("/:id", rv.GetWord)
+			words.PUT("/:id", rv.UpdateWord)
+			words.DELETE("/:id", rv.DeleteWord)
 		}
 		reviews := api.Group("/reviews")
 		{
@@ -51,6 +55,8 @@ func SetupRouter(db *gorm.DB) *gin.Engine {
 			reviews.POST("/submit", rv.SubmitReview)
 			reviews.GET("/stats", rv.ReviewStats)
 		}
+		// 词条里已使用的词书 / 单元列表（后台筛选下拉用）
+		api.GET("/word-options", rv.WordOptions)
 	}
 
 	return r
