@@ -1,0 +1,331 @@
+/* ============================================================================
+ * 广学 · 账号中心样式
+ * 只作用于 account/ 下的页面，与学生站 main.css、后台 admin.css 相互独立。
+ * ========================================================================== */
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    min-height: 100vh;
+    font-family: Arial, "Microsoft YaHei", sans-serif;
+    font-size: 14px;
+    line-height: 1.6;
+    color: #333;
+    background-color: #f5f6f8;
+}
+
+/* ===================== 顶栏 ===================== */
+
+.acc-topbar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 14px 24px;
+    background-color: #ffffff;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.06);
+}
+
+.acc-brand {
+    font-size: 18px;
+    font-weight: bold;
+    color: #263238;
+    text-decoration: none;
+}
+
+.acc-brand-sub {
+    padding: 2px 8px;
+    border-radius: 999px;
+    background-color: #eceff1;
+    color: #546e7a;
+    font-size: 12px;
+}
+
+.acc-back {
+    margin-left: auto;
+    color: #546e7a;
+    font-size: 13px;
+    text-decoration: none;
+}
+
+.acc-back:hover {
+    color: #1565c0;
+}
+
+/* ===================== 主体 ===================== */
+
+.acc-wrap {
+    max-width: 520px;
+    margin: 0 auto;
+    padding: 28px 20px 60px;
+}
+
+.acc-card {
+    padding: 22px 24px 24px;
+    border: 1px solid #e4e7eb;
+    border-radius: 14px;
+    background-color: #ffffff;
+    box-shadow: 0 6px 20px rgba(38, 50, 56, 0.05);
+}
+
+.acc-title {
+    margin-bottom: 16px;
+    font-size: 19px;
+}
+
+.acc-subtitle {
+    margin: 22px 0 8px;
+    font-size: 15px;
+}
+
+.acc-loading {
+    text-align: center;
+}
+
+.acc-muted {
+    color: #90a4ae;
+    font-size: 13px;
+}
+
+/* ===================== 标签页 ===================== */
+
+.acc-tabs {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 18px;
+    padding: 4px;
+    border-radius: 10px;
+    background-color: #f1f3f5;
+}
+
+.acc-tab {
+    flex: 1;
+    padding: 8px 12px;
+    border: none;
+    border-radius: 8px;
+    background-color: transparent;
+    color: #607d8b;
+    font-family: inherit;
+    font-size: 14px;
+    cursor: pointer;
+    transition: background-color 0.2s, color 0.2s;
+}
+
+.acc-tab:hover {
+    color: #37474f;
+}
+
+.acc-tab.is-active {
+    background-color: #ffffff;
+    color: #263238;
+    font-weight: bold;
+    box-shadow: 0 1px 4px rgba(38, 50, 56, 0.12);
+}
+
+/* ===================== 表单 ===================== */
+
+.acc-field {
+    margin-bottom: 14px;
+}
+
+.acc-field label {
+    display: block;
+    margin-bottom: 4px;
+    color: #546e7a;
+    font-size: 13px;
+}
+
+.acc-field input {
+    width: 100%;
+    padding: 9px 11px;
+    border: 1px solid #cfd8dc;
+    border-radius: 8px;
+    font-family: inherit;
+    font-size: 14px;
+    color: #333;
+    background-color: #ffffff;
+}
+
+.acc-field input:focus {
+    outline: none;
+    border-color: #64b5f6;
+    box-shadow: 0 0 0 3px rgba(100, 181, 246, 0.16);
+}
+
+/* 验证码一行：输入框 + 按钮 */
+.acc-code-row {
+    display: flex;
+    gap: 8px;
+}
+
+.acc-code-row input {
+    flex: 1;
+}
+
+.acc-code-row .acc-btn {
+    flex: 0 0 auto;
+    white-space: nowrap;
+}
+
+/* ===================== 按钮 ===================== */
+
+.acc-btn {
+    padding: 9px 16px;
+    border: 1px solid #d0d0d0;
+    border-radius: 8px;
+    background-color: #ffffff;
+    color: #37474f;
+    font-family: inherit;
+    font-size: 14px;
+    cursor: pointer;
+    text-decoration: none;
+    text-align: center;
+    transition: background-color 0.2s, border-color 0.2s;
+}
+
+.acc-btn:hover {
+    background-color: #eceff1;
+}
+
+.acc-btn:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+}
+
+.acc-btn-primary {
+    border-color: #1976d2;
+    background-color: #1976d2;
+    color: #ffffff;
+}
+
+.acc-btn-primary:hover {
+    background-color: #1565c0;
+}
+
+.acc-btn-danger {
+    border-color: #ef9a9a;
+    color: #c62828;
+}
+
+.acc-btn-danger:hover {
+    background-color: #ffebee;
+}
+
+.acc-btn-block {
+    display: block;
+    width: 100%;
+    margin-top: 4px;
+}
+
+.acc-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 18px;
+}
+
+/* ===================== 提示与信息 ===================== */
+
+.acc-msg {
+    min-height: 20px;
+    margin: 8px 0 4px;
+    font-size: 13px;
+    color: #607d8b;
+}
+
+.acc-msg.is-error {
+    color: #c62828;
+}
+
+.acc-msg.is-ok {
+    color: #2e7d32;
+}
+
+.acc-hint {
+    margin-top: 8px;
+    color: #90a4ae;
+    font-size: 12px;
+}
+
+.acc-info {
+    display: grid;
+    gap: 10px;
+}
+
+.acc-info-row {
+    display: flex;
+    gap: 12px;
+    align-items: baseline;
+}
+
+.acc-info-row dt {
+    flex: 0 0 76px;
+    color: #78909c;
+    font-size: 13px;
+}
+
+.acc-info-row dd {
+    flex: 1;
+    word-break: break-all;
+}
+
+/* 设备列表 */
+.acc-sessions {
+    list-style: none;
+}
+
+.acc-session {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    padding: 9px 0;
+    border-bottom: 1px dashed #eceff1;
+}
+
+.acc-session:last-child {
+    border-bottom: none;
+}
+
+.acc-session-name {
+    font-weight: bold;
+}
+
+.acc-session-meta {
+    color: #90a4ae;
+    font-size: 12px;
+}
+
+.acc-badge {
+    padding: 1px 8px;
+    border-radius: 999px;
+    background-color: #e8f5e9;
+    color: #2e7d32;
+    font-size: 12px;
+}
+
+/* ===================== 页脚 ===================== */
+
+.acc-footer {
+    padding: 20px;
+    color: #b0bec5;
+    font-size: 12px;
+    text-align: center;
+}
+
+/* 窄屏适配 */
+@media (max-width: 520px) {
+    .acc-card {
+        padding: 18px 16px;
+    }
+
+    .acc-info-row {
+        display: block;
+    }
+
+    .acc-info-row dt {
+        margin-bottom: 2px;
+    }
+}
