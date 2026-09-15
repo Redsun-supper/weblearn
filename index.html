@@ -18,12 +18,17 @@
 <body>
     <!-- div是块级容器元素，class="rectangle"用于CSS样式定位，作为页面上方的矩形 -->
     <div class="rectangle">
-        <!-- div是块级容器元素，class="rounded-square"用于CSS样式定位，作为相对于导航栏定位的圆角正方形 -->
-        <div class="rounded-square">
+        <!-- 头像：暂时作为「个人中心」的唯一入口（原来是右上角的文字链接）。
+             button而不是div，是为了键盘也能进入（Tab 聚焦 + 回车触发）。
+             点击后 main.js 的 playAvatarZoom() 会让 .avatar-zoom 从头像位置扩散覆盖全屏，再跳转 account/ -->
+        <button class="rounded-square" type="button" id="navAvatar"
+                title="个人中心" aria-label="进入个人中心">
             <!-- img是图片元素，src指定图片路径，alt提供替代文本用于无障碍访问 -->
             <img src="image/avatar.png" alt="头像" class="avatar">
-        <!-- 圆角正方形容器结束标签 -->
-        </div>
+            <!-- 登录态小圆点：已登录时由 main.js 给按钮挂 is-signed 类点亮 -->
+            <span class="avatar-dot" id="navAvatarDot" aria-hidden="true"></span>
+        <!-- 头像按钮结束标签 -->
+        </button>
         <!-- div是块级容器，class="nav-items"用于包含9个导航矩形项 -->
         <div class="nav-items">
             <!-- div是第一个导航矩形项，class="nav-rect"用于样式定位，data-page属性指定要加载的HTML文件名 -->
@@ -46,12 +51,11 @@
             <div class="nav-rect" data-page="pages/geography.html">地理</div>
         <!-- 导航矩形项容器结束标签 -->
         </div>
-        <!-- 右上角登录态：由 main.js 问 /api/auth/me 后填充；未登录时显示「登录 / 注册」入口 -->
-        <div class="nav-account" id="navAccount">
-            <a class="nav-account-link" href="account/">登录 / 注册</a>
-        </div>
     <!-- 导航栏矩形结束标签 -->
     </div>
+    <!-- 全屏扩散遮罩：从头像位置把一个圆放大到盖住整屏，作为进入个人中心的过场。
+         圆心与半径由 main.js 按头像实际位置算好写进 --zoom-* 变量，样式只负责动作 -->
+    <div class="avatar-zoom" id="avatarZoom" aria-hidden="true"></div>
     <!-- div是块级容器，class="content-container"用于显示加载的HTML内容 -->
     <div class="content-container" id="contentContainer">
         <!-- p是段落元素，class="placeholder-text"用于显示占位提示文字 -->

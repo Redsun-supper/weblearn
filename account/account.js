@@ -1,12 +1,16 @@
-// 广学 · 账号中心（登录 / 注册 / 当前账号）
+// 广学 · 个人中心（账号 / 登录设备 / 操作）
 //
 // 交互骨架：
 //   1. 打开页面先问服务端「我是谁」——GET /api/auth/me
-//        200 → 显示「当前账号」面板（含登录中的设备列表）
+//        200 → 显示「账号信息 + 登录设备 + 可用操作」三张卡（都是个人中心的一部分）
 //        401 → 显示「登录 / 注册」面板
 //   2. 登录态是服务端下发的 httpOnly Cookie，JS 读不到，所以只能靠这一步问服务端。
 //   3. 本地开发时验证码不发邮件（AUTH_MAIL_MODE=log），发码后页面会调用
 //      /api/auth/dev/codes 自动回填；生产环境该接口不存在（404），静默忽略即可。
+//   4. 组件入场动效：动作定义在 account.css（accRise / accPop），
+//      这里只负责「什么时候开始」—— 按可见顺序逐个写 animation-delay（playEnter）。
+//      入口是首页左上角的头像（index.html 的 #navAvatar），进来时会带 ?from=avatar，
+//      那种情况下跳过身份卡的入场，跟首页那块扩散遮罩衔接成一次动画。
 //
 // ⚠️ 本文件保持 ES5 写法（var / function），与 main.js、admin.js 一致。
 
@@ -85,18 +89,65 @@
         return raw;
     }
 
-    // ===================== 面板切换 =====================
+    // ===================== 面板切换与入场动效 =====================
 
-    function showOnly(panelId) {
-        ['panelLoading', 'panelAuth', 'panelAccount'].forEach(function (id) {
-            var node = $(id);
-            if (!node) return;
-            if (id === panelId) {
-                node.removeAttribute('hidden');
-            } else {
-                node.setAttribute('hidden', 'hidden');
+    // 组件之间的错开间隔（毫秒）：「什么时候开始」在这里排延时，
+    // 「怎么动」写在 account.css 的 accRise（浮起淡入）/ accPop（头像回弹）。
+    var ENTER_STEP_MS = 55;
+
+    // 面板分组：一组里的卡片一起显示 / 隐藏
+    // （个人中心把「账号信息 / 登录设备 / 可用操作」拆成了三张卡，所以是分组而不是单块）
+    var PANEL_GROUPS = {
+        loading: ['panelLoading'],
+        auth: ['panelAuth'],
+        account: ['panelAccount', 'panelDevices', 'panelActions']
+    };
+
+    // 收集要参与入场的组件：卡片本身（带 data-enter 的）在前，卡片内部的 [data-enter] 随后。
+    // 顺序即延时顺序，所以「卡 → 标题 → 每一行」会依次浮入。
+    function collectEnterNodes(cards) {
+        var nodes = [];
+        for (var i = 0; i < cards.length; i++) {
+            var card = cards[i];
+            if (!card || card.hasAttribute('hidden')) continue;
+            if (card.hasAttribute('data-enter')) nodes.push(card);
+            var inner = card.querySelectorAll('[data-enter]');
+            for (var k = 0; k < inner.length; k++) {
+                if (!inner[k].hasAttribute('hidden')) nodes.push(inner[k]);
             }
+        }
+        return nodes;
+    }
+
+    // 给这些组件排一遍入场动效。
+    // 每次都先摘类再挂：① display:none 的元素不会播动画，所以必须在显示之后再挂；
+    // ② 同一块面板重新显示时要能重播，所以中间强制一次重排。
+    function playEnter(cards) {
+        var nodes = collectEnterNodes(cards);
+        for (var i = 0; i < nodes.length; i++) {
+            var el = nodes[i];
+            el.classList.remove('is-enter');
+            void el.offsetWidth;
+            el.style.animationDelay = (i * ENTER_STEP_MS) + 'ms';
+            el.classList.add('is-enter');
+        }
+    }
+
+    function showOnly(group) {
+        var visible = PANEL_GROUPS[group] || [];
+        Object.keys(PANEL_GROUPS).forEach(function (key) {
+            PANEL_GROUPS[key].forEach(function (id) {
+                var node = $(id);
+                if (!node) return;
+                if (visible.indexOf(id) >= 0) {
+                    node.removeAttribute('hidden');
+                } else {
+                    node.setAttribute('hidden', 'hidden');
+                }
+            });
         });
+        // 显示之后再排动效：几块面板会按顺序依次浮入
+        playEnter(visible.map(function (id) { return $(id); }));
     }
 
     function switchTab(which) {
@@ -107,16 +158,51 @@
         if (tabRegister) tabRegister.className = 'acc-tab' + (isLogin ? '' : ' is-active');
         if ($('formLogin')) $('formLogin').hidden = !isLogin;
         if ($('formRegister')) $('formRegister').hidden = isLogin;
+        // 切到哪张表单，哪张的字段就重新入场一次（藏起来的那张会被 collectEnterNodes 跳过）
+        playEnter([isLogin ? $('formLogin') : $('formRegister')]);
     }
 
     // ===================== 当前账号 =====================
 
+    // 身份卡：昵称 / 邮箱 + 一句话状态 + 角色徽章（未登录时给登录入口的文案）
+    function setHero(user) {
+        var name = $('heroName');
+        var sub = $('heroSub');
+        var role = $('heroRole');
+        if (!name || !sub) return;
+
+        if (!user) {
+            name.textContent = '登录 / 注册';
+            sub.textContent = '登录后可以管理账号与登录设备';
+            if (role) role.setAttribute('hidden', 'hidden');
+            return;
+        }
+        name.textContent = user.username || user.email || '已登录';
+        sub.textContent = user.username ? (user.email || '') : '欢迎回来';
+        if (role) {
+            role.textContent = user.role === 'admin' ? '管理员' : '普通用户';
+            role.removeAttribute('hidden');
+        }
+    }
+
     function showAccount(user) {
-        showOnly('panelAccount');
+        showOnly('account');
+        setHero(user);
         if ($('accEmail')) $('accEmail').textContent = user.email || '—';
         if ($('accUsername')) $('accUsername').textContent = user.username || '（未设置）';
         if ($('accRole')) $('accRole').textContent = user.role === 'admin' ? '管理员' : (user.role || 'user');
         if ($('accCreated')) $('accCreated').textContent = user.created_at || '—';
+
+        // 管理员多一个入口：直接进后台（非管理员看不到这个按钮）
+        var adminLink = $('accAdmin');
+        if (adminLink) {
+            if (user.role === 'admin') {
+                adminLink.removeAttribute('hidden');
+            } else {
+                adminLink.setAttribute('hidden', 'hidden');
+            }
+        }
+
         loadSessions();
     }
 
@@ -176,7 +262,8 @@
                 showAccount(res.data.data.user);
                 return true;
             }
-            showOnly('panelAuth');
+            showOnly('auth');
+            setHero(null);
             switchTab('login');
             if (res.networkError) {
                 setMsg($('loginMsg'), messageOf(res), 'error');
@@ -339,6 +426,15 @@
     // ===================== 启动 =====================
 
     document.addEventListener('DOMContentLoaded', function () {
+        // 从首页点头像过来的（main.js 会带 ?from=avatar）：那时遮罩已经把整屏铺成
+        // 与本页背景同一串渐变，身份卡在「遮罩下面」就该是就位的 —— 所以跳过它的入场动画，
+        // 让「圆形铺满」和「个人中心出现」看起来是同一件事。
+        if (/[?&]from=avatar(&|=|$)/.test(location.search)) {
+            document.documentElement.className += ' from-avatar';
+        } else {
+            playEnter([document.querySelector('.acc-hero')]);
+        }
+
         var tabLogin = $('tabLogin');
         var tabRegister = $('tabRegister');
         if (tabLogin) tabLogin.addEventListener('click', function () { switchTab('login'); });
@@ -371,6 +467,6 @@
         refreshState();
     });
 
-    // 暴露到 window 便于在控制台调试
-    window.__guangxueAccount = { api: api, refreshState: refreshState };
+    // 暴露到 window 便于在控制台调试（playEnter 方便单独重放某个组件的入场动效）
+    window.__guangxueAccount = { api: api, refreshState: refreshState, playEnter: playEnter };
 })();

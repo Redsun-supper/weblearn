@@ -63,10 +63,63 @@ body {
     /* 设置外阴影，参数依次为：水平偏移0、垂直偏移4像素、模糊半径8像素、阴影颜色为半透明黑色，使边框带有外阴影效果 */
     box-shadow: 4px 4px 10px rgba(0, 0, 0, 0.5),
                 0 0 8px rgba(0, 0, 0, 0.15);
-    /* 设置溢出隐藏，使内部图片超出圆角的部分被裁剪 */
-    overflow: hidden;
+    /* 溢出可见：登录态小圆点要挂在圆角外面，所以不能在容器上裁剪。
+       图片自己的圆角由 .avatar 的 border-radius 负责（62px 容器内径 + 边框=9px 圆角） */
+    overflow: visible;
     /* 设置z-index为101，确保头像在导航矩形项上方显示 */
     z-index: 101;
+    /* 头像现在是个 button（键盘可聚焦），把浏览器默认的按钮外观清干净 */
+    padding: 0;
+    font: inherit;
+    cursor: pointer;
+    -webkit-appearance: none;
+    appearance: none;
+    /* 点击/悬停时的过渡：轻微放大 + 外发光，暗示「这里可以点」 */
+    transition: transform 0.18s ease, box-shadow 0.18s ease;
+}
+
+/* 悬停：头像轻微顶起来一点，并加强外发光 */
+.rounded-square:hover {
+    transform: translateY(-50%) scale(1.04);
+    box-shadow: 4px 4px 14px rgba(0, 0, 0, 0.55),
+                0 0 0 3px rgba(21, 101, 192, 0.25);
+}
+
+/* 键盘聚焦：给一个清晰的焦点圈（鼠标点击不会触发 :focus-visible） */
+.rounded-square:focus-visible {
+    outline: 3px solid #1565c0;
+    outline-offset: 3px;
+}
+
+/* 按下：回弹到原大小，做出「被按下去」的手感 */
+.rounded-square:active {
+    transform: translateY(-50%) scale(0.96);
+}
+
+/* 登录态小圆点：默认不显示，已登录（按钮上有 is-signed 类）时亮起绿色 */
+.avatar-dot {
+    position: absolute;
+    right: -1px;
+    bottom: -1px;
+    width: 14px;
+    height: 14px;
+    border: 2px solid #ffffff;
+    border-radius: 50%;
+    background-color: #43a047;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+    display: none;
+}
+
+.rounded-square.is-signed .avatar-dot {
+    display: block;
+}
+
+/* 过场开始时给头像本体加这个类：一边缩小一边淡出，做出「被吸进那个圆里」的手感
+   （main.js 的 playAvatarZoom 挂上，换页后自然消失；bfcache 恢复时会被摘掉） */
+.rounded-square.is-zoom-start {
+    transform: translateY(-50%) scale(0.72);
+    opacity: 0.5;
+    transition: transform 0.46s ease, opacity 0.46s ease;
 }
 
 /* 类选择器，选中class为nav-items的元素，用于包含9个导航矩形项的容器 */
@@ -77,9 +130,10 @@ body {
     top: 0;
     /* 设置容器距离父元素左侧为144像素，即头像左侧30px + 头像宽度64px + 间距50px = 144px */
     left: 144px;
-    /* 设置容器距离父元素右侧为190像素：给右上角的「登录态」区域留出位置
-       （9 个导航项总共 1080px，窄屏时它们会等比收窄，而不是被登录态挡住） */
-    right: 190px;
+    /* 设置容器距离父元素右侧为30像素：与头像的左侧留白（30px）对称。
+       原先这里留 190px 是为了右上角的「登录 / 注册」文字入口，
+       入口改到头像之后右侧不再有元素，导航项可以铺得更开 */
+    right: 30px;
     /* 设置容器高度为100%父元素高度，填满导航栏高度 */
     height: 100%;
     /* 使用flexbox布局，使导航矩形项水平排列 */
@@ -136,64 +190,51 @@ body {
     object-fit: cover;
     /* 设置图片显示方式为块级元素，消除图片底部默认间隙 */
     display: block;
+    /* 圆角由图片自己裁：容器改成 overflow:visible 之后，裁剪不能在容器上做，
+       9px = 容器圆角 12px − 边框 3px，正好贴合容器内沿 */
+    border-radius: 9px;
 }
 
-/* ===================== 右上角登录态 ===================== *
- * 内容由 main.js 的 renderAccountArea() 填充（问一次 /api/auth/me）：
- *   已登录 → 昵称/邮箱（点击进账号中心）+「退出」按钮
- *   未登录 → 「登录 / 注册」入口
- * 它是 .rectangle 的子元素，所以沉浸模式下会跟着导航栏一起隐藏。 */
-.nav-account {
-    /* 绝对定位在导航栏右上角，不影响 9 个导航项的 flex 排列 */
-    position: absolute;
-    top: 50%;
-    right: 22px;
-    /* 向上平移自身高度的一半，垂直居中 */
-    transform: translateY(-50%);
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    /* 层级高于导航矩形项，低于头像 */
-    z-index: 102;
-    font-size: 14px;
-    white-space: nowrap;
+/* ===================== 头像 → 个人中心的过场遮罩 ===================== *
+ * 交互：点击头像时 main.js 分两帧写 clip-path ——
+ *   第一帧 circle(0px at 头像中心)（并临时关掉过渡，保证起点就是「头像上的一个点」）
+ *   第二帧 circle(盖满四角所需半径 at 头像中心)
+ * 浏览器就会把这个圆从头像位置铺开到整屏，最后跳转 account/。
+ *
+ * 为什么用 clip-path 而不是缩放一个圆：
+ *   直接 scale 一个圆会把渐变底色一起拉伸变形；clip-path 裁的是「整屏底色」，
+ *   放大过程中颜色始终不变形，落到个人中心那一页时视觉是连续的。
+ *   （个人中心页 body 的背景就是下面这同一个渐变，接缝看不出来。） */
+.avatar-zoom {
+    /* 铺满视口，固定定位：不参与文档流，也不需要滚动跟随 */
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    /* 必须高于导航栏（z-index:100）与内容区，做整个屏幕的过场 */
+    z-index: 9000;
+    pointer-events: none;
+    /* 平时不可见：JS 算好几何之后才挂 is-armed 让它出现 */
+    visibility: hidden;
+    /* 与 account/account.css 的 body 背景保持同一串渐变 */
+    background-image: linear-gradient(160deg, #1f2d3d 0%, #14507d 45%, #1565c0 100%);
+    /* 兜底起点（JS 会用行内样式覆盖成头像中心）；没有 JS 时它始终是 hidden，看不见 */
+    clip-path: circle(0px at 50% 50%);
+    transition: clip-path 0.46s cubic-bezier(0.33, 0, 0.2, 1);
 }
 
-.nav-account-link {
-    /* 邮箱可能很长：限制宽度并省略号收尾 */
-    max-width: 130px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    color: #546e7a;
-    text-decoration: none;
+/* 第一帧：可见（此时半径仍是 0，屏幕上看不到东西，但过渡的起点已经就位） */
+.avatar-zoom.is-armed {
+    visibility: visible;
 }
 
-.nav-account-link:hover {
-    color: #1565c0;
-}
-
-.nav-account-btn {
-    padding: 3px 10px;
-    border: 1px solid #d0d0d0;
-    border-radius: 999px;
-    background-color: #ffffff;
-    color: #607d8b;
-    font-family: inherit;
-    font-size: 12px;
-    line-height: 1.6;
-    cursor: pointer;
-    transition: background-color 0.2s, color 0.2s;
-}
-
-.nav-account-btn:hover {
-    background-color: #eceff1;
-    color: #37474f;
-}
-
-.nav-account-btn:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
+/* 无障碍：系统开启「减少动态效果」时不做任何过场（main.js 也会直接跳转，
+   这里是第二道保险，防止样式表单独被复用） */
+@media (prefers-reduced-motion: reduce) {
+    .avatar-zoom {
+        transition: none;
+    }
 }
 
 /* 类选择器，选中class为content-container的元素，用于显示加载的HTML内容区域 */

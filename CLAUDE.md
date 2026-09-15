@@ -14,7 +14,7 @@
 | 前端（根目录） | `index.html`（主页）、`main.css`（全站样式）、`main.js`（导航与缓存）、`dev-server.js`（本地开发服务器）、`image/`、`pages/`（8 个占位学科页） |
 | 学科模块（`modules/<学科>/`） | 学科自己的页面 / 样式 / 逻辑 / 引擎 / 后台模块；目前只有 `modules/english/` |
 | 通用后台（`admin/`） | 独立入口页（`/admin/`）：布局、侧栏导航、hash 路由、通用组件、**登录门禁（只放行 `role=admin`）** |
-| 账号中心（`account/`） | 独立入口页（`/account/`）：登录 / 注册 / 当前账号 + 登录中的设备；登录态是 httpOnly Cookie，页面靠 `GET /api/auth/me` 判断 |
+| 个人中心（`account/`） | 独立入口页（`/account/`）：身份卡 + 账号信息 + 登录中的设备 + 可用操作；未登录时显示登录 / 注册。**入口是站点左上角的头像**（点头像播一段扩散过场再进来），登录态是 httpOnly Cookie，页面靠 `GET /api/auth/me` 判断 |
 | 后端（`backend-go/`） | Go 1.21 + Gin + **GORM/SQLite**（`database/`、`handlers/review_handlers.go`），入口 `main.go` |
 | 账号系统（`backend-rust/`） | 独立 Rust 认证服务 `guangxue-auth`（axum + rusqlite，库 `auth.db`，端口 8081）：邮箱注册（邀请码 + 验证码）、多端登录、令牌轮换、会话与邀请码管理；**只处理 `/api/auth/*`** |
 | 复习引擎（`modules/english/engine/`） | Rust/WASM crate `guangxue_wasm`：`session.rs`（会话编排）+ `fsrs_engine.rs`（FSRS 调度）+ `randomizer.rs`（随机器）+ `wordlist.rs`（词表解析）+ `card_view.rs`（词性拆分 / 例句高亮切分），浏览器内运行 |
@@ -57,7 +57,8 @@
 - **学科页路径**：已有独立模块的学科写成 `modules/<学科>/<学科>.html`（当前仅英语）；其余 8 门仍是 `pages/<学科>.html` 占位（`<p>敬请期待</p>`）。
 - **学科模块约定**：放在 `modules/<学科>/` 下并导出初始化函数，`main.js` 的 `initSubjectModule()` 按需动态 `import()`；**学科逻辑不得回流到 `main.js`**。
 - 本地起站点用仓库根目录的 `dev-server.js`（Node 内置模块实现，静态文件 + `/api` 同源代理，等价线上 Nginx 形态）；不能直接双击 `index.html`（`file://` 下 `/api` 与 WASM 模块都会失败）。
-- **导航右上角登录态**（`#navAccount`，`main.css` 的 `.nav-account`）：由 `main.js` 的 `renderAccountArea()` 问一次 `GET /api/auth/me` 后填充——已登录显示昵称（点击进 `account/`）+「退出」，未登录显示「登录 / 注册」；账号服务没起来时静默降级为登录入口。它是 `.rectangle` 的子元素，所以沉浸模式下随导航栏一起隐藏；`.nav-items` 的 `right` 已改为 `190px` 给它让位。
+- **头像 = 个人中心入口**（`index.html` 的 `#navAvatar`，样式在 `main.css` 的 `.rounded-square`）：入口位置已从右上角的文字链接改成左上角头像（**暂时方案**；原来的 `#navAccount` 文字入口与导航上的「退出」按钮都已撤掉，退出改在个人中心里做）。`main.js` 的 `renderAvatarState()` 问一次 `GET /api/auth/me`：已登录给头像挂 `is-signed` 点亮右下角绿点并把昵称写进 `title`，未登录只把文案改成「登录 / 注册 · 个人中心」；账号服务没起来时静默降级，头像照样能点。⚠️ 它是 `.rectangle` 的子元素，所以**沉浸模式下随导航栏一起隐藏**——复习页默认就是沉浸，那时要先点顶栏的「显示导航栏」才能看到头像。`.nav-items` 的 `right` 已从 190px 改回 30px，与头像的左侧留白对称。
+- **点头像的过场**（`main.js` 的 `playAvatarZoom()` + `main.css` 的 `.avatar-zoom`）：以头像中心为圆心，用 `clip-path: circle()` 把一个圆放大到盖住四角（半径按窗口与头像位置实时算），然后跳 `account/?from=avatar`。⚠️ 两个坑：① 必须分两帧写**行内** `clip-path`，且第一帧要**临时把 transition 关掉**再强制重排，否则过渡起点会落在样式表的兜底值（圆心在屏幕正中），圆就从屏幕中心长出来了（实测踩过）；② 遮罩的渐变背景必须与 `account/account.css` 里 `body` 的背景**逐字一致**，跳到个人中心才看不出接缝。系统开启「减少动态效果」或不支持 `clip-path`（`CSS.supports` 探测）时直接跳转，不播过场。
 
 ### 管理后台
 - **入口**：`admin/index.html`（本地 `/admin/`）。与学生站**完全独立**：不走 `main.js`、不使用学科页的 localStorage 缓存。
@@ -87,7 +88,7 @@
 - 响应沿用 `{code, message, data}` 信封，失败多一个 `error` 字段；鉴权一律用 `AuthUser` / `AdminUser` 提取器，别在 handler 里自己解析 Cookie。
 - 权限等级**只预留** `users.role` / `users.status`，还没写判定逻辑；唯一例外是邀请码管理接口的 `role == 'admin'` 准入。
 - 验证方式：`cargo test`（83 项）→ `cargo build --release` → `pwsh scripts/smoke.ps1`（24 项端到端，直连或经 8899 代理都行）。
-- **前端入口**：账号中心 `account/`（登录 / 注册 / 当前账号 + 设备列表；本地开发会自动从 `/api/auth/dev/codes` 回填验证码）、后台门禁 `admin/`、站点导航右上角登录态。三处都只做界面层门禁，服务端判定仍是权威。
+- **前端入口**：个人中心 `account/`（身份卡 + 账号信息 + 设备列表 + 操作；本地开发会自动从 `/api/auth/dev/codes` 回填验证码；带 `?from=avatar` 进来时跳过身份卡的入场动效，与首页的扩散过场衔接）、后台门禁 `admin/`、站点左上角头像（点它进个人中心）。三处都只做界面层门禁，服务端判定仍是权威。
 - ⚠️ 本地没设 `AUTH_JWT_SECRET` 时每次重启都会随机生成密钥（旧令牌全失效）；`APP_ENV=production` 下必须显式提供它和管理员口令，并关闭 `AUTH_DEV_ENDPOINTS`，否则启动失败。
 
 ---

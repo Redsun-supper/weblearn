@@ -356,19 +356,86 @@ document.addEventListener('DOMContentLoaded', function() {
             }
         });
     });
-    // ===================== 右上角登录态 =====================
+    // ===================== 头像 = 个人中心入口 =====================
+    // 入口位置暂时从右上角的文字链接改成左上角头像（用户要求）。想改回文字入口时，
+    // 把 index.html 里的 #navAccount 加回去、这段恢复成原来的写法即可。
+    //
     // 登录态是服务端（Rust 认证服务 /api/auth/*，见 backend-rust/README.md）下发的
-    // httpOnly Cookie，JS 读不到，所以只能问服务端一次：
-    //   GET /api/auth/me     → 200 已登录（响应里带 user）/ 401 未登录
-    //   POST /api/auth/logout → 只登出当前这个端
-    // 账号服务没起来时静默降级成「登录 / 注册」入口，不打扰浏览学科内容。
-    function renderAccountArea() {
-        var box = document.getElementById('navAccount');
-        if (!box) return;
+    // httpOnly Cookie，JS 读不到，所以只能问服务端一次：GET /api/auth/me
+    // 账号服务没起来时静默降级：头像照样能点（账号页里可以登录），只是不点亮状态点。
+    //
+    // 注意：导航栏上的「退出登录」按钮随文字入口一起撤掉了，退出改在个人中心里做。
 
-        function showLoginEntry() {
-            box.innerHTML = '<a class="nav-account-link" href="account/">登录 / 注册</a>';
+    // 过场时长（毫秒）：与 main.css 的 .avatar-zoom 过渡时长保持一致，到点即换页
+    var ZOOM_MS = 460;
+    var zoomPlaying = false;
+
+    // 是否应当减少动态效果（无障碍）：系统开启时不做任何过场，直接跳转
+    function prefersReducedMotion() {
+        return !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+    }
+
+    // clip-path 圆形裁剪是否可用；不可用（老浏览器）就退化成直接跳转
+    function canZoom() {
+        return !!(window.CSS && window.CSS.supports && window.CSS.supports('clip-path', 'circle(0px at 0px 0px)'));
+    }
+
+    // 点击头像：从头像位置把一个圆放大到盖住整屏，然后进入个人中心。
+    // 几何在这里算（CSS 只提供过渡与底色）：
+    //   圆心 = 头像中心；半径 = 到四角里最远的那个角 + 一点余量 ——
+    //   这样任意窗口尺寸、头像在任意位置都盖得满，不依赖 vmax 之类的近似单位。
+    //
+    // 分两帧写 clip-path，并且第一帧临时关掉过渡：
+    //   不这么做的话，过渡的起点是样式表里的兜底值（圆心在屏幕正中），
+    //   圆就会从屏幕中心长出来而不是从头像长出来（实测踩过一次）。
+    function playAvatarZoom() {
+        var btn = document.getElementById('navAvatar');
+        var layer = document.getElementById('avatarZoom');
+        var target = 'account/?from=avatar';
+
+        if (zoomPlaying) return;
+        if (!btn || !layer || !canZoom() || prefersReducedMotion()) {
+            window.location.href = target; // 直接跳，别让人白等
+            return;
         }
+
+        var rect = btn.getBoundingClientRect();
+        var cx = rect.left + rect.width / 2;
+        var cy = rect.top + rect.height / 2;
+        var dx = Math.max(cx, window.innerWidth - cx);
+        var dy = Math.max(cy, window.innerHeight - cy);
+        var radius = Math.ceil(Math.sqrt(dx * dx + dy * dy)) + 32;
+        var origin = ' at ' + cx + 'px ' + cy + 'px)';
+
+        zoomPlaying = true;
+        btn.classList.add('is-zoom-start'); // 头像本体同时缩一下，做出「被吸进去」的手感
+
+        // 第一帧：圆心落在头像上、半径为 0；此时把过渡关掉，确保起点精确、不参与插值
+        layer.style.transition = 'none';
+        layer.classList.add('is-armed'); // 可见（半径 0，屏幕上看不到东西）
+        layer.style.clipPath = 'circle(0px' + origin;
+        void layer.offsetWidth; // 强制重排：把这一帧真正算出来，作为过渡起点
+
+        // 第二帧：恢复样式表里的过渡，把半径放到覆盖四角
+        layer.style.transition = '';
+        layer.style.clipPath = 'circle(' + radius + 'px' + origin;
+
+        window.setTimeout(function() {
+            window.location.href = target;
+        }, ZOOM_MS);
+    }
+
+    // 问一次登录态：只用来决定头像的状态点与提示文案（点了都能进个人中心）
+    function renderAvatarState() {
+        var btn = document.getElementById('navAvatar');
+        if (!btn) return;
+
+        function setTitle(text) {
+            btn.title = text;
+            btn.setAttribute('aria-label', text);
+        }
+
+        setTitle('个人中心'); // 请求还没回来 / 失败时的兜底
 
         fetch('/api/auth/me', { credentials: 'same-origin' })
             .then(function(response) {
@@ -382,50 +449,37 @@ document.addEventListener('DOMContentLoaded', function() {
                 if (!user) {
                     throw new Error('响应里没有用户信息');
                 }
-                box.innerHTML = '';
-
-                // 昵称（没设置就用邮箱）→ 点击进账号中心
-                var link = document.createElement('a');
-                link.className = 'nav-account-link';
-                link.href = 'account/';
-                link.title = user.email + (user.role === 'admin' ? '（管理员）' : '');
-                link.textContent = user.username || user.email;
-                box.appendChild(link);
-
-                // 退出登录：成功后整页刷新，让导航与学科页回到未登录状态
-                var btn = document.createElement('button');
-                btn.type = 'button';
-                btn.className = 'nav-account-btn';
-                btn.textContent = '退出';
-                btn.addEventListener('click', function() {
-                    btn.disabled = true;
-                    // Content-Type 与 Origin 会一起发给服务端（CSRF 校验用）
-                    fetch('/api/auth/logout', {
-                        method: 'POST',
-                        credentials: 'same-origin',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: '{}'
-                    }).then(function() {
-                        window.location.reload();
-                    }).catch(function() {
-                        btn.disabled = false;
-                    });
-                });
-                box.appendChild(btn);
+                btn.classList.add('is-signed');
+                setTitle((user.username || user.email) + (user.role === 'admin' ? '（管理员）' : '') + ' · 个人中心');
             })
             .catch(function() {
-                showLoginEntry();
+                btn.classList.remove('is-signed');
+                setTitle('登录 / 注册 · 个人中心');
             });
     }
 
-    renderAccountArea();
+    var navAvatarEl = document.getElementById('navAvatar');
+    if (navAvatarEl) {
+        navAvatarEl.addEventListener('click', playAvatarZoom);
+    }
 
-    // 从账号页返回时浏览器可能直接用「前进后退缓存」（bfcache）恢复页面，
-    // 那时脚本不会重跑，导航上的登录态就会是旧的 —— 恢复时重新问一次即可。
+    renderAvatarState();
+
+    // 从个人中心返回时浏览器可能直接用「前进后退缓存」（bfcache）恢复页面：
+    // 那时脚本不会重跑，过场遮罩会停在「已展开」的状态把整屏盖住 —— 恢复时复位，
+    // 并顺手重新问一次登录态（登录/退出后返回都可能变化）。
     window.addEventListener('pageshow', function(event) {
-        if (event.persisted) {
-            renderAccountArea();
+        if (!event.persisted) return;
+        var layer = document.getElementById('avatarZoom');
+        if (layer) {
+            layer.classList.remove('is-armed');
+            layer.style.clipPath = ''; // 行内几何清掉，下次点击按当前位置重新算
+            layer.style.transition = '';
         }
+        var btn = document.getElementById('navAvatar');
+        if (btn) btn.classList.remove('is-zoom-start');
+        zoomPlaying = false;
+        renderAvatarState();
     });
 
 // 匿名函数结束，作为DOMContentLoaded事件的回调函数

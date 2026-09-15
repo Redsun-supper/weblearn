@@ -1,6 +1,11 @@
 <!DOCTYPE html>
 <!--
-  广学 · 账号中心（登录 / 注册 / 当前账号）
+  广学 · 个人中心（账号 / 设备 / 操作）
+
+  入口：站点左上角的头像（index.html 的 #navAvatar）。
+  点击头像时 main.js 会让首页的遮罩从头像位置扩散盖住整屏，再跳到本页并带上
+  ?from=avatar —— 本页据此跳过顶部身份卡的入场动画，让「遮罩铺满」与
+  「个人中心出现」在视觉上连成一件事（两边用的是同一串渐变，见 account.css）。
 
   独立入口，与学生站（index.html）和后台（admin/）都互不影响：
     · 不走 main.js 的导航与 localStorage 缓存
@@ -13,95 +18,122 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>广学 · 账号中心</title>
+    <title>广学 · 个人中心</title>
     <link rel="stylesheet" href="account.css">
 </head>
-<body>
-    <!-- 顶栏：品牌 + 返回站点 -->
+<body class="acc-page">
+    <!-- 顶栏：品牌 + 返回站点（透明，压在整页渐变背景上） -->
     <header class="acc-topbar">
         <a class="acc-brand" href="../index.html">广学</a>
-        <span class="acc-brand-sub">账号中心</span>
+        <span class="acc-brand-sub">个人中心</span>
         <a class="acc-back" href="../index.html">← 返回站点</a>
     </header>
 
     <main class="acc-wrap">
-        <!-- ===================== 已登录：当前账号 ===================== -->
-        <!-- 默认隐藏，由 account.js 问过 /api/auth/me 之后再决定显示哪一块 -->
-        <section class="acc-card" id="panelAccount" hidden>
-            <h1 class="acc-title">当前账号</h1>
+        <!-- ===================== 身份卡 ===================== -->
+        <!-- 三块都会在页面打开时依次浮入（data-enter 由 account.js 排延时） -->
+        <section class="acc-hero">
+            <div class="acc-hero-avatar" data-enter>
+                <!-- 与站点导航左上角同一张头像素材：从首页扩散过来的圆形正好落在它上面 -->
+                <img src="../image/avatar.png" alt="头像">
+            </div>
+            <div class="acc-hero-text" data-enter>
+                <p class="acc-hero-name" id="heroName">欢迎来到广学</p>
+                <p class="acc-hero-sub" id="heroSub">正在检查登录状态…</p>
+            </div>
+            <span class="acc-hero-role" id="heroRole" data-enter hidden>管理员</span>
+        </section>
+
+        <!-- 未登录且正在检测时的占位，避免页面闪一下空白 -->
+        <section class="acc-card acc-loading" id="panelLoading" data-enter>
+            <p class="acc-muted">正在检查登录状态…</p>
+        </section>
+
+        <!-- ===================== 已登录：账号信息 ===================== -->
+        <!-- 默认隐藏，由 account.js 问过 /api/auth/me 之后再决定显示哪一组 -->
+        <section class="acc-card" id="panelAccount" data-enter hidden>
+            <h1 class="acc-title" data-enter>账号信息</h1>
             <dl class="acc-info">
-                <div class="acc-info-row">
+                <div class="acc-info-row" data-enter>
                     <dt>邮箱</dt>
                     <dd id="accEmail">—</dd>
                 </div>
-                <div class="acc-info-row">
+                <div class="acc-info-row" data-enter>
                     <dt>昵称</dt>
                     <dd id="accUsername">—</dd>
                 </div>
-                <div class="acc-info-row">
+                <div class="acc-info-row" data-enter>
                     <dt>角色</dt>
                     <dd id="accRole">—</dd>
                 </div>
-                <div class="acc-info-row">
+                <div class="acc-info-row" data-enter>
                     <dt>注册时间</dt>
                     <dd id="accCreated">—</dd>
                 </div>
             </dl>
+        </section>
 
-            <div class="acc-actions">
-                <a class="acc-btn acc-btn-primary" id="accBack" href="../index.html">回到站点</a>
-                <button class="acc-btn" type="button" id="btnLogoutOthers">登出其他设备</button>
-                <button class="acc-btn acc-btn-danger" type="button" id="btnLogout">退出登录</button>
-            </div>
-            <p class="acc-msg" id="accountMsg" role="status"></p>
-
-            <h2 class="acc-subtitle">登录中的设备</h2>
-            <p class="acc-hint">同一个账号可以在多台设备上同时登录，互不影响；在别的设备上退出只影响那一台。</p>
+        <!-- ===================== 已登录：登录中的设备 ===================== -->
+        <section class="acc-card" id="panelDevices" data-enter hidden>
+            <h2 class="acc-title" data-enter>登录中的设备</h2>
+            <p class="acc-hint" data-enter>同一个账号可以在多台设备上同时登录，互不影响；在别的设备上退出只影响那一台。</p>
             <ul class="acc-sessions" id="accSessions">
                 <li class="acc-muted">正在读取…</li>
             </ul>
         </section>
 
+        <!-- ===================== 已登录：可用操作 ===================== -->
+        <section class="acc-card" id="panelActions" data-enter hidden>
+            <h2 class="acc-title" data-enter>可用操作</h2>
+            <div class="acc-actions">
+                <a class="acc-btn acc-btn-primary" id="accBack" href="../index.html">回到站点开始学习</a>
+                <a class="acc-btn" id="accAdmin" href="../admin/" hidden>进入管理后台</a>
+                <button class="acc-btn" type="button" id="btnLogoutOthers">登出其他设备</button>
+                <button class="acc-btn acc-btn-danger" type="button" id="btnLogout">退出登录</button>
+            </div>
+            <p class="acc-msg" id="accountMsg" role="status"></p>
+        </section>
+
         <!-- ===================== 未登录：登录 / 注册 ===================== -->
-        <section class="acc-card" id="panelAuth" hidden>
-            <div class="acc-tabs" role="tablist">
+        <section class="acc-card" id="panelAuth" data-enter hidden>
+            <div class="acc-tabs" role="tablist" data-enter>
                 <button class="acc-tab is-active" type="button" id="tabLogin">登录</button>
                 <button class="acc-tab" type="button" id="tabRegister">注册</button>
             </div>
 
             <!-- 登录 -->
             <form class="acc-form" id="formLogin" novalidate>
-                <div class="acc-field">
+                <div class="acc-field" data-enter>
                     <label for="loginEmail">邮箱</label>
                     <input type="email" id="loginEmail" autocomplete="username"
                            placeholder="2262997289@qq.com" required>
                 </div>
-                <div class="acc-field">
+                <div class="acc-field" data-enter>
                     <label for="loginPassword">口令</label>
                     <input type="password" id="loginPassword" autocomplete="current-password"
                            placeholder="至少 8 位，含字母与数字" required>
                 </div>
-                <div class="acc-field">
+                <div class="acc-field" data-enter>
                     <label for="loginDevice">设备名（可选）</label>
                     <input type="text" id="loginDevice" placeholder="例如：我的笔记本">
                 </div>
                 <p class="acc-msg" id="loginMsg" role="status"></p>
-                <button class="acc-btn acc-btn-primary acc-btn-block" type="submit" id="loginSubmit">登录</button>
-                <p class="acc-hint">还没有账号？切到「注册」——注册需要管理员派发的邀请码。</p>
+                <button class="acc-btn acc-btn-primary acc-btn-block" type="submit" id="loginSubmit" data-enter>登录</button>
+                <p class="acc-hint" data-enter>还没有账号？切到「注册」——注册需要管理员派发的邀请码。</p>
             </form>
 
             <!-- 注册 -->
             <form class="acc-form" id="formRegister" hidden novalidate>
-                <div class="acc-field">
+                <div class="acc-field" data-enter>
                     <label for="regEmail">邮箱</label>
                     <input type="email" id="regEmail" autocomplete="email"
                            placeholder="用于接收验证码，也是登录账号" required>
                 </div>
-                <div class="acc-field">
+                <div class="acc-field" data-enter>
                     <label for="regInvite">邀请码</label>
                     <input type="text" id="regInvite" placeholder="管理员派发的邀请码（可带 - 分隔符）" required>
                 </div>
-                <div class="acc-field">
+                <div class="acc-field" data-enter>
                     <label for="regCode">邮箱验证码</label>
                     <div class="acc-code-row">
                         <input type="text" id="regCode" inputmode="numeric" maxlength="6"
@@ -110,24 +142,19 @@
                     </div>
                     <p class="acc-hint" id="codeHint">验证码 10 分钟内有效，最多可试 5 次。</p>
                 </div>
-                <div class="acc-field">
+                <div class="acc-field" data-enter>
                     <label for="regPassword">口令</label>
                     <input type="password" id="regPassword" autocomplete="new-password"
                            placeholder="至少 8 位，且同时包含字母与数字" required>
                 </div>
-                <div class="acc-field">
+                <div class="acc-field" data-enter>
                     <label for="regPassword2">确认口令</label>
                     <input type="password" id="regPassword2" autocomplete="new-password" required>
                 </div>
                 <p class="acc-msg" id="regMsg" role="status"></p>
-                <button class="acc-btn acc-btn-primary acc-btn-block" type="submit" id="regSubmit">注册并登录</button>
-                <p class="acc-hint">注册成功后会自动登录，可以直接回到站点开始学习。</p>
+                <button class="acc-btn acc-btn-primary acc-btn-block" type="submit" id="regSubmit" data-enter>注册并登录</button>
+                <p class="acc-hint" data-enter>注册成功后会自动登录，可以直接回到站点开始学习。</p>
             </form>
-        </section>
-
-        <!-- 未登录且正在检测时的占位，避免页面闪一下空白 -->
-        <section class="acc-card acc-loading" id="panelLoading">
-            <p class="acc-muted">正在检查登录状态…</p>
         </section>
     </main>
 

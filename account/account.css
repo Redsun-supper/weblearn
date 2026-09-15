@@ -1,6 +1,12 @@
 /* ============================================================================
- * 广学 · 账号中心样式
+ * 广学 · 个人中心样式
  * 只作用于 account/ 下的页面，与学生站 main.css、后台 admin.css 相互独立。
+ *
+ * 两条约定：
+ *   1. 背景渐变必须与 main.css 的 .avatar-zoom 完全一致 —— 首页点头像时那块
+ *      遮罩是同一串渐变，扩散盖满之后跳到本页，接缝才看不出来。
+ *   2. 入场动效的「动作」在这里（accRise / accPop），「什么时候开始」在
+ *      account.js（给元素写 animation-delay），两边只靠延时数字对齐。
  * ========================================================================== */
 
 * {
@@ -18,6 +24,72 @@ body {
     background-color: #f5f6f8;
 }
 
+/* 个人中心整页渐变底：与首页遮罩同源，切换时视觉连续。
+   用 fixed 让渐变锚在视口上（而不是随内容滚动拉伸），
+   这样它和那块 fixed 定位的遮罩是同一个坐标系、同一串颜色。 */
+body.acc-page {
+    background-image: linear-gradient(160deg, #1f2d3d 0%, #14507d 45%, #1565c0 100%);
+    background-attachment: fixed;
+    background-repeat: no-repeat;
+    background-size: cover;
+    color: #eceff1;
+}
+
+/* ===================== 入场动效 ===================== */
+
+/* 主入场：从下方 14px 处浮起并淡入。both 保证延时期间保持起始状态（不会先闪一下） */
+@keyframes accRise {
+    from {
+        opacity: 0;
+        transform: translateY(14px);
+    }
+    to {
+        opacity: 1;
+        transform: none;
+    }
+}
+
+/* 头像/徽章专用：带一点回弹的放大 */
+@keyframes accPop {
+    0% {
+        opacity: 0;
+        transform: scale(0.72);
+    }
+    62% {
+        opacity: 1;
+        transform: scale(1.06);
+    }
+    100% {
+        opacity: 1;
+        transform: scale(1);
+    }
+}
+
+.is-enter {
+    animation: accRise 0.42s cubic-bezier(0.22, 0.61, 0.36, 1) both;
+}
+
+/* 身份卡里的头像用回弹那套 */
+.acc-hero-avatar.is-enter {
+    animation: accPop 0.5s cubic-bezier(0.22, 0.61, 0.36, 1) both;
+}
+
+/* 从首页头像扩散进来时（?from=avatar）：身份卡已经在「遮罩下面」就位了，
+   此处不再播入场动画，否则会看到它从头像位置又跳一次 */
+.from-avatar .acc-hero [data-enter],
+.from-avatar .acc-hero.is-enter,
+.from-avatar .acc-hero .is-enter {
+    animation: none;
+}
+
+/* 无障碍：系统开启「减少动态效果」时不播任何入场动画 */
+@media (prefers-reduced-motion: reduce) {
+    .is-enter,
+    .acc-hero-avatar.is-enter {
+        animation: none;
+    }
+}
+
 /* ===================== 顶栏 ===================== */
 
 .acc-topbar {
@@ -25,55 +97,117 @@ body {
     align-items: center;
     gap: 10px;
     padding: 14px 24px;
-    background-color: #ffffff;
-    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.06);
 }
 
 .acc-brand {
     font-size: 18px;
     font-weight: bold;
-    color: #263238;
+    color: #ffffff;
     text-decoration: none;
 }
 
 .acc-brand-sub {
     padding: 2px 8px;
     border-radius: 999px;
-    background-color: #eceff1;
-    color: #546e7a;
+    background-color: rgba(255, 255, 255, 0.16);
+    color: #e3f2fd;
     font-size: 12px;
 }
 
 .acc-back {
     margin-left: auto;
-    color: #546e7a;
+    color: #cfd8dc;
     font-size: 13px;
     text-decoration: none;
+    transition: color 0.2s;
 }
 
 .acc-back:hover {
-    color: #1565c0;
+    color: #ffffff;
 }
 
 /* ===================== 主体 ===================== */
 
 .acc-wrap {
-    max-width: 520px;
+    max-width: 560px;
     margin: 0 auto;
-    padding: 28px 20px 60px;
+    padding: 12px 20px 60px;
 }
 
+/* ---------- 身份卡 ---------- */
+
+.acc-hero {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 8px 4px 26px;
+}
+
+.acc-hero-avatar {
+    flex: 0 0 auto;
+    width: 72px;
+    height: 72px;
+    border: 2px solid rgba(255, 255, 255, 0.75);
+    border-radius: 18px;
+    overflow: hidden;
+    box-shadow: 0 8px 22px rgba(0, 0, 0, 0.3);
+}
+
+.acc-hero-avatar img {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+.acc-hero-text {
+    min-width: 0;
+}
+
+.acc-hero-name {
+    font-size: 20px;
+    font-weight: bold;
+    color: #ffffff;
+    /* 昵称/邮箱可能很长：一行省略，不要把身份卡撑破 */
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.acc-hero-sub {
+    color: #b0bec5;
+    font-size: 13px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.acc-hero-role {
+    margin-left: auto;
+    padding: 3px 10px;
+    border-radius: 999px;
+    background-color: rgba(255, 255, 255, 0.9);
+    color: #1565c0;
+    font-size: 12px;
+    font-weight: bold;
+    white-space: nowrap;
+}
+
+/* ---------- 卡片 ---------- */
+
 .acc-card {
-    padding: 22px 24px 24px;
-    border: 1px solid #e4e7eb;
+    margin-bottom: 16px;
+    padding: 20px 24px 22px;
     border-radius: 14px;
     background-color: #ffffff;
-    box-shadow: 0 6px 20px rgba(38, 50, 56, 0.05);
+    color: #333;
+    box-shadow: 0 10px 26px rgba(8, 20, 32, 0.18);
 }
 
 .acc-title {
-    margin-bottom: 16px;
-    font-size: 19px;
+    margin-bottom: 14px;
+    font-size: 17px;
+    color: #263238;
 }
 
 .acc-subtitle {
@@ -224,7 +358,6 @@ body {
     display: flex;
     flex-wrap: wrap;
     gap: 8px;
-    margin-top: 18px;
 }
 
 /* ===================== 提示与信息 ===================== */
@@ -310,7 +443,7 @@ body {
 
 .acc-footer {
     padding: 20px;
-    color: #b0bec5;
+    color: rgba(236, 239, 241, 0.6);
     font-size: 12px;
     text-align: center;
 }
@@ -319,6 +452,16 @@ body {
 @media (max-width: 520px) {
     .acc-card {
         padding: 18px 16px;
+    }
+
+    .acc-hero {
+        gap: 12px;
+    }
+
+    .acc-hero-avatar {
+        width: 60px;
+        height: 60px;
+        border-radius: 15px;
     }
 
     .acc-info-row {
