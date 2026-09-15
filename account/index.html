@@ -108,8 +108,10 @@
             <form class="acc-form" id="formLogin" novalidate>
                 <div class="acc-field" data-enter>
                     <label for="loginEmail">邮箱</label>
+                    <!-- ⚠️ 占位符只能用「显然是假的」示例地址：这里是对所有访客可见的登录框，
+                         写真实邮箱等于公开管理员账号（既泄露个人信息，又给撞库指路）。 -->
                     <input type="email" id="loginEmail" autocomplete="username"
-                           placeholder="2262997289@qq.com" required>
+                           placeholder="name@example.com" required>
                 </div>
                 <div class="acc-field" data-enter>
                     <label for="loginPassword">密码</label>
