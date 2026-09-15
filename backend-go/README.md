@@ -1,5 +1,15 @@
 # Go后端服务
 
+> **账号系统不在本目录**：登录 / 注册 / 会话相关接口由独立的 Rust 认证服务承载
+> （`backend-rust/`，监听 127.0.0.1:8081，只处理 `/api/auth/*`），数据库也是独立的
+> `auth.db`。本服务继续负责词汇复习与词条管理，用 `guangxue.db`。
+> 本地 `dev-server.js` 与线上 Nginx 都按前缀把两者分流，详见
+> [`../backend-rust/README.md`](../backend-rust/README.md)。
+>
+> ⚠️ `/api/user/info`、`/api/user/update` 仍是**占位接口**（返回固定 JSON，不读写数据库），
+> 它们与账号系统无关，已被 `/api/auth/me` 取代；将来要么删除、要么改成校验会话后
+> 返回真实用户。目前**没有任何接口校验登录态**。
+
 ## 项目结构
 
 ```

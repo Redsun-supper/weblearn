@@ -1,0 +1,68 @@
+[package]
+name = "guangxue-auth"
+version = "0.1.0"
+edition = "2021"
+description = "广学 账号系统：Rust 认证服务（注册 / 多端登录 / 会话轮换 / 邀请码）"
+license = "MIT"
+publish = false
+
+[lib]
+name = "guangxue_auth"
+path = "src/lib.rs"
+
+# 服务主程序：guangxue-auth（HTTP 服务）
+[[bin]]
+name = "guangxue-auth"
+path = "src/main.rs"
+
+# 建管理员（幂等）
+[[bin]]
+name = "seed-admin"
+path = "src/bin/seed_admin.rs"
+
+# 邀请码管理 CLI：create / list / disable
+[[bin]]
+name = "invite"
+path = "src/bin/invite.rs"
+
+[dependencies]
+# HTTP 框架（0.8 起路径参数写作 {id}，不再是 :id）
+axum = "0.8"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "signal"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# SQLite：bundled 会用 mingw gcc 现场编译 sqlite3.c（本机已具备）
+rusqlite = { version = "0.40", features = ["bundled"] }
+# 口令哈希：Argon2id（PHC 字符串，参数写进哈希本身）
+argon2 = "0.5"
+# access token：HS256 JWT
+jsonwebtoken = "9"
+# 摘要与恒定时间比较（refresh 令牌摘要、验证码 HMAC、比对）
+sha2 = "0.10"
+hmac = "0.12"
+subtle = "2"
+# 随机源（令牌、验证码、邀请码都用系统随机）
+rand = "0.8"
+base64 = "0.22"
+hex = "0.4"
+uuid = { version = "1", features = ["v4"] }
+# 时间：统一 UTC，存固定宽度的 RFC3339 文本（秒精度，便于字典序比较）
+time = { version = "0.3", features = ["formatting", "parsing", "macros"] }
+# 邮件：默认走 log 模式，配置 AUTH_MAIL_MODE=smtp 后才会真的发信
+lettre = { version = "0.11", default-features = false, features = ["smtp-transport", "builder", "native-tls"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+thiserror = "2"
+async-trait = "0.1"
+dotenvy = "0.15"
+
+[dev-dependencies]
+tempfile = "3"
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
+# 集成测试要直接查库断言「口令只有 Argon2id、会话只存摘要」
+rusqlite = { version = "0.40", features = ["bundled"] }
+
+[profile.release]
+lto = true
+codegen-units = 1

@@ -3,18 +3,22 @@
  * 广学 · 本地开发服务器
  *
  * 为什么需要它：
- *   前端用绝对路径请求 /api/*（线上由 Nginx 反向代理到 Go 后端），
+ *   前端用绝对路径请求 /api/*（线上由 Nginx 反向代理到后端），
  *   所以不能直接双击 index.html 打开 —— file:// 协议下 /api 请求会 404，
  *   WASM 的 ES 模块加载也会被浏览器拦截。本脚本把「静态文件」与「API 代理」
  *   放在同一个 origin 下，等价于线上 Nginx 的形态：
- *       /            → 仓库根目录静态文件
- *       /api/*       → http://127.0.0.1:8080
+ *       /                → 仓库根目录静态文件
+ *       /api/auth/*      → http://127.0.0.1:8081（Rust 账号系统）
+ *       /api/*           → http://127.0.0.1:8080（Go 主后端）
+ *
+ *   两个上游的划分与线上 Nginx 一致：账号系统是独立的 Rust 服务。
  *
  * 用法（在仓库根目录执行）：
  *   node dev-server.js                          # 默认 http://127.0.0.1:8899
  *   node dev-server.js --port 9000              # 换前端端口
- *   node dev-server.js --api-port 8081          # 后端换了端口
- *   PORT=9000 API_PORT=8081 node dev-server.js  # 也可用环境变量
+ *   node dev-server.js --api-port 8081          # Go 后端换了端口
+ *   node dev-server.js --auth-port 8082         # 账号服务换了端口
+ *   PORT=9000 API_PORT=8081 AUTH_PORT=8082 node dev-server.js  # 也可用环境变量
  *
  * 依赖：仅使用 Node 内置模块（http / fs / path），无需 npm install。
  * 注意：本文件仅用于本地开发，部署时不需要上传。
@@ -38,6 +42,24 @@ function argValue(name) {
 const PORT = Number(argValue('--port') || process.env.PORT || 8899);
 const API_PORT = Number(argValue('--api-port') || process.env.API_PORT || 8080);
 const API_HOST = argValue('--api-host') || process.env.API_HOST || '127.0.0.1';
+// 账号系统（Rust 认证服务）：只接管 /api/auth/* 前缀
+const AUTH_PORT = Number(argValue('--auth-port') || process.env.AUTH_PORT || 8081);
+const AUTH_HOST = argValue('--auth-host') || process.env.AUTH_HOST_PROXY || '127.0.0.1';
+
+// 两个上游：前缀 → 目标
+const AUTH_PREFIX = '/api/auth/';
+const UPSTREAM_AUTH = {
+  name: '账号系统(Rust)',
+  host: AUTH_HOST,
+  port: AUTH_PORT,
+  hint: `无法连接账号服务 ${AUTH_HOST}:${AUTH_PORT}，请在 backend-rust 目录执行 cargo run --release`
+};
+const UPSTREAM_API = {
+  name: '主后端(Go)',
+  host: API_HOST,
+  port: API_PORT,
+  hint: `无法连接后端 ${API_HOST}:${API_PORT}，请先在 backend-go 目录执行 go run main.go`
+};
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -67,17 +89,19 @@ function send(res, code, type, body) {
   res.end(body);
 }
 
-// /api/* → Go 后端反向代理
-function proxy(req, res) {
+// /api/* → 后端反向代理（按前缀选上游）
+function proxy(req, res, target) {
   const upstream = http.request(
     {
-      host: API_HOST,
-      port: API_PORT,
+      host: target.host,
+      port: target.port,
       path: req.url,
       method: req.method,
       headers: req.headers
     },
     (upRes) => {
+      // 注意：Set-Cookie 可能是数组（登录会一次下发两个 Cookie），
+      // writeHead 直接透传 headers 即可，不要自己拼字符串
       res.writeHead(upRes.statusCode, upRes.headers);
       upRes.pipe(res);
     }
@@ -85,10 +109,8 @@ function proxy(req, res) {
 
   upstream.on('error', (err) => {
     // 后端没起来时给出明确提示，而不是让前端只报一个 fetch 失败
-    const hint = err.code === 'ECONNREFUSED'
-      ? `无法连接后端 ${API_HOST}:${API_PORT}，请先在 backend-go 目录执行 go run main.go`
-      : String(err.message || err);
-    console.error('[proxy error] ' + req.method + ' ' + req.url + ' → ' + hint);
+    const hint = err.code === 'ECONNREFUSED' ? target.hint : String(err.message || err);
+    console.error('[proxy error] ' + req.method + ' ' + req.url + ' → ' + target.name + '：' + hint);
     send(res, 502, 'application/json; charset=utf-8',
       JSON.stringify({ code: 502, message: hint }));
   });
@@ -119,8 +141,13 @@ function serveStatic(req, res) {
 }
 
 const server = http.createServer((req, res) => {
-  if (req.url.split('?')[0].startsWith('/api/')) {
-    return proxy(req, res);
+  const path = req.url.split('?')[0];
+  if (path.startsWith(AUTH_PREFIX) || path === '/api/auth') {
+    // 账号系统（Rust）：与线上 Nginx 的 location /api/auth/ 分流一致
+    return proxy(req, res, UPSTREAM_AUTH);
+  }
+  if (path.startsWith('/api/')) {
+    return proxy(req, res, UPSTREAM_API);
   }
   serveStatic(req, res);
 });
@@ -137,6 +164,8 @@ server.listen(PORT, HOST, () => {
   console.log('广学本地开发服务器已启动');
   console.log('  前端页面: http://' + HOST + ':' + PORT + '/');
   console.log('  静态根目录: ' + ROOT);
-  console.log('  API 代理: /api/* → http://' + API_HOST + ':' + API_PORT);
-  console.log('  若页面提示复习功能加载失败，请确认后端已启动（cd backend-go && go run main.go）');
+  console.log('  /api/auth/* → http://' + AUTH_HOST + ':' + AUTH_PORT + '  (账号系统 Rust)');
+  console.log('  /api/*      → http://' + API_HOST + ':' + API_PORT + '  (主后端 Go)');
+  console.log('  若页面提示复习功能加载失败: 确认 Go 后端已启动（cd backend-go && go run main.go）');
+  console.log('  若登录/注册报 502: 确认账号服务已启动（cd backend-rust && cargo run --release）');
 });
