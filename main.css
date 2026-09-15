@@ -77,8 +77,9 @@ body {
     top: 0;
     /* 设置容器距离父元素左侧为144像素，即头像左侧30px + 头像宽度64px + 间距50px = 144px */
     left: 144px;
-    /* 设置容器距离父元素右侧为0像素，紧贴右侧 */
-    right: 0;
+    /* 设置容器距离父元素右侧为190像素：给右上角的「登录态」区域留出位置
+       （9 个导航项总共 1080px，窄屏时它们会等比收窄，而不是被登录态挡住） */
+    right: 190px;
     /* 设置容器高度为100%父元素高度，填满导航栏高度 */
     height: 100%;
     /* 使用flexbox布局，使导航矩形项水平排列 */
@@ -135,6 +136,64 @@ body {
     object-fit: cover;
     /* 设置图片显示方式为块级元素，消除图片底部默认间隙 */
     display: block;
+}
+
+/* ===================== 右上角登录态 ===================== *
+ * 内容由 main.js 的 renderAccountArea() 填充（问一次 /api/auth/me）：
+ *   已登录 → 昵称/邮箱（点击进账号中心）+「退出」按钮
+ *   未登录 → 「登录 / 注册」入口
+ * 它是 .rectangle 的子元素，所以沉浸模式下会跟着导航栏一起隐藏。 */
+.nav-account {
+    /* 绝对定位在导航栏右上角，不影响 9 个导航项的 flex 排列 */
+    position: absolute;
+    top: 50%;
+    right: 22px;
+    /* 向上平移自身高度的一半，垂直居中 */
+    transform: translateY(-50%);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    /* 层级高于导航矩形项，低于头像 */
+    z-index: 102;
+    font-size: 14px;
+    white-space: nowrap;
+}
+
+.nav-account-link {
+    /* 邮箱可能很长：限制宽度并省略号收尾 */
+    max-width: 130px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: #546e7a;
+    text-decoration: none;
+}
+
+.nav-account-link:hover {
+    color: #1565c0;
+}
+
+.nav-account-btn {
+    padding: 3px 10px;
+    border: 1px solid #d0d0d0;
+    border-radius: 999px;
+    background-color: #ffffff;
+    color: #607d8b;
+    font-family: inherit;
+    font-size: 12px;
+    line-height: 1.6;
+    cursor: pointer;
+    transition: background-color 0.2s, color 0.2s;
+}
+
+.nav-account-btn:hover {
+    background-color: #eceff1;
+    color: #37474f;
+}
+
+.nav-account-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
 }
 
 /* 类选择器，选中class为content-container的元素，用于显示加载的HTML内容区域 */

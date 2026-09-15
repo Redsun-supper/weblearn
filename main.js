@@ -356,5 +356,77 @@ document.addEventListener('DOMContentLoaded', function() {
             }
         });
     });
+    // ===================== 右上角登录态 =====================
+    // 登录态是服务端（Rust 认证服务 /api/auth/*，见 backend-rust/README.md）下发的
+    // httpOnly Cookie，JS 读不到，所以只能问服务端一次：
+    //   GET /api/auth/me     → 200 已登录（响应里带 user）/ 401 未登录
+    //   POST /api/auth/logout → 只登出当前这个端
+    // 账号服务没起来时静默降级成「登录 / 注册」入口，不打扰浏览学科内容。
+    function renderAccountArea() {
+        var box = document.getElementById('navAccount');
+        if (!box) return;
+
+        function showLoginEntry() {
+            box.innerHTML = '<a class="nav-account-link" href="account/">登录 / 注册</a>';
+        }
+
+        fetch('/api/auth/me', { credentials: 'same-origin' })
+            .then(function(response) {
+                if (!response.ok) {
+                    throw new Error('未登录');
+                }
+                return response.json();
+            })
+            .then(function(payload) {
+                var user = payload && payload.data ? payload.data.user : null;
+                if (!user) {
+                    throw new Error('响应里没有用户信息');
+                }
+                box.innerHTML = '';
+
+                // 昵称（没设置就用邮箱）→ 点击进账号中心
+                var link = document.createElement('a');
+                link.className = 'nav-account-link';
+                link.href = 'account/';
+                link.title = user.email + (user.role === 'admin' ? '（管理员）' : '');
+                link.textContent = user.username || user.email;
+                box.appendChild(link);
+
+                // 退出登录：成功后整页刷新，让导航与学科页回到未登录状态
+                var btn = document.createElement('button');
+                btn.type = 'button';
+                btn.className = 'nav-account-btn';
+                btn.textContent = '退出';
+                btn.addEventListener('click', function() {
+                    btn.disabled = true;
+                    // Content-Type 与 Origin 会一起发给服务端（CSRF 校验用）
+                    fetch('/api/auth/logout', {
+                        method: 'POST',
+                        credentials: 'same-origin',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: '{}'
+                    }).then(function() {
+                        window.location.reload();
+                    }).catch(function() {
+                        btn.disabled = false;
+                    });
+                });
+                box.appendChild(btn);
+            })
+            .catch(function() {
+                showLoginEntry();
+            });
+    }
+
+    renderAccountArea();
+
+    // 从账号页返回时浏览器可能直接用「前进后退缓存」（bfcache）恢复页面，
+    // 那时脚本不会重跑，导航上的登录态就会是旧的 —— 恢复时重新问一次即可。
+    window.addEventListener('pageshow', function(event) {
+        if (event.persisted) {
+            renderAccountArea();
+        }
+    });
+
 // 匿名函数结束，作为DOMContentLoaded事件的回调函数
 });

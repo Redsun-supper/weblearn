@@ -24,31 +24,31 @@
 ┌─────────────────────────────────────────────────────────────────┐
 │                        Nginx 反向代理                             │
 │  ┌───────────────────────────────────────────────────────────┐  │
-│  │  location /        → 前端静态文件 (frontend/)              │  │
-│  │  location /api/    → Go后端服务 (localhost:8080)           │  │
+│  │  location /            → 前端静态文件（仓库根目录）          │  │
+│  │  location /api/auth/   → Rust 账号系统 (localhost:8081)     │  │
+│  │  location /api/        → Go 主后端    (localhost:8080)      │  │
 │  └───────────────────────────────────────────────────────────┘  │
 ────────────────────────────┬────────────────────────────────────┘
                              │
-              ┌──────────────┴──────────────┐
-              ▼                              ▼
-┌─────────────────────────┐    ┌─────────────────────────┐
-│       前端 (Frontend)    │    │      后端 (Backend)      │
-│                         │    │                         │
-│  index.html             │    │  Go (Gin框架)           │
-│  main.css               │    │                         │
-│  main.js                │    │  ├── main.go            │
-│  image/                 │    │  ├── config/            │
-│  pages/                 │    │  ├── routes/            │
-│                         │    │  ├── handlers/          │
-│  特性:                   │    │  ├── models/           │
-│  - 学科导航              │    │  └── utils/            │
-│  - localStorage缓存      │    │                         │
-│  - 30天自动清理          │    │  特性:                   │
-│  - 默认显示英语          │    │  - RESTful API          │
-│                         │    │  - 健康检查              │
-│                         │    │  - 用户管理              │
-└─────────────────────────    │  - 数据管理              │
-                               └─────────────────────────┘
+        ┌────────────────────┼─────────────────────┐
+        ▼                    ▼                     ▼
+┌──────────────────┐ ┌──────────────────┐ ┌──────────────────────────┐
+│  前端 (Frontend)  │ │  后端 (Backend)   │ │  账号系统 (Auth)          │
+│                  │ │                  │ │                          │
+│  index.html      │ │  Go (Gin+GORM)   │ │  Rust (axum + SQLite)    │
+│  main.css        │ │                  │ │                          │
+│  main.js         │ │  ├── main.go     │ │  ├── src/core/  纯逻辑    │
+│  image/          │ │  ├── config/     │ │  ├── src/service.rs      │
+│  pages/          │ │  ├── routes/     │ │  ├── src/store/  SQLite  │
+│  modules/        │ │  ├── handlers/   │ │  ├── src/http/   axum    │
+│                  │ │  ├── models/     │ │  └── src/mail/           │
+│  特性:            │ │  └── database/   │ │                          │
+│  - 学科导航       │ │                  │ │  特性:                    │
+│  - localStorage  │ │  特性:            │ │  - 邮箱注册（邀请码+验证码）│
+│  - 30天自动清理   │ │  - 词汇复习 API   │ │  - 多端同时登录            │
+│  - 默认显示英语   │ │  - 词条管理       │ │  - Argon2id + 令牌轮换     │
+│                  │ │  - FSRS 调度     │ │  - 会话管理与邀请码管理      │
+└──────────────────┘ └──────────────────┘ └──────────────────────────┘
 ```
 
 ---
@@ -73,7 +73,12 @@ e:\porject\4/
 │       ├── politics.html        # 政治
 │       └── geography.html       # 地理
 │
-├── dev-server.js                # 本地开发服务器（静态文件 + /api 反向代理，仅开发用）
+├── dev-server.js                # 本地开发服务器（静态文件 + /api 双上游代理，仅开发用）
+│
+├── account/                     # 账号中心（登录 / 注册 / 当前账号，独立入口）
+│   ├── index.html               #   登录、注册、当前账号与登录中的设备
+│   ├── account.css              #   只作用于账号页
+│   └── account.js               #   交互逻辑（ES5）：问 /api/auth/me 决定显示哪一块
 │
 ├── admin/                       # 通用后台骨架（独立入口，与学生站互不影响）
 │   ├── index.html               #   入口页（布局 + 鉴权遮罩预留位）
@@ -123,6 +128,30 @@ e:\porject\4/
 │   │   └── utils.go             # 工具函数
 │   └── README.md                # 后端说明文档
 │
+├── backend-rust/                # 账号系统（Rust 认证服务，与 Go 后端各自独立）
+│   ├── Cargo.toml               # 包 guangxue-auth，三个 bin：服务 / seed-admin / invite
+│   ├── .env.example             # 全部 AUTH_* 环境变量示例（.env 已 gitignore）
+│   ├── migrations/
+│   │   └── 0001_init.sql        # auth.db 表结构（编译期内嵌）
+│   ├── scripts/
+│   │   └── smoke.ps1            # 端到端冒烟脚本（真实 HTTP + 真实 Cookie）
+│   ├── src/
+│   │   ├── main.rs              # HTTP 服务入口（默认 127.0.0.1:8081）
+│   │   ├── lib.rs               # AppState 装配与路由挂载
+│   │   ├── config.rs            # 环境变量 → Config（生产环境强校验）
+│   │   ├── error.rs             # 统一错误 → {code,message,error}
+│   │   ├── clock.rs             # 时钟注入（测试可控制「过期」这类分支）
+│   │   ├── db.rs                # SQLite 连接 / PRAGMA / 迁移
+│   │   ├── models.rs            # 数据行与对外输出结构
+│   │   ├── store/               # 事务边界与全部 SQL
+│   │   ├── service.rs           # 业务规则（注册/登录/刷新/会话/邀请码）
+│   │   ├── rate_limit.rs        # 内存滑动窗口限流
+│   │   ├── core/                # 纯逻辑：口令 / 令牌 / 邀请码 / 验证码 / 校验
+│   │   ├── mail/                # 邮件发送（开发模式只打日志，配好 SMTP 即启用）
+│   │   ├── http/                # axum 路由、Cookie、CSRF、鉴权提取器
+│   │   └── bin/                 # seed-admin / invite 命令行工具
+│   └── README.md                # 账号系统说明（接口、安全设计、环境变量、部署）
+│
 └── README.md                    # 项目总说明（本文件）
 ```
 
@@ -171,10 +200,12 @@ modules/<学科>/admin/  各学科自己的后台模块，按需动态加载
 | 通用能力 | `ctx.api` / `toast` / `confirm` / `el` / `escapeHtml` / `setTitle`，避免各学科重复实现 |
 | 英语后台 | 词条列表（搜索 / 词书 / 单元筛选 / 分页）、新增编辑删除、**多释义编辑**（一个词性一块，每块可带自己的例句与译文）、**批量导入**（粘贴词表 → 引擎解析 → 预览 → 分批导入） |
 
-> ⚠️ **当前没有登录校验**：任何能访问 `/admin/` 的人都能修改词条，**接入登录前请勿部署到公网**。
-> 前端预留位是 `admin/admin.js` 的 `checkAuth()` 与 `admin/index.html` 的 `#adminAuthGate`；
-> 但后端目前也没有鉴权中间件，**登录实现时两端要一起做**（只拦前端挡不住直接调接口的人）。
-> 详见 [`admin/README.md`](admin/README.md)。
+> ✅ **登录门禁已接入**：打开 `/admin/` 会先调 `GET /api/auth/me`，只有 `role=admin` 的账号
+> 才渲染后台，否则显示登录表单（普通账号会提示「不是管理员」）。顶栏显示当前账号与「退出登录」。
+> ⚠️ 但这只是**界面层**的门禁：Go 侧的 `/api/words` 写接口**还没有服务端鉴权**，
+> 直接调接口（例如 `curl -X PUT /api/words/1`）仍然能改数据。
+> **在给 Go 补上鉴权中间件之前，仍然不要把 `/admin/` 部署到公网**——那一期要用同一个
+> `AUTH_JWT_SECRET` 验签并查 `auth.db` 的会话。详见 [`admin/README.md`](admin/README.md)。
 
 > 💡 批量导入的解析规则（支持制表符 / 竖线 / 逗号 / 空格、注释行、重复与错误行提示）由
 > 引擎的 `wordlist.rs` 实现，有 16 个单元测试覆盖各种粘贴格式。
@@ -270,6 +301,27 @@ modules/<学科>/admin/  各学科自己的后台模块，按需动态加载
 | POST | `/api/reviews/submit` | 提交复习结果（持久化 FSRS 状态） | ✅ 可用 |
 | GET | `/api/reviews/stats` | 复习统计（词库概览 / 今日进度 / 连续天数 / 记忆保持率） | ✅ 可用 |
 
+### 账号系统 API（Rust 认证服务，详见 [`backend-rust/README.md`](backend-rust/README.md)）
+
+| 方法 | 路径 | 说明 | 状态 |
+|------|------|------|------|
+| GET | `/api/auth/health` | 账号服务健康检查 | ✅ 可用 |
+| POST | `/api/auth/email-code` | 发注册验证码（**先校验邀请码再发信**，避免开放邮件中继） | ✅ 可用 |
+| POST | `/api/auth/register` | 邮箱 + 邀请码 + 验证码注册，成功即登录 | ✅ 可用 |
+| POST | `/api/auth/login` | 登录（**每次登录新建会话 → 多端同时在线**） | ✅ 可用 |
+| POST | `/api/auth/refresh` | 轮换 refresh 令牌；旧令牌重放会吊销整条轮换链 | ✅ 可用 |
+| POST | `/api/auth/logout` | 只登出当前这个端 | ✅ 可用 |
+| GET | `/api/auth/me` | 当前登录用户 | ✅ 可用 |
+| GET | `/api/auth/sessions` | 我的活跃会话（设备名 / IP / 最近活跃 / 是否当前端） | ✅ 可用 |
+| POST | `/api/auth/logout-all` | 登出全部端（`keep_current` 可只踢其他端） | ✅ 可用 |
+| GET/POST | `/api/auth/admin/invites` | 邀请码列表 / 生成（明文只在生成时返回一次） | ✅ 可用 |
+| POST | `/api/auth/admin/invites/{id}/disable` | 停用邀请码 | ✅ 可用 |
+| GET | `/api/auth/dev/codes` | 读取验证码（**仅 development**，生产环境路由不注册） | ✅ 可用 |
+
+> 账号接口的响应同样使用 `{code, message, data}` 信封，失败时额外带机器可读的
+> `error` 字段（如 `invalid_invite`、`bad_credentials`、`account_locked`），详见
+> [`backend-rust/README.md`](backend-rust/README.md) 的错误码表。
+
 词条字段（`/api/words*`、`/api/reviews/*` 通用）：
 
 | 字段 | 说明 |
@@ -338,7 +390,27 @@ cd backend-go
 go run main.go        # 监听 0.0.0.0:8080
 ```
 
-### 3. 启动前端服务器
+### 3. 启动账号系统（登录 / 注册相关）
+
+```bash
+cd backend-rust
+cargo run --release   # 监听 127.0.0.1:8081，首次启动自动建库、迁移并创建管理员
+```
+
+初始管理员 `2262997289@qq.com` / `7289HR_RedSun`（**首次登录后请改密**）。
+`dev-server.js` 会把 `/api/auth/*` 分流到这个服务，其余 `/api/*` 仍走 Go。
+
+本期还没有登录页面，功能验证用冒烟脚本或 curl：
+
+```powershell
+pwsh backend-rust/scripts/smoke.ps1                          # 直连 8081
+pwsh backend-rust/scripts/smoke.ps1 -BaseUrl http://127.0.0.1:8899   # 经 dev-server 代理
+```
+
+邮件默认「只打日志不发信」，本地联调时验证码从服务端日志或
+`GET /api/auth/dev/codes?email=...` 取（该接口只在 development 存在）。
+
+### 4. 启动前端服务器
 
 ```bash
 # 在仓库根目录执行
@@ -347,9 +419,19 @@ node dev-server.js --port 9000        # 前端端口被占用时换一个
 node dev-server.js --api-port 8081    # 后端换了端口时对齐
 ```
 
-### 4. 打开浏览器
+### 5. 打开浏览器
 
 访问 **http://127.0.0.1:8899** 即可。首页默认加载英语页，下拉即是「单词复习」。
+
+其它入口：
+
+| 地址 | 用途 |
+|------|------|
+| http://127.0.0.1:8899/ | 学生站（导航右上角可看登录态） |
+| http://127.0.0.1:8899/account/ | 账号中心：登录 / 注册 / 当前账号 |
+| http://127.0.0.1:8899/admin/ | 后台管理（需管理员账号登录） |
+
+初始管理员：`2262997289@qq.com` / `7289HR_RedSun`（生产环境请务必改密）。
 
 ### 常见问题
 
@@ -361,6 +443,9 @@ node dev-server.js --api-port 8081    # 后端换了端口时对齐
 | 改了 `main.js` / `main.css` 却不生效 | 浏览器 HTTP 缓存。`dev-server.js` 已发送 `Cache-Control: no-store`；若仍异常请硬刷新（Ctrl+F5） |
 | 端口 8080 / 8899 被占用 | 后端用环境变量换端口（如 `SERVER_PORT=8081`），前端用 `--api-port 8081` 对齐；前端自身用 `--port` 换 |
 | 想要与线上完全一致的形态 | 用 Nginx 反向代理：`root` 指向仓库根目录、`proxy_pass` 指向 `127.0.0.1:8080`（见「部署说明」） |
+| 登录/注册接口报 502 | 账号服务没启动。`dev-server.js` 会打印 `[proxy error] ... → 账号系统(Rust)`；先 `cd backend-rust && cargo run --release` |
+| 重启服务后登录态全部失效 | 开发环境没设 `AUTH_JWT_SECRET`，每次启动都会随机生成密钥（正式部署务必固定它） |
+| 发验证码提示「操作过于频繁」 | 同邮箱 60 秒只能发一次、每小时 5 次；同 IP 每小时 20 次。可用 `AUTH_RL_*` 调整 |
 
 > 💡 `dev-server.js` 仅用于本地开发，部署时无需上传（线上由 Nginx 承担同样的职责）。
 
@@ -521,6 +606,64 @@ go run ./cmd/seed -file my_words.json -db guangxue.db
 
 ---
 
+## 账号系统（登录 / 注册）
+
+账号系统是一个**独立的 Rust 服务**（`backend-rust/`，axum + rusqlite，数据库 `auth.db`），
+只负责 `/api/auth/*`；Go 主后端继续负责词汇复习接口。线上 Nginx 与本地 `dev-server.js`
+都按前缀分流，两边形态一致。
+
+### 注册：邀请码 + 邮箱验证码，两道门
+
+1. `POST /api/auth/email-code`：先确认**邀请码有效**（未停用、未过期、没用完），
+   再给该邮箱发 6 位验证码（10 分钟有效、最多试 5 次，重发会让旧码立即失效）；
+2. `POST /api/auth/register`：邀请码 + 验证码 + 口令三样齐了才建号；邀请码用量在
+   **同一事务**里占位，所以同一枚码被并发使用时只有一个能成功。
+
+> 「先校验邀请码再发信」是刻意的：否则这个接口就成了任何人都能用来群发邮件的开放中继。
+> 邀请码由管理员生成：`POST /api/auth/admin/invites`（明文码只在生成响应里出现一次），
+> 或命令行 `cargo run --release --bin invite -- create --count 3`。
+
+### 多端同时登录
+
+每次登录都新建一行会话（浏览器各自拿到自己的 HttpOnly Cookie），端与端互不影响：
+
+- `GET /api/auth/sessions` 能看到全部在线端（设备名、IP、创建时间、最近活跃、是否当前端）；
+- `POST /api/auth/logout` 只登出当前端；`POST /api/auth/logout-all` 一键踢掉全部端
+  （带 `{"keep_current": true}` 时保留当前端）；
+- refresh 令牌**每次使用都轮换**；一枚已用过的令牌再次出现即判定重放，
+  **整条轮换链立即吊销**，窃取者与本人都会掉线重新登录。
+
+### 口令与登录态
+
+- 口令用 **Argon2id** 哈希（OWASP 推荐参数），库里只有 PHC 串，永不存明文；
+- 登录态放 **httpOnly Cookie**（JS 读不到，XSS 也偷不走）：access 15 分钟（HS256 JWT）、
+  refresh 30 天（库中只存 SHA-256 摘要）；
+- 受保护接口每次都会校验会话表，所以**登出与踢端是即时生效的**，不必等 access 过期；
+- 防爆破：账号连续失败 5 次锁 15 分钟（落库），另有 IP / 邮箱维度的滑动窗口限流；
+- 权限等级**只预留** `users.role`（`user`/`admin`）与 `users.status` 字段，尚未实现 RBAC。
+
+### 页面与门禁（前端怎么用这套接口）
+
+| 入口 | 做什么 |
+|------|--------|
+| `account/`（账号中心） | 登录 / 注册 / 当前账号三态合一：打开先问 `GET /api/auth/me`，已登录就显示账号信息 + **登录中的设备列表**（可「登出其他设备」或「退出登录」），未登录就显示登录与注册表单。注册表单里「获取验证码」带 60 秒倒计时；**本地开发会自动调 `/api/auth/dev/codes` 把验证码填进表单**（生产环境该接口不存在，静默忽略） |
+| `admin/`（后台） | 打开先 `checkAuth()` 问服务端：`role=admin` 才渲染后台，否则只显示登录表单（普通账号会明确提示「不是管理员」）。顶栏显示当前账号与「退出登录」 |
+| 站点导航右上角 | 显示登录态：未登录是「登录 / 注册」入口，已登录显示昵称（点击进账号中心）+「退出」按钮；沉浸模式下随导航栏一起隐藏 |
+
+三处都只做**界面层**的门禁：真正的权限必须由服务端判定。目前 Rust 账号服务的 `/api/auth/admin/*` 有 `role=admin` 准入，
+但 Go 侧的 `/api/words` 写接口**还没有鉴权中间件**，直接调接口仍能改数据 —— 补齐之前不要部署到公网。
+
+### 邮件
+
+默认 `AUTH_MAIL_MODE=log`：验证码只打到服务端日志（并可由开发调试接口读取），不发信。
+拿到邮箱 SMTP 授权码后配上 `AUTH_MAIL_MODE=smtp` 与 `AUTH_SMTP_*` 即可真实发送
+（QQ 邮箱要填**设置里生成的授权码**，不是登录密码）。
+
+> ⚠️ **上线必须走 HTTPS**：传输安全完全交给 TLS。浏览器端自己加密并不能防中间人
+> （攻击者可以篡改下发的 JS 与公钥），后端端口也不要直接暴露公网。
+
+---
+
 ## 部署说明
 
 ### 服务器目录结构
@@ -550,6 +693,16 @@ server {
         try_files $uri $uri/ /index.html;
     }
 
+    # 账号系统（Rust 认证服务）
+    # 放在 /api/ 之外独立分流；nginx 前缀匹配取最长者，所以 /api/auth/* 一定命中这里
+    location /api/auth/ {
+        proxy_pass http://localhost:8081;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
     # Go后端API
     # 注意：proxy_pass 末尾不要带 / —— 带斜杠时 nginx 会把匹配到的 /api/ 前缀替换掉，
     # /api/health 会被转发成 /health，与后端注册的 /api/health 不匹配而 404
@@ -577,13 +730,50 @@ go build -o server main.go
 ./server
 ```
 
+### 启动账号系统（Rust 认证服务）
+
+```bash
+cd backend-rust
+cargo build --release           # 产出 target/release/guangxue-auth.exe
+
+# 生产启动（务必显式提供密钥与管理员口令，见 backend-rust/README.md）
+APP_ENV=production \
+AUTH_JWT_SECRET='一串足够长的随机值' \
+AUTH_ADMIN_PASSWORD='管理员口令' \
+./target/release/guangxue-auth
+```
+
+> ⚠️ `APP_ENV=production` 时有两条硬性检查：必须显式提供 `AUTH_JWT_SECRET` 与
+> `AUTH_ADMIN_PASSWORD`，且调试接口 `AUTH_DEV_ENDPOINTS` 必须关闭 —— 不满足会直接启动失败，
+> 不允许带着开发默认值上线。
+
 ### 环境变量
+
+**Go 主后端**
 
 | 变量 | 说明 | 默认值 |
 |------|------|--------|
 | `SERVER_HOST` | 监听地址 | `0.0.0.0` |
 | `SERVER_PORT` | 端口 | `8080` |
 | `APP_ENV` | 运行环境 | `development` |
+
+**Rust 账号系统**（完整清单见 [`backend-rust/README.md`](backend-rust/README.md)）
+
+| 变量 | 说明 | 默认值 |
+|------|------|--------|
+| `APP_ENV` | `production` 时启用强校验 | `development` |
+| `AUTH_HOST` / `AUTH_PORT` | 监听地址与端口 | `127.0.0.1` / `8081` |
+| `AUTH_DB_PATH` | SQLite 文件 | `auth.db` |
+| `AUTH_JWT_SECRET` | 令牌签名密钥（生产必填） | 开发随机生成 |
+| `AUTH_ACCESS_TTL_SECONDS` / `AUTH_REFRESH_TTL_DAYS` | 会话有效期 | `900` / `30` |
+| `AUTH_COOKIE_SECURE` | Cookie 是否带 Secure | 随 `APP_ENV` |
+| `AUTH_ALLOWED_ORIGINS` | CSRF 来源白名单 | `http://127.0.0.1:8899,http://localhost:8899` |
+| `AUTH_MAIL_MODE` | `log` 只打日志 / `smtp` 真发信 | `log` |
+| `AUTH_SMTP_*` | SMTP 主机/端口/账号/授权码/发件人/加密方式 | — |
+| `AUTH_ADMIN_EMAIL` / `AUTH_ADMIN_PASSWORD` | 初始管理员 | `2262997289@qq.com` / 开发默认口令 |
+| `AUTH_SEED_ADMIN` | 启动时确保管理员存在（幂等） | 随 `APP_ENV` |
+| `AUTH_ARGON2_M_COST` / `_T_COST` / `_P_COST` | 口令哈希参数 | `19456` / `2` / `1` |
+| `AUTH_RL_*` / `AUTH_LOCK_THRESHOLD` / `AUTH_LOCK_MINUTES` | 限流与锁定 | 见 `.env.example` |
 
 ---
 
@@ -623,6 +813,17 @@ go build -o server main.go
 - [x] 例句中文翻译（词条级 `example_translation` + 释义级 `senses[].translation`，后台可编辑、批量导入第 5 列可带）
 - [x] 复习统计面板（今日进度、连续天数、记忆保持率、本轮进度条）
 - [x] 英语种子词表与导入命令（`backend-go/cmd/seed`，100 词）
+- [x] **账号系统（Rust 认证服务）**：邮箱注册（管理员邀请码 + 邮箱验证码）、多端同时登录、
+      令牌轮换与重放检测、会话管理、邀请码管理（`backend-rust/`）
+- [x] 账号系统安全基线：Argon2id 口令哈希、httpOnly Cookie 登录态、CSRF 来源校验、
+      账号锁定与限流、审计日志（不含口令与验证码明文）
+- [x] 账号系统与 Go 后端按前缀分流（`/api/auth/*` → 8081），本地 `dev-server.js` 与线上 Nginx 同形态
+- [x] 账号中心页面 `account/`（登录 / 注册 / 当前账号 / 登录中的设备，本地开发自动回填验证码）
+- [x] 后台登录门禁（`admin/` 只放行 `role=admin`）与站点导航栏登录态（含退出登录）
+- [ ] 权限等级系统（RBAC）—— 目前只预留 `users.role` / `users.status` 字段，前端门禁只认 `admin`
+- [ ] 词条写接口鉴权（Go 侧用同一 JWT 密钥验签 + 查 `auth.db`）
+- [ ] 用户与复习数据绑定（`word_reviews.user_id`）、每日配额从 localStorage 迁到服务端
+- [ ] 改密 / 找回密码 / 多方式登录（`user_identities` 表已预留）
 - [ ] 复习页面 UI（进阶：完整词义卡交互、统计曲线图表等）
 - [ ] FSRS 参数优化（基于 review_logs 的 compute_parameters）
 

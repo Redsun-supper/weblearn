@@ -5,8 +5,12 @@
   这是一个**独立页面**，与学生站（index.html）互不影响：
   不走 main.js 的导航，也不使用学科页的 localStorage 缓存。
 
-  当前状态：尚无登录系统，任何人可访问。因此**请勿把 /admin/ 暴露到公网**，
-  等接入登录后再部署。预留位置见本文件中的 #adminAuthGate 与 admin.js 的 checkAuth()。
+  登录门禁：账号系统由独立的 Rust 认证服务提供（/api/auth/*，见 backend-rust/README.md）。
+  打开本页时 admin.js 会先问 GET /api/auth/me：已登录且 role=admin 才渲染后台，
+  否则只显示 #adminAuthGate 里的登录表单。
+
+  ⚠️ 这只是界面层的门禁：Go 侧的 /api/words 等接口**目前还没有服务端鉴权**，
+     直接调接口就能改数据（下一期补中间件）。在此之前仍不要部署到公网。
 -->
 <html lang="zh-CN">
 <head>
@@ -20,19 +24,34 @@
     <link rel="stylesheet" href="admin.css">
 </head>
 <body>
-    <!-- ===================== 登录鉴权（预留，当前未启用） ===================== -->
-    <!-- 目前 checkAuth() 直接放行，所以本区域保持隐藏。 -->
-    <!-- 将来接入登录后：由 admin.js 在鉴权失败时把它显示出来，并停止渲染后台内容。 -->
-    <div class="admin-gate" id="adminAuthGate" style="display:none;">
-        <div class="admin-gate-box">
-            <h2>需要登录</h2>
-            <p>登录功能尚未实现。请先在 <code>admin/admin.js</code> 的 <code>checkAuth()</code>
-               中接入会话校验，或在本地使用后台。</p>
-        </div>
+    <!-- ===================== 登录门禁 ===================== -->
+    <!-- 默认可见：校验通过前不渲染后台内容，避免"先看到界面再被踢出去" -->
+    <div class="admin-gate" id="adminAuthGate">
+        <form class="admin-gate-box" id="adminLoginForm" novalidate>
+            <h2>广学 · 后台登录</h2>
+            <p class="admin-gate-tip">
+                请使用管理员账号登录。账号由 Rust 认证服务提供
+                （<code>/api/auth/*</code>）。
+            </p>
+            <div class="admin-field">
+                <label for="gateEmail">邮箱</label>
+                <input type="email" id="gateEmail" autocomplete="username" required>
+            </div>
+            <div class="admin-field">
+                <label for="gatePassword">口令</label>
+                <input type="password" id="gatePassword" autocomplete="current-password" required>
+            </div>
+            <p class="admin-gate-msg" id="gateMsg" role="status"></p>
+            <button class="admin-btn admin-btn-primary admin-gate-submit" type="submit" id="gateSubmit">登录</button>
+            <p class="admin-gate-foot">
+                还没有账号？<a href="../account/">去账号中心注册</a>（需要管理员派发的邀请码）
+            </p>
+        </form>
     </div>
 
     <!-- ===================== 后台主布局 ===================== -->
-    <div class="admin-layout" id="adminLayout">
+    <!-- 默认隐藏，由 admin.js 校验登录态通过后显示 -->
+    <div class="admin-layout" id="adminLayout" style="display:none;">
         <!-- 左侧栏：品牌 + 学科导航（由 admin.js 依据注册表渲染） -->
         <aside class="admin-sidebar">
             <div class="admin-brand">
@@ -52,13 +71,17 @@
                 <div class="admin-topbar-right">
                     <!-- 后端连通性指示：调用 /api/health -->
                     <span class="admin-backend-status" id="backendStatus">检测后端…</span>
+                    <!-- 当前登录账号（由 admin.js 填充） -->
                     <span class="admin-user" id="adminUser">未登录</span>
+                    <button class="admin-btn admin-btn-sm" type="button" id="adminLogout" style="display:none;">退出登录</button>
                 </div>
             </header>
 
-            <!-- 安全提示：接入登录前不要公网部署 -->
+            <!-- 安全提示：界面门禁已接入，但服务端鉴权还没有，公网部署仍有风险 -->
             <div class="admin-banner" id="securityBanner">
-                ⚠️ 当前后台没有登录校验，任何能访问该地址的人都能修改词条。接入登录前请勿部署到公网。
+                🔐 后台已接入登录门禁（Rust 账号系统的会话）。但 <code>/api/words</code> 等
+                Go 侧接口目前仍<strong>没有服务端鉴权</strong>，直接调接口就能改数据 ——
+                在补齐后端鉴权之前，请勿把该站点部署到公网。
             </div>
 
             <section class="admin-content" id="adminContent"></section>

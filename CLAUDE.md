@@ -13,10 +13,12 @@
 |----------|------|
 | 前端（根目录） | `index.html`（主页）、`main.css`（全站样式）、`main.js`（导航与缓存）、`dev-server.js`（本地开发服务器）、`image/`、`pages/`（8 个占位学科页） |
 | 学科模块（`modules/<学科>/`） | 学科自己的页面 / 样式 / 逻辑 / 引擎 / 后台模块；目前只有 `modules/english/` |
-| 通用后台（`admin/`） | 独立入口页（`/admin/`）：布局、侧栏导航、hash 路由、通用组件、登录鉴权预留位 |
+| 通用后台（`admin/`） | 独立入口页（`/admin/`）：布局、侧栏导航、hash 路由、通用组件、**登录门禁（只放行 `role=admin`）** |
+| 账号中心（`account/`） | 独立入口页（`/account/`）：登录 / 注册 / 当前账号 + 登录中的设备；登录态是 httpOnly Cookie，页面靠 `GET /api/auth/me` 判断 |
 | 后端（`backend-go/`） | Go 1.21 + Gin + **GORM/SQLite**（`database/`、`handlers/review_handlers.go`），入口 `main.go` |
+| 账号系统（`backend-rust/`） | 独立 Rust 认证服务 `guangxue-auth`（axum + rusqlite，库 `auth.db`，端口 8081）：邮箱注册（邀请码 + 验证码）、多端登录、令牌轮换、会话与邀请码管理；**只处理 `/api/auth/*`** |
 | 复习引擎（`modules/english/engine/`） | Rust/WASM crate `guangxue_wasm`：`session.rs`（会话编排）+ `fsrs_engine.rs`（FSRS 调度）+ `randomizer.rs`（随机器）+ `wordlist.rs`（词表解析）+ `card_view.rs`（词性拆分 / 例句高亮切分），浏览器内运行 |
-| 部署 | Nginx 反代：`/` → 前端静态文件，`/api/` → `localhost:8080` |
+| 部署 | Nginx 反代：`/` → 前端静态文件，`/api/auth/` → `localhost:8081`（Rust），`/api/` → `localhost:8080`（Go） |
 
 ### 复习引擎（词汇间隔重复）
 - **职责边界（重要）**：`modules/english/english.js` 只做 DOM 渲染 / `fetch` / `localStorage` / 语音；**队列编排、游标、日期换算、FSRS 计算、进度统计全部在 `engine/`（Rust）里**，JS 不再保存卡片数组。
@@ -55,11 +57,13 @@
 - **学科页路径**：已有独立模块的学科写成 `modules/<学科>/<学科>.html`（当前仅英语）；其余 8 门仍是 `pages/<学科>.html` 占位（`<p>敬请期待</p>`）。
 - **学科模块约定**：放在 `modules/<学科>/` 下并导出初始化函数，`main.js` 的 `initSubjectModule()` 按需动态 `import()`；**学科逻辑不得回流到 `main.js`**。
 - 本地起站点用仓库根目录的 `dev-server.js`（Node 内置模块实现，静态文件 + `/api` 同源代理，等价线上 Nginx 形态）；不能直接双击 `index.html`（`file://` 下 `/api` 与 WASM 模块都会失败）。
+- **导航右上角登录态**（`#navAccount`，`main.css` 的 `.nav-account`）：由 `main.js` 的 `renderAccountArea()` 问一次 `GET /api/auth/me` 后填充——已登录显示昵称（点击进 `account/`）+「退出」，未登录显示「登录 / 注册」；账号服务没起来时静默降级为登录入口。它是 `.rectangle` 的子元素，所以沉浸模式下随导航栏一起隐藏；`.nav-items` 的 `right` 已改为 `190px` 给它让位。
 
 ### 管理后台
 - **入口**：`admin/index.html`（本地 `/admin/`）。与学生站**完全独立**：不走 `main.js`、不使用学科页的 localStorage 缓存。
 - **约定**：学科后台放 `modules/<学科>/admin/`，导出 `mount(container, ctx)`（可选 `unmount()`），再到 `admin/admin.js` 的 `SUBJECT_ADMINS` 登记一行；框架用动态 `import()` 按需加载。通用能力通过 `ctx` 注入：`api` / `toast` / `confirm` / `el` / `escapeHtml` / `setTitle`。
-- ⚠️ **登录未实现**：前端预留位是 `checkAuth()` 与 `#adminAuthGate`，**后端也还没有鉴权中间件**；接入登录必须两端一起做，只拦前端挡不住直接调接口的人。**在此之前不要把 `/admin/` 部署到公网**（页面上常驻提示条）。
+- **登录门禁已接入界面层**：`admin.js` 的 `checkAuth()` 已改为**异步**（调 `GET /api/auth/me`），`role=admin` 才渲染后台，否则只显示 `#adminAuthGate` 里的登录表单；顶栏 `#adminUser` 显示当前账号 + 退出登录。⚠️ 改这块要注意：`DOMContentLoaded` 里必须等 `checkAuth().then(...)` 再 `renderNav/route`。
+- ⚠️ **服务端鉴权仍未补**：Go 侧 `/api/words` 写接口任何人都能直接调（`curl -X PUT /api/words/1` 就能改数据），**在补中间件之前不要把 `/admin/` 或站点部署到公网**（页面上常驻提示条写的就是这件事）。下一期用同一 `AUTH_JWT_SECRET` 验签 + 查 `auth.db` 会话。
 - **英语后台**（`modules/english/admin/english-admin.js`）：词条列表（搜索 / 词书 / 单元 / 分页）、增删改查、**多释义编辑**（一个词性一块，每块可带自己的例句与译文；全空的行提交前会被丢掉，后端 `normalizeSenses` 再清一遍）、批量导入（粘贴 → `engine` 的 `parse_word_list` 解析 → 预览 → 前端每 200 条分批 POST）。导入字段按位置对应 **单词 / 音标 / 释义 / 例句 / 例句翻译**，多出的忽略；导入只填单条释义，多释义在编辑页补。
 - **词条接口**：`GET/POST /api/words`、`GET/PUT/DELETE /api/words/:id`、`GET /api/word-options`。
   - `PUT` 是全量更新；改名撞车返回 409。
@@ -72,19 +76,32 @@
 
 ### 后端要点
 - API 前缀 `/api`：`/health`、`/hello`、`/user/*`、`/data/*`。
-- 用户/数据相关 handler 目前多为 TODO 占位（返回固定 JSON）。
+- 用户/数据相关 handler 目前多为 TODO 占位（返回固定 JSON）。⚠️ `/api/user/*` 与账号系统无关（真正的账号接口是 Rust 侧的 `/api/auth/me`），且**Go 侧目前没有任何鉴权中间件**，`/api/words` 的写接口是公开的。
 - 环境变量：`SERVER_HOST`（默认 `0.0.0.0`）、`SERVER_PORT`（默认 `8080`）、`APP_ENV`（默认 `development`）。
+
+### 账号系统要点（`backend-rust/`）
+- **两个后端，按前缀分流**：`/api/auth/*` → Rust 账号服务（8081），其余 `/api/*` → Go（8080）。本地由 `dev-server.js` 分流（`--auth-port` 对齐），线上由 Nginx 分流。改任一侧端口时两边都要改。
+- **两个库，各管各的**：账号库是 `auth.db`（Rust 独占，表结构见 `migrations/0001_init.sql`），复习库是 `guangxue.db`（Go/GORM 管）。不要跨服务写对方的库；`users.id` 只作软引用。
+- **分层**：`core/`（纯逻辑，注入时钟，全部带单测）→ `store/`（单连接 + 事务 + SQL）→ `service.rs`（业务规则，HTTP 与 CLI 共用）→ `http/`（axum 路由 / Cookie / CSRF / 提取器）。
+- ⚠️ 两条踩过的坑：① `store::write` 的约定是「闭包返回 `Err` 就回滚」，**业务拒绝要用 `TxOutcome::Reject`**（否则验证码试错次数会被回滚掉，等于没有防爆破）；② **别在持有数据库锁时做 Argon2 或发信**（连接全局串行，会把所有请求堵住）。
+- 响应沿用 `{code, message, data}` 信封，失败多一个 `error` 字段；鉴权一律用 `AuthUser` / `AdminUser` 提取器，别在 handler 里自己解析 Cookie。
+- 权限等级**只预留** `users.role` / `users.status`，还没写判定逻辑；唯一例外是邀请码管理接口的 `role == 'admin'` 准入。
+- 验证方式：`cargo test`（83 项）→ `cargo build --release` → `pwsh scripts/smoke.ps1`（24 项端到端，直连或经 8899 代理都行）。
+- **前端入口**：账号中心 `account/`（登录 / 注册 / 当前账号 + 设备列表；本地开发会自动从 `/api/auth/dev/codes` 回填验证码）、后台门禁 `admin/`、站点导航右上角登录态。三处都只做界面层门禁，服务端判定仍是权威。
+- ⚠️ 本地没设 `AUTH_JWT_SECRET` 时每次重启都会随机生成密钥（旧令牌全失效）；`APP_ENV=production` 下必须显式提供它和管理员口令，并关闭 `AUTH_DEV_ENDPOINTS`，否则启动失败。
 
 ---
 
 ## 二、硬性边界（必须遵守）
 
 1. **备份目录只读**：`备份/`（含 `备份1/`、`备份2/`）是存档副本，**永不修改、永不删除、永不作为建设对象**。读取/列出项目文件时一律跳过 `备份` 目录。
+1a. **彩蛋目录默认不读**：`easter-egg/` 内是纯娱乐独立小游戏（如 `泡泡连爆.html`），**单文件自包含、不与项目任何其它文件/逻辑互动**。除非用户明确点名（“彩蛋”“easter-egg”“泡泡连爆”），否则默认**不读取、不列出、不作为建设对象**，避免干扰主线学习流程。
 2. **`pages.zip`** 为二进制备份包，不作为文本读取、不修改、不展开，除非用户明确要求检查。
 3. **`console.log('FAIL'`** 是一个**空文件**（0 字节），系误用重定向产生的残留：**不是合法代码，不要把它当代码，也不要试图“修复”它**；除非用户确认，不要删除，也不要修改。
 4. **`go.sum` 已生成**：后端已有 `go.sum`（GORM + glebarez/sqlite 等依赖已通过 `go mod tidy` 固化）；新增依赖时用 `go mod tidy` 同步即可。
 5. **`image/avatar.png`**：当前视觉增强关闭，无法查看绘制内容；按元信息（WebP，约 1330×1146）处理即可，如需主题替换先问用户。
 6. **本机工具链**：Go 已装为便携版 `C:\Users\22629\go-portable\go\bin\go.exe`（go1.27.1，已 `go env -w GOPROXY=https://goproxy.cn,direct GOSUMDB=off`，直接 `go build` 即可）；Rust `cargo 1.97` 且 `wasm32-unknown-unknown` target 已装；wasm-bindgen CLI 在 `C:\Users\22629\.local\bin\wasm-bindgen-0.2.128-*\wasm-bindgen.exe`（须与 Cargo.toml 的 wasm-bindgen 版本一致 0.2.128）。
+   ✅ **原生（宿主）Rust 也能编译链接**：host 目标为 `x86_64-pc-windows-gnu`，mingw gcc/ar 已在 PATH 上，所以 `backend-rust/` 用 `rusqlite` 的 `bundled` 特性（现场编译 sqlite3.c）可以正常 `cargo test` / `cargo build --release`。链接时的 `corrupt .drectve at end of def file` 是 mingw 的无害告警。
    ✅ **宿主 `cargo test` 现在可以运行**（2026-09-13 实测 118 个测试通过；本文档此前记录的「缺 mingw `as`/MSVC SDK 无法链接」已不再成立）。完整验证路径：`cargo test` → `cargo check --target wasm32-unknown-unknown` → `cargo build --target wasm32-unknown-unknown --release` → `wasm-bindgen` 生成 `pkg/` → 浏览器端到端。
    ⚠️ 但 `JsValue` 在非 wasm32 目标上未实现（调用即 `panic: function not implemented on non-wasm32 targets`，无法 unwinding 会直接 abort）：**纯计算层不要碰 `JsValue`**，把它留在 wasm 导出方法的边界上。
 7. **`word_reviews` 行是懒创建**：单词由 `POST /api/words` 写入 `words` 表；首次提交复习时才创建对应 `word_reviews` 行。`/api/reviews/new` = 无复习行的词。
@@ -107,6 +124,21 @@
 2. 涉及后端 API 改动需同时更新 `README.md`（根目录与 `backend-go/`）中的接口/环境变量说明。
 3. 修改文件后，在回复中给出**主要/变更文件的完整路径**（格式化为内联代码）。
 4. 若对需求有歧义，先确认再动手，不要擅自大改结构。
+5. **Git 提交标注（重要）**：凡是由 **DeepSeek Harness**（AI 助手）执行的 `git commit`，提交信息末尾必须带一行归属尾注：
+
+   ```
+   <类型>: <一句话简述>
+
+   <正文，可选>
+
+   Committed-by: DeepSeek Harness
+   ```
+
+   - 位置：**空一行之后、作为提交信息的最后一行**（Git trailer 形式，便于 `git log --grep` 检索）。
+   - **不改动仓库的 `user.name` / `user.email`**（本仓库为 `HR_RedSun <2262997289@qq.com>`），也**不要**臆造 `Co-authored-by` 的邮箱；署名归属只用上面这一行。
+   - 多行提交信息用 `-m "标题" -m "正文" -m "Committed-by: DeepSeek Harness"` 或 heredoc 传入，不要用会破坏编码的管道写法。
+   - 该约定只约束**由助手发起的提交**；用户手工提交不受影响。
+   - 执行提交/推送后，在回复里**明确说明已提交并推送**，并给出分支名与提交号。
 
 ---
 

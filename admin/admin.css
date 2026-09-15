@@ -21,7 +21,7 @@ body {
     background-color: #f5f6f8;
 }
 
-/* ===================== 登录鉴权遮罩（预留） ===================== */
+/* ===================== 登录门禁 ===================== */
 
 .admin-gate {
     position: fixed;
@@ -30,21 +30,31 @@ body {
     display: flex;
     align-items: center;
     justify-content: center;
+    padding: 20px;
     background-color: #f5f6f8;
 }
 
 .admin-gate-box {
+    width: 100%;
     max-width: 420px;
     padding: 28px;
     border: 1px solid #e0e0e0;
     border-radius: 12px;
     background-color: #ffffff;
-    text-align: center;
+    box-shadow: 0 10px 30px rgba(38, 50, 56, 0.08);
 }
 
 .admin-gate-box h2 {
     margin-bottom: 10px;
     font-size: 20px;
+    text-align: center;
+}
+
+.admin-gate-tip {
+    margin-bottom: 18px;
+    color: #78909c;
+    font-size: 13px;
+    text-align: center;
 }
 
 .admin-gate-box code {
@@ -52,6 +62,40 @@ body {
     border-radius: 4px;
     background-color: #eceff1;
     font-size: 12px;
+}
+
+.admin-gate-msg {
+    min-height: 20px;
+    margin-bottom: 6px;
+    font-size: 13px;
+    color: #607d8b;
+}
+
+.admin-gate-msg.is-error {
+    color: #c62828;
+}
+
+.admin-gate-msg.is-ok {
+    color: #2e7d32;
+}
+
+.admin-gate-submit {
+    display: block;
+    width: 100%;
+    margin-top: 4px;
+    padding: 9px 14px;
+}
+
+.admin-gate-foot {
+    margin-top: 14px;
+    color: #90a4ae;
+    font-size: 12px;
+    text-align: center;
+}
+
+.admin-gate-foot a {
+    color: #1565c0;
+    text-decoration: none;
 }
 
 /* ===================== 主布局 ===================== */
@@ -275,6 +319,8 @@ body {
 
 .admin-field input[type="text"],
 .admin-field input[type="number"],
+.admin-field input[type="email"],
+.admin-field input[type="password"],
 .admin-field select,
 .admin-field textarea {
     width: 100%;

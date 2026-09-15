@@ -1,7 +1,7 @@
 // 广学 · 后台管理框架（通用骨架）
 //
 // 这是一个**独立入口**，与学生站互不影响：不走 main.js 的导航，也不使用学科页的
-// localStorage 缓存。本文件只做「通用」的事——布局、侧栏导航、hash 路由、
+// localStorage 缓存。本文件只做「通用」的事——登录门禁、布局、侧栏导航、hash 路由、
 // 学科后台模块的加载与挂载、通用工具（请求 / 提示 / 确认框 / DOM 构建）。
 //
 // ============================ 如何新增一个学科后台 ============================
@@ -39,33 +39,154 @@ var state = {
 // ===================== 启动 =====================
 
 document.addEventListener('DOMContentLoaded', function () {
-    // 鉴权预留：当前直接放行；接入登录后返回 false 即停止渲染
-    if (!checkAuth()) return;
-
-    renderNav();
-    checkBackend();
-    route();
-    window.addEventListener('hashchange', route);
+    // 先鉴权：问服务端「我是谁」。未登录（或不是管理员）只显示登录表单，不渲染后台。
+    // ⚠️ checkAuth() 是**异步**的（要等一次网络请求），所以渲染必须放进 then 里，
+    //    不能在它后面直接写 renderNav()。
+    checkAuth().then(function (authed) {
+        if (!authed) return;
+        renderNav();
+        checkBackend();
+        route();
+        window.addEventListener('hashchange', route);
+    });
+    bindGate();
 });
 
-// ===================== 登录鉴权（预留，当前未启用） =====================
+// ===================== 登录鉴权 =====================
 
-// 现在没有登录系统，所以直接放行。
-// 将来接入登录只需改这一处：有会话（cookie / token）则返回 true，
-// 否则显示 #adminAuthGate 并返回 false。
+// 账号系统是独立的 Rust 认证服务（`/api/auth/*`，见 backend-rust/README.md）：
+//     GET  /api/auth/me      → 200 已登录（响应里有 user，含 role）/ 401 未登录
+//     POST /api/auth/login   → 登录，服务端下发 httpOnly Cookie
+//     POST /api/auth/logout  → 只登出当前这个端
+// 登录态是 httpOnly Cookie，JS 读不到，所以「有没有登录」只能问服务端。
 //
-// ⚠️ 需要注意：真正安全的后台必须在**服务端**校验（后端目前也没有鉴权中间件）。
-// 只靠前端拦截挡不住直接调接口的人，所以登录实现时后端要一起做。
-function checkAuth() {
-    var authed = true; // TODO(鉴权): 接入登录后改为真实会话校验
-    if (!authed) {
-        var gate = document.getElementById('adminAuthGate');
-        var layout = document.getElementById('adminLayout');
-        if (gate) gate.style.display = 'flex';
-        if (layout) layout.style.display = 'none';
-        return false;
+// ⚠️ 这里只是**界面层**的门禁：真正安全的后台必须在服务端校验。
+//    目前 Go 侧的 /api/words 等接口还没有鉴权中间件（下一期补），
+//    所以在补齐之前仍不要把 /admin/ 暴露到公网。
+var CURRENT_USER = null;
+
+// 带会话的请求：自动同源 Cookie，不抛异常，把状态码与响应体交给调用方
+function apiAuth(path, options) {
+    var opts = options || {};
+    var init = { method: opts.method || 'GET', credentials: 'same-origin', headers: {} };
+    if (opts.body !== undefined) {
+        init.headers['Content-Type'] = 'application/json';
+        init.body = JSON.stringify(opts.body);
     }
-    return true;
+    return fetch(path, init).then(function (res) {
+        return res.text().then(function (text) {
+            var data = null;
+            try {
+                data = text ? JSON.parse(text) : null;
+            } catch (e) {
+                data = null; // 非 JSON（例如网关 502 页面）
+            }
+            return { status: res.status, data: data };
+        });
+    }).catch(function (err) {
+        return { status: 0, data: null, networkError: String(err) };
+    });
+}
+
+// 返回 Promise<boolean>：true = 已登录且是管理员，可以渲染后台
+function checkAuth() {
+    return apiAuth('/api/auth/me').then(function (res) {
+        var user = (res.data && res.data.data) ? res.data.data.user : null;
+        if (res.status === 200 && user && user.role === 'admin') {
+            CURRENT_USER = user;
+            showAdminLayout(user);
+            return true;
+        }
+        showGate(user, res);
+        return false;
+    });
+}
+
+function showAdminLayout(user) {
+    var gate = document.getElementById('adminAuthGate');
+    var layout = document.getElementById('adminLayout');
+    if (gate) gate.style.display = 'none';
+    if (layout) layout.style.display = 'flex';
+    var who = document.getElementById('adminUser');
+    if (who) who.textContent = user.email + ' · 管理员';
+    var logout = document.getElementById('adminLogout');
+    if (logout) logout.style.display = 'inline-block';
+}
+
+function showGate(user, res) {
+    var gate = document.getElementById('adminAuthGate');
+    var layout = document.getElementById('adminLayout');
+    if (gate) gate.style.display = 'flex';
+    if (layout) layout.style.display = 'none';
+    var who = document.getElementById('adminUser');
+    if (who) who.textContent = '未登录';
+
+    if (user && user.role !== 'admin') {
+        // 已登录但不是管理员：这类账号能进学生站，但进不了后台
+        setGateMsg('当前账号 ' + user.email + ' 不是管理员（role=' + user.role + '），无法进入后台。', 'error');
+    } else if (res && res.networkError) {
+        setGateMsg('无法连接账号服务，请确认它已启动（backend-rust: cargo run --release）。', 'error');
+    } else {
+        setGateMsg('', '');
+    }
+}
+
+function setGateMsg(text, kind) {
+    var node = document.getElementById('gateMsg');
+    if (!node) return;
+    node.textContent = text || '';
+    node.className = 'admin-gate-msg' + (kind ? ' is-' + kind : '');
+}
+
+// 绑定登录表单与退出按钮
+function bindGate() {
+    var form = document.getElementById('adminLoginForm');
+    if (form) {
+        form.addEventListener('submit', function (event) {
+            event.preventDefault();
+            var emailNode = document.getElementById('gateEmail');
+            var passwordNode = document.getElementById('gatePassword');
+            var submit = document.getElementById('gateSubmit');
+            var email = emailNode ? String(emailNode.value || '').trim() : '';
+            var password = passwordNode ? passwordNode.value : '';
+            if (!email || !password) {
+                setGateMsg('请填写邮箱与口令', 'error');
+                return;
+            }
+            setGateMsg('正在登录…');
+            if (submit) submit.disabled = true;
+
+            apiAuth('/api/auth/login', { method: 'POST', body: { email: email, password: password } })
+                .then(function (res) {
+                    if (submit) submit.disabled = false;
+                    if (res.status !== 200) {
+                        var msg = (res.data && res.data.message) ? res.data.message
+                            : (res.networkError ? '无法连接账号服务' : '登录失败');
+                        setGateMsg(msg, 'error');
+                        if (passwordNode) passwordNode.value = '';
+                        return;
+                    }
+                    var user = (res.data.data && res.data.data.user) ? res.data.data.user : null;
+                    if (!user || user.role !== 'admin') {
+                        setGateMsg('该账号不是管理员（role=' + ((user && user.role) || '未知') + '），无法进入后台。', 'error');
+                        return;
+                    }
+                    setGateMsg('登录成功，正在进入…', 'ok');
+                    // 直接重载最省事：布局、导航、hash 路由都会按已登录状态重新初始化
+                    location.reload();
+                });
+        });
+    }
+
+    var logout = document.getElementById('adminLogout');
+    if (logout) {
+        logout.addEventListener('click', function () {
+            logout.disabled = true;
+            apiAuth('/api/auth/logout', { method: 'POST', body: {} }).then(function () {
+                location.reload();
+            });
+        });
+    }
 }
 
 // ===================== 布局与路由 =====================
@@ -206,7 +327,7 @@ function renderEmptyState() {
             el('div', { text: '1. 在 modules/<学科>/admin/ 下写模块，导出 mount(container, ctx)' }),
             el('div', { text: '2. 在 admin/admin.js 的 SUBJECT_ADMINS 注册表里登记一行' })
         ]),
-        el('div', { class: 'admin-hint', text: '登录鉴权的位置已预留（checkAuth() + #adminAuthGate），当前未启用。' })
+        el('div', { class: 'admin-hint', text: '登录门禁已接入（admin.js 的 checkAuth() 会先问 /api/auth/me）。' })
     ]);
     container.appendChild(box);
 }
