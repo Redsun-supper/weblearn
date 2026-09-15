@@ -80,12 +80,27 @@ const MIME = {
   '.txt': 'text/plain; charset=utf-8'
 };
 
-// 统一响应出口：开发期一律 no-store，避免「改了代码浏览器还跑旧文件」
-function send(res, code, type, body) {
-  res.writeHead(code, {
+// 静态资源的缓存策略
+//
+// 开发期要同时满足两件事：改了代码马上生效、浏览器又能真的缓存住（否则每次导航
+// 都要把整站重新下载一遍，个人中心那张 2.6MB 头像也是每次重下，首页的预取更是
+// 永远命中不了缓存）。所以按「这类文件会不会边写边看」分开：
+//   · 代码类（html / js / css / json）：no-cache + ETag —— 每次带条件请求来问，
+//     没改回 304（不传正文，几毫秒），改了立刻就是新文件。
+//   · 图片 / 字体 / wasm（不会边改边刷新）：直接给一天强缓存。
+const CODE_EXT = new Set(['.html', '.js', '.mjs', '.css', '.json', '.txt', '.map']);
+
+// 弱 ETag：文件大小 + 修改时间（毫秒），够本地开发用了
+function etagOf(stat) {
+  return 'W/"' + stat.size.toString(16) + '-' + Math.floor(stat.mtimeMs).toString(16) + '"';
+}
+
+// 统一响应出口。默认仍是 no-store（接口代理等动态内容），静态文件会显式传 headers
+function send(res, code, type, body, headers) {
+  res.writeHead(code, Object.assign({
     'Content-Type': type,
     'Cache-Control': 'no-store, must-revalidate'
-  });
+  }, headers || {}));
   res.end(body);
 }
 
@@ -131,12 +146,34 @@ function serveStatic(req, res) {
     return send(res, 403, 'text/plain; charset=utf-8', '403 禁止访问');
   }
 
-  fs.readFile(filePath, (err, buf) => {
-    if (err) {
+  const ext = path.extname(filePath).toLowerCase();
+  const type = MIME[ext] || 'application/octet-stream';
+
+  fs.stat(filePath, (statErr, stat) => {
+    if (statErr || !stat.isFile()) {
       return send(res, 404, 'text/plain; charset=utf-8', '404 未找到: ' + rel);
     }
-    const type = MIME[path.extname(filePath).toLowerCase()] || 'application/octet-stream';
-    send(res, 200, type, buf);
+
+    const etag = etagOf(stat);
+    const headers = {
+      'ETag': etag,
+      'Last-Modified': stat.mtime.toUTCString(),
+      // 策略见文件上方「静态资源的缓存策略」注释
+      'Cache-Control': CODE_EXT.has(ext) ? 'no-cache' : 'public, max-age=86400'
+    };
+
+    // 条件请求命中：回 304，正文一点都不传（这就是「缓存住 + 不霉」的关键）
+    if (req.headers['if-none-match'] === etag) {
+      res.writeHead(304, headers);
+      return res.end();
+    }
+
+    fs.readFile(filePath, (err, buf) => {
+      if (err) {
+        return send(res, 404, 'text/plain; charset=utf-8', '404 未找到: ' + rel);
+      }
+      send(res, 200, type, buf, headers);
+    });
   });
 }
 

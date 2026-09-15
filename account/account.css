@@ -135,7 +135,11 @@ body.acc-page {
     display: flex;
     align-items: center;
     gap: 10px;
-    padding: 14px 24px;
+    /* 高 100px（与首页导航栏同高）+ 左右 30px 内边距：
+       这样「返回主页面」按钮正好落在 (30, 32)，也就是首页头像形变结束时的落点。
+       改高度/内边距时，main.js 的 MORPH_TARGET 要一起改。 */
+    height: 100px;
+    padding: 0 30px;
 }
 
 .acc-brand {
@@ -153,20 +157,22 @@ body.acc-page {
     font-size: 12px;
 }
 
-/* 左上角的「返回主页面」按钮：半透明胶囊，压在渐变底上（hover/按下都有反馈） */
+/* 左上角的「返回主页面」按钮：半透明胶囊，压在渐变底上（hover/按下都有反馈）。
+   高度固定 36px、宽度由文案撑开 —— 这两个数字要和首页头像形变的落点一致。 */
 .acc-home-btn {
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    margin-left: 6px;
-    padding: 6px 14px;
+    height: 36px;
+    padding: 0 14px;
     border: 1px solid rgba(255, 255, 255, 0.32);
     border-radius: 999px;
     background-color: rgba(255, 255, 255, 0.12);
     color: #ffffff;
     font-size: 13px;
-    line-height: 1.6;
+    line-height: 1;
     text-decoration: none;
+    white-space: nowrap;
     transition: background-color 0.2s, border-color 0.2s, transform 0.12s;
 }
 

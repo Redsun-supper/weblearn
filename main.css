@@ -114,12 +114,54 @@ body {
     display: block;
 }
 
-/* 过场开始时给头像本体加这个类：一边缩小一边淡出，做出「被吸进那个圆里」的手感
-   （main.js 的 playAvatarZoom 挂上，换页后自然消失；bfcache 恢复时会被摘掉） */
-.rounded-square.is-zoom-start {
-    transform: translateY(-50%) scale(0.72);
-    opacity: 0.5;
-    transition: transform 0.46s ease, opacity 0.46s ease;
+/* 过场开始时给头像本体加这个类：它会长成个人中心左上角那颗「返回主页面」胶囊。
+   位置与尺寸由 main.js 的行内样式给出（目标值见那边的 MORPH_TARGET），
+   这里只定义「长成什么样子」和「用多久长成」。 */
+.rounded-square.is-flying {
+    /* 时长必须与 .avatar-zoom 的扩散一致（460ms），两件事是同时发生的 */
+    transition: top 0.46s cubic-bezier(0.33, 0, 0.2, 1),
+                left 0.46s cubic-bezier(0.33, 0, 0.2, 1),
+                width 0.46s cubic-bezier(0.33, 0, 0.2, 1),
+                height 0.46s cubic-bezier(0.33, 0, 0.2, 1),
+                border-radius 0.46s cubic-bezier(0.33, 0, 0.2, 1),
+                background-color 0.46s linear,
+                border-color 0.46s linear,
+                box-shadow 0.46s linear;
+    /* 形变目标：与 account.css 的 .acc-home-btn 完全一致的外观 */
+    border-width: 1px;
+    border-color: rgba(255, 255, 255, 0.32);
+    border-radius: 999px;
+    background-color: rgba(255, 255, 255, 0.12);
+    box-shadow: none;
+    /* 变窄的那段时间会把文字裁掉，看起来像胶囊展开时把字「吐」出来 */
+    overflow: hidden;
+}
+
+.rounded-square.is-flying .avatar {
+    opacity: 0;
+}
+
+.rounded-square.is-flying .avatar-dot {
+    opacity: 0;
+}
+
+.rounded-square.is-flying .avatar-morph-label {
+    opacity: 1;
+}
+
+/* 形变后露出的文字（平时完全透明，不占视线） */
+.avatar-morph-label {
+    position: absolute;
+    left: 13px;
+    top: 50%;
+    transform: translateY(-50%);
+    color: #ffffff;
+    font-size: 13px;
+    line-height: 1;
+    white-space: nowrap;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.28s linear;
 }
 
 /* 类选择器，选中class为nav-items的元素，用于包含9个导航矩形项的容器 */

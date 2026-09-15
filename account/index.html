@@ -26,14 +26,17 @@
     <link rel="stylesheet" href="account.css">
 </head>
 <body class="acc-page">
-    <!-- 顶栏：品牌 + 返回主页面（透明，压在整页渐变背景上） -->
+    <!-- 顶栏：返回主页面 + 品牌（透明，压在整页渐变背景上） -->
     <header class="acc-topbar">
-        <a class="acc-brand" href="../index.html">广学</a>
-        <span class="acc-brand-sub">个人中心</span>
-        <!-- 返回主页面：放在左上角品牌右侧（比原来右上角的文字链更好找、点按区域更大） -->
+        <!-- ⚠️ 这颗按钮放在**最左**，几何是刻意固定的（左 30px、上 32px、高 36px）：
+             首页点头像时，那个头像会形变成长这样、并且落在同一个位置上（main.js 的
+             MORPH_TARGET 就是照这组数字算的），两段动画才是连成一片的。
+             动这几个数字时，另一处要一起改。 -->
         <a class="acc-home-btn" id="accHome" href="../index.html" title="返回广学主页面">
             <span class="acc-home-arrow" aria-hidden="true">←</span> 返回主页面
         </a>
+        <a class="acc-brand" href="../index.html">广学</a>
+        <span class="acc-brand-sub">个人中心</span>
     </header>
 
     <main class="acc-wrap">

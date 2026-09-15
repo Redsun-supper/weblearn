@@ -366,9 +366,18 @@ document.addEventListener('DOMContentLoaded', function() {
     //
     // 注意：导航栏上的「退出登录」按钮随文字入口一起撤掉了，退出改在个人中心里做。
 
-    // 过场时长（毫秒）：与 main.css 的 .avatar-zoom 过渡时长保持一致，到点即换页
+    // 过场时长（毫秒）：与 main.css 的 .avatar-zoom / .rounded-square.is-flying 过渡一致
     var ZOOM_MS = 460;
     var zoomPlaying = false;
+
+    // 头像形变的目标几何 = 个人中心左上角那颗「返回主页面」胶囊。
+    // ⚠️ 必须与 account/account.css 的 .acc-topbar / .acc-home-btn 对得上：
+    //    顶栏左右内边距 30px、高 100px 且内容垂直居中，按钮高 36px
+    //    → 左 30px、上 (100 − 36) / 2 = 32px；宽 115px、高 36px 是实测值。
+    //    这样形变结束的那一帧，正好和跳过去之后那颗按钮**同一个位置、同一个大小**，
+    //    两段动画才是连成一片的（账号页那边也照这组数字摆位）。
+    //    改动这里或 account.css 的顶栏尺寸时，两边要一起改。
+    var MORPH_TARGET = { left: 30, top: 32, width: 115, height: 36 };
 
     // 是否应当减少动态效果（无障碍）：系统开启时不做任何过场，直接跳转
     function prefersReducedMotion() {
@@ -380,14 +389,18 @@ document.addEventListener('DOMContentLoaded', function() {
         return !!(window.CSS && window.CSS.supports && window.CSS.supports('clip-path', 'circle(0px at 0px 0px)'));
     }
 
-    // 点击头像：从头像位置把一个圆放大到盖住整屏，然后进入个人中心。
-    // 几何在这里算（CSS 只提供过渡与底色）：
-    //   圆心 = 头像中心；半径 = 到四角里最远的那个角 + 一点余量 ——
-    //   这样任意窗口尺寸、头像在任意位置都盖得满，不依赖 vmax 之类的近似单位。
+    // 点击头像 → 进入个人中心。整段是**一次连续的动作**，三件事同时发生：
+    //   ① 遮罩（与个人中心同色）从头像正中扩散到盖满全屏
+    //   ② 头像飞到最上层，边扩散边长成个人中心左上角那颗「返回主页面」胶囊
+    //   ③ 460ms 后换页 —— 那时胶囊已在目标位置，新页面原样接着显示
     //
-    // 分两帧写 clip-path，并且第一帧临时关掉过渡：
-    //   不这么做的话，过渡的起点是样式表里的兜底值（圆心在屏幕正中），
-    //   圆就会从屏幕中心长出来而不是从头像长出来（实测踩过一次）。
+    // 两个实现要点：
+    //   · 头像必须**临时挪到 body 下**：它原本在 .rectangle（z-index:100）里，子元素的
+    //     z-index 越不过父级建立的层叠上下文，不挪就永远压在整屏遮罩（z-index:9000）下面，
+    //     也就没有「背景从头像底下长出来」的效果。挪的时候用 getBoundingClientRect 把
+    //     几何原样写死，所以看不出移动。
+    //   · 遮罩的第一帧要把过渡关掉：否则起点会落在样式表的兜底值（圆心在屏幕正中），
+    //     圆就从屏幕中心长出来了（实测踩过一次）。
     function playAvatarZoom() {
         var btn = document.getElementById('navAvatar');
         var layer = document.getElementById('avatarZoom');
@@ -408,21 +421,55 @@ document.addEventListener('DOMContentLoaded', function() {
         var origin = ' at ' + cx + 'px ' + cy + 'px)';
 
         zoomPlaying = true;
-        btn.classList.add('is-zoom-start'); // 头像本体同时缩一下，做出「被吸进去」的手感
 
-        // 第一帧：圆心落在头像上、半径为 0；此时把过渡关掉，确保起点精确、不参与插值
+        // ---- ① 把头像原样「钉」到 body 上（位置一个像素都不动）----
+        btn.style.cssText = 'position:fixed;left:' + rect.left + 'px;top:' + rect.top +
+            'px;width:' + rect.width + 'px;height:' + rect.height + 'px;margin:0;transform:none;z-index:9001;';
+        document.body.appendChild(btn);
+        void btn.offsetWidth; // 让「钉住」这一帧落定，别和下面的形变并成一次
+
+        // ---- ② 遮罩的起点：圆心落在头像正中、半径 0 ----
         layer.style.transition = 'none';
         layer.classList.add('is-armed'); // 可见（半径 0，屏幕上看不到东西）
         layer.style.clipPath = 'circle(0px' + origin;
-        void layer.offsetWidth; // 强制重排：把这一帧真正算出来，作为过渡起点
+        void layer.offsetWidth;
 
-        // 第二帧：恢复样式表里的过渡，把半径放到覆盖四角
+        // ---- ③ 形变：头像长成「返回主页面」胶囊（与遮罩扩散同时开始）----
+        btn.classList.add('is-flying');
+        void btn.offsetWidth;
+        btn.style.left = MORPH_TARGET.left + 'px';
+        btn.style.top = MORPH_TARGET.top + 'px';
+        btn.style.width = MORPH_TARGET.width + 'px';
+        btn.style.height = MORPH_TARGET.height + 'px';
+
+        // ---- ④ 遮罩开始扩散 ----
         layer.style.transition = '';
         layer.style.clipPath = 'circle(' + radius + 'px' + origin;
 
         window.setTimeout(function() {
             window.location.href = target;
         }, ZOOM_MS);
+    }
+
+    // 把飞出去的头像放回导航栏。正常流程用不到（换页后这份 DOM 就没了），
+    // 只有浏览器用「前进后退缓存」把首页整页恢复回来时才需要复位。
+    function resetAvatarFlight() {
+        var layer = document.getElementById('avatarZoom');
+        if (layer) {
+            layer.classList.remove('is-armed');
+            layer.style.clipPath = '';
+            layer.style.transition = '';
+        }
+        var btn = document.getElementById('navAvatar');
+        if (btn) {
+            btn.classList.remove('is-flying');
+            btn.style.cssText = '';
+            var nav = document.querySelector('.rectangle');
+            if (nav && btn.parentNode !== nav) {
+                nav.insertBefore(btn, nav.firstChild); // 放回原来的位置（导航栏第一个子元素）
+            }
+        }
+        zoomPlaying = false;
     }
 
     // 问一次登录态：只用来决定头像的状态点与提示文案（点了都能进个人中心）
@@ -465,20 +512,37 @@ document.addEventListener('DOMContentLoaded', function() {
 
     renderAvatarState();
 
+    // ===================== 预取个人中心 =====================
+    // 主界面加载完之后（等浏览器空闲）再悄悄把个人中心的文档与资源拉进缓存，
+    // 这样点头像的时候不用现等网络，过场与新页面能连成一片。
+    //
+    // 为什么不用 main.js 那套 localStorage 页缓存（pageCache_）：那套是给「学科页片段」
+    // 用的 —— 个人中心是一份**独立文档**，而且内容依赖登录态，必须到服务端实时问
+    // （GET /api/auth/me），把 HTML 缓存下来反而会把登录态缓存错。
+    // 这里只是让浏览器把资源缓存住（缓存头由 dev-server / Nginx 负责发对）。
+    function prefetchAccountPage() {
+        ['account/', 'account/account.css', 'account/account.js'].forEach(function(href, i) {
+            var link = document.createElement('link');
+            link.rel = 'prefetch';
+            link.href = href;
+            if (i === 1) link.as = 'style';
+            if (i === 2) link.as = 'script';
+            document.head.appendChild(link);
+        });
+    }
+
+    if (window.requestIdleCallback) {
+        window.requestIdleCallback(prefetchAccountPage, { timeout: 3000 });
+    } else {
+        window.setTimeout(prefetchAccountPage, 1200); // 老浏览器：等首屏稳了再拉
+    }
+
     // 从个人中心返回时浏览器可能直接用「前进后退缓存」（bfcache）恢复页面：
-    // 那时脚本不会重跑，过场遮罩会停在「已展开」的状态把整屏盖住 —— 恢复时复位，
+    // 那时脚本不会重跑，飞出去的头像与展开的遮罩都停在原样 —— 恢复时复位，
     // 并顺手重新问一次登录态（登录/退出后返回都可能变化）。
     window.addEventListener('pageshow', function(event) {
         if (!event.persisted) return;
-        var layer = document.getElementById('avatarZoom');
-        if (layer) {
-            layer.classList.remove('is-armed');
-            layer.style.clipPath = ''; // 行内几何清掉，下次点击按当前位置重新算
-            layer.style.transition = '';
-        }
-        var btn = document.getElementById('navAvatar');
-        if (btn) btn.classList.remove('is-zoom-start');
-        zoomPlaying = false;
+        resetAvatarFlight();
         renderAvatarState();
     });
 
