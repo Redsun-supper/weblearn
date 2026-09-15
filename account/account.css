@@ -153,16 +153,40 @@ body.acc-page {
     font-size: 12px;
 }
 
-.acc-back {
-    margin-left: auto;
-    color: #cfd8dc;
+/* 左上角的「返回主页面」按钮：半透明胶囊，压在渐变底上（hover/按下都有反馈） */
+.acc-home-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin-left: 6px;
+    padding: 6px 14px;
+    border: 1px solid rgba(255, 255, 255, 0.32);
+    border-radius: 999px;
+    background-color: rgba(255, 255, 255, 0.12);
+    color: #ffffff;
     font-size: 13px;
+    line-height: 1.6;
     text-decoration: none;
-    transition: color 0.2s;
+    transition: background-color 0.2s, border-color 0.2s, transform 0.12s;
 }
 
-.acc-back:hover {
-    color: #ffffff;
+.acc-home-btn:hover {
+    background-color: rgba(255, 255, 255, 0.22);
+    border-color: rgba(255, 255, 255, 0.5);
+}
+
+.acc-home-btn:active {
+    transform: scale(0.96);
+}
+
+.acc-home-btn:focus-visible {
+    outline: 2px solid rgba(255, 255, 255, 0.7);
+    outline-offset: 2px;
+}
+
+.acc-home-arrow {
+    font-size: 14px;
+    line-height: 1;
 }
 
 /* ===================== 主体 ===================== */

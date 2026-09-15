@@ -98,7 +98,10 @@
 
     // 组件之间的错开间隔（毫秒）：「什么时候开始」在这里排延时，
     // 「怎么动」写在 account.css 的 accRise（浮起淡入）/ accPop（头像回弹）。
-    var ENTER_STEP_MS = 55;
+    //
+    // 数值取 30ms 而不是更大：个人中心有 30 来个组件，间隔一大整体就要 1.5 秒才装配完，
+    // 看上去像「页面一直在慢慢冒东西」。30ms 能让最后一组在 1 秒内到位。
+    var ENTER_STEP_MS = 30;
 
     // 面板分组：一组里的卡片一起显示 / 隐藏
     // （个人中心把「账号信息 / 登录设备 / 可用操作」拆成了三张卡，所以是分组而不是单块）
@@ -129,17 +132,28 @@
 
     // 给这些组件排一遍入场动效。
     //   mode：'' = 浮起淡入 | 'right' = 从右侧滑入 | 'left' = 从左侧滑入
-    // 每次都先摘类再挂：① display:none 的元素不会播动画，所以必须在显示之后再挂；
-    // ② 同一块面板重新显示时要能重播，所以中间强制一次重排。
+    //
+    // ⚠️ 性能要点：先把所有元素的旧动画类摘掉（只写不读），**只强制重排一次**，
+    // 最后统一挂新类。早先的写法是「逐个元素：摘类 → 读 offsetWidth → 挂类」，
+    // 每个 offsetWidth 都会让浏览器同步重算整页布局 —— 30 个组件就是 30 次布局，
+    // 正好卡在进场那一两帧上。
     function playEnter(cards, mode) {
         var nodes = collectEnterNodes(cards);
+        if (!nodes.length) return;
+
         var cls = mode === 'right' ? 'is-enter-right' : (mode === 'left' ? 'is-enter-left' : 'is-enter');
-        for (var i = 0; i < nodes.length; i++) {
-            var el = nodes[i];
-            for (var k = 0; k < ENTER_CLASSES.length; k++) el.classList.remove(ENTER_CLASSES[k]);
-            void el.offsetWidth;
-            el.style.animationDelay = (i * ENTER_STEP_MS) + 'ms';
-            el.classList.add(cls);
+        var i, k;
+
+        for (i = 0; i < nodes.length; i++) {
+            for (k = 0; k < ENTER_CLASSES.length; k++) {
+                nodes[i].classList.remove(ENTER_CLASSES[k]);
+            }
+        }
+        void document.body.offsetHeight; // 唯一的强制重排：让「摘类」这一帧落定
+
+        for (i = 0; i < nodes.length; i++) {
+            nodes[i].style.animationDelay = (i * ENTER_STEP_MS) + 'ms';
+            nodes[i].classList.add(cls);
         }
     }
 

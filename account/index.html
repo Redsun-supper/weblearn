@@ -19,14 +19,21 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>广学 · 个人中心</title>
+    <!-- 首帧底色：外链样式表要等网络，这一句内联样式能让浏览器一开始就画出深色底，
+         而不是先闪一帧白屏、再变成渐变 —— 从首页点头像过来时那一下白闪最明显。
+         颜色取渐变的起点色（#1f2d3d），切换过来时看起来就是「遮罩化成了页面」。 -->
+    <style>html { background-color: #1f2d3d; }</style>
     <link rel="stylesheet" href="account.css">
 </head>
 <body class="acc-page">
-    <!-- 顶栏：品牌 + 返回站点（透明，压在整页渐变背景上） -->
+    <!-- 顶栏：品牌 + 返回主页面（透明，压在整页渐变背景上） -->
     <header class="acc-topbar">
         <a class="acc-brand" href="../index.html">广学</a>
         <span class="acc-brand-sub">个人中心</span>
-        <a class="acc-back" href="../index.html">← 返回站点</a>
+        <!-- 返回主页面：放在左上角品牌右侧（比原来右上角的文字链更好找、点按区域更大） -->
+        <a class="acc-home-btn" id="accHome" href="../index.html" title="返回广学主页面">
+            <span class="acc-home-arrow" aria-hidden="true">←</span> 返回主页面
+        </a>
     </header>
 
     <main class="acc-wrap">

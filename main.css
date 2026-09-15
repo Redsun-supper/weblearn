@@ -222,6 +222,11 @@ body {
     /* 兜底起点（JS 会用行内样式覆盖成头像中心）；没有 JS 时它始终是 hidden，看不见 */
     clip-path: circle(0px at 50% 50%);
     transition: clip-path 0.46s cubic-bezier(0.33, 0, 0.2, 1);
+    /* 过渡期间提示浏览器把这一层交给合成器独立处理：clip-path 是「绘制级」属性，
+       不提升的话每一帧都要把整屏重新画一遍（屏幕越大越明显）。
+       contain: paint 顺带把重绘范围限制在这层里，不让它波及后面的内容。 */
+    will-change: clip-path;
+    contain: paint;
 }
 
 /* 第一帧：可见（此时半径仍是 0，屏幕上看不到东西，但过渡的起点已经就位） */
