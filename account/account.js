@@ -78,6 +78,11 @@
         return node ? String(node.value || '').trim() : '';
     }
 
+    // 是否应当减少动态效果（无障碍）：系统开启时不做高度过渡
+    function prefersReducedMotion() {
+        return !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+    }
+
     // 认证成功后要跳回哪一页：只接受站内相对路径，避免被 ?next= 带去外站
     function nextUrl() {
         var match = /[?&]next=([^&#]+)/.exec(location.search);
@@ -155,8 +160,50 @@
         playEnter(visible.map(function (id) { return $(id); }));
     }
 
+    // 卡片高度过渡的时长（毫秒）：只在这里写一次，过渡是行内设的，不用和 CSS 对齐
+    var HEIGHT_MS = 380;
+    var heightTimer = null;
+
+    // 白色底的高度过渡：切标签时「往下长」/「往上收」，而不是瞬间跳变。
+    // 经典做法 —— 量旧高 → 换内容 → 量新高 → 从旧高过渡到新高 → 收尾还原成自动高度：
+    //   · 过渡期间必须 overflow:hidden，否则新表单会先整个冲出来、再被裁下去
+    //   · 收尾一定要清掉行内 height/overflow，让卡片回到「由内容决定高度」
+    //     （否则报错文案、窄屏换行把内容撑高时会被裁掉）
+    function animateCardHeight(card, from, to) {
+        if (!card || from === to || prefersReducedMotion()) return;
+
+        card.style.overflow = 'hidden';
+        card.style.transition = 'none'; // 先把起点钉死，别把上一次没跑完的过渡续上
+        card.style.height = from + 'px';
+        void card.offsetHeight;         // 强制重排，这一帧就是过渡起点
+
+        card.style.transition = 'height ' + HEIGHT_MS + 'ms cubic-bezier(0.22, 0.61, 0.36, 1)';
+        card.style.height = to + 'px';
+
+        clearTimeout(heightTimer);
+        heightTimer = setTimeout(function() {
+            heightTimer = null;
+            card.style.transition = '';
+            card.style.height = '';
+            card.style.overflow = '';
+        }, HEIGHT_MS + 40);
+    }
+
     function switchTab(which) {
         var isLogin = which === 'login';
+        var card = $('panelAuth');
+        // 只在卡片已经显示时才量高度：首屏 showOnly 之前它是 hidden，量出来是 0，
+        // 那种情况交给入场动效，不要再额外播一次高度过渡
+        var measure = !!(card && !card.hasAttribute('hidden'));
+        var fromHeight = 0;
+
+        if (measure) {
+            clearTimeout(heightTimer);
+            heightTimer = null;
+            // 上一次高度过渡可能还在跑，此刻的当前高度正好是新的起点
+            fromHeight = card.getBoundingClientRect().height;
+        }
+
         var tabLogin = $('tabLogin');
         var tabRegister = $('tabRegister');
         if (tabLogin) tabLogin.className = 'acc-tab' + (isLogin ? ' is-active' : '');
@@ -172,6 +219,17 @@
             } else {
                 thumb.classList.add('is-second');
             }
+        }
+
+        // 内容换完了才量新高。量之前先清掉上一轮遗留的行内高度，
+        // 否则 overflow:hidden + 旧高度会把新内容裁掉，量到的是被裁过的值。
+        if (measure) {
+            clearTimeout(heightTimer);
+            heightTimer = null;
+            card.style.transition = 'none';
+            card.style.height = '';
+            card.style.overflow = '';
+            animateCardHeight(card, fromHeight, card.getBoundingClientRect().height);
         }
 
         // 表单顺着点击方向滑进来：切到「注册」从右边来，切回「登录」从左边来

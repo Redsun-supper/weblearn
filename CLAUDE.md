@@ -88,7 +88,7 @@
 - 响应沿用 `{code, message, data}` 信封，失败多一个 `error` 字段；鉴权一律用 `AuthUser` / `AdminUser` 提取器，别在 handler 里自己解析 Cookie。
 - 权限等级**只预留** `users.role` / `users.status`，还没写判定逻辑；唯一例外是邀请码管理接口的 `role == 'admin'` 准入。
 - 验证方式：`cargo test`（83 项）→ `cargo build --release` → `pwsh scripts/smoke.ps1`（24 项端到端，直连或经 8899 代理都行）。
-- **前端入口**：个人中心 `account/`（身份卡 + 账号信息 + 设备列表 + 操作；本地开发会自动从 `/api/auth/dev/codes` 回填验证码；带 `?from=avatar` 进来时跳过身份卡的入场动效，与首页的扩散过场衔接；**登录 / 注册标签栏的选中高亮是会滑动的滑块** `.acc-tabs-thumb`——宽度用 `calc((100% - 16px) / 2)` 算、靠 `translateX(calc(100% + 8px))` 换位，不需要 JS 量像素；切标签时表单按点击方向用 `is-enter-right` / `is-enter-left` 从侧边滑入，而不是原地淡入）、后台门禁 `admin/`、站点左上角头像（点它进个人中心）。三处都只做界面层门禁，服务端判定仍是权威。
+- **前端入口**：个人中心 `account/`（身份卡 + 账号信息 + 设备列表 + 操作；本地开发会自动从 `/api/auth/dev/codes` 回填验证码；带 `?from=avatar` 进来时跳过身份卡的入场动效，与首页的扩散过场衔接；**登录 / 注册标签栏的选中高亮是会滑动的滑块** `.acc-tabs-thumb`——宽度用 `calc((100% - 16px) / 2)` 算、靠 `translateX(calc(100% + 8px))` 换位，不需要 JS 量像素；切标签时表单按点击方向用 `is-enter-right` / `is-enter-left` 从侧边滑入，并且**白卡高度会平滑延伸 / 回缩**（`animateCardHeight()`：量旧高 → 换内容 → 量新高 → 过渡到新高 → 收尾**必须清掉行内 height/overflow** 还原成自动高度，否则报错文案或窄屏换行撑高的内容会被裁掉；量新高前也要先清掉上一轮的行内高度，否则量到的是被 `overflow:hidden` 裁过的值；卡片还是 `hidden` 时不要量、不要播，交给入场动效））、后台门禁 `admin/`、站点左上角头像（点它进个人中心）。三处都只做界面层门禁，服务端判定仍是权威。
 - ⚠️ 本地没设 `AUTH_JWT_SECRET` 时每次重启都会随机生成密钥（旧令牌全失效）；`APP_ENV=production` 下必须显式提供它和管理员口令，并关闭 `AUTH_DEV_ENDPOINTS`，否则启动失败。
 
 ---
