@@ -95,6 +95,7 @@
 - 权限等级**只预留** `users.role` / `users.status`，还没写判定逻辑；唯一例外是邀请码管理接口的 `role == 'admin'` 准入。
 - 验证方式：`cargo test`（90 项）→ `cargo build --release` → `pwsh scripts/smoke.ps1`（24 项端到端，直连或经 8899 代理都行）。
 - **前端入口**：个人中心 `account/`（身份卡 + 账号信息 + 设备列表 + 操作；本地开发会自动从 `/api/auth/dev/codes` 回填验证码；带 `?from=avatar` 进来时跳过身份卡的入场动效，与首页的扩散过场衔接；**登录 / 注册标签栏的选中高亮是会滑动的滑块** `.acc-tabs-thumb`——宽度用 `calc((100% - 16px) / 2)` 算、靠 `translateX(calc(100% + 8px))` 换位，不需要 JS 量像素；切标签时表单按点击方向用 `is-enter-right` / `is-enter-left` 从侧边滑入，并且**白卡高度会平滑延伸 / 回缩**（`animateCardHeight()`：量旧高 → 换内容 → 量新高 → 过渡到新高 → 收尾**必须清掉行内 height/overflow** 还原成自动高度，否则报错文案或窄屏换行撑高的内容会被裁掉；量新高前也要先清掉上一轮的行内高度，否则量到的是被 `overflow:hidden` 裁过的值；卡片还是 `hidden` 时不要量、不要播，交给入场动效））、后台门禁 `admin/`、站点左上角头像（点它进个人中心）。三处都只做界面层门禁，服务端判定仍是权威。
+- 📌 **待处理问题统一记在根目录 `TODO.md`**：沉浸模式下的「返回」反向动画（暂缓，含三个候选方案）、头像 2.6MB 的缩略图（等用户点头，涉及素材）、登录后画面是临时的、转场时长的人工对齐。**接手账号/转场相关改动前先读它一遍**，别把已决定暂缓的事又当成漏掉的 bug。
 - ⚠️ 本地没设 `AUTH_JWT_SECRET` 时每次重启都会随机生成密钥（旧令牌全失效）；`APP_ENV=production` 下必须显式提供它和管理员密码，并关闭 `AUTH_DEV_ENDPOINTS`，否则启动失败。
 
 ---
@@ -110,7 +111,7 @@
    - **本体是真 PNG**（`89 50 4E 47` 文件头，颜色类型 6），**1330 × 1146**，约 **2.56 MB**（此前文档记的「WebP、199 KB」是读图工具生成的**归一化副本**格式，不是源文件，别照那个改文件扩展名）。
    - 内容：五人合影（特朗普 / 马斯克 / 中间戴墨镜穿灰夹克的男性 / 黄仁勋 / 库克，一起竖大拇指）。
    - 页面上的呈现：`index.html` 的 `.rounded-square`（`left: 30px`，垂直居中）内，**显示尺寸仅 64 × 64 px**，圆角 12px、3px 白边、`object-fit: cover`（源图左右各裁掉约 7%，五个人的脸都在框内）。`main.css` 的 `.avatar` 只负责填满容器。
-   - ⚠️ **已知性能问题（尚未处理）**：2.56 MB 的图当 64×64 头像用，且 `dev-server.js` 对图片发 `Cache-Control: no-store, must-revalidate`，**每次刷新首页都会重下 2.56 MB**。优化方向是生成 128×128 缩略图 + 给 `image/` 加长缓存，但**动手前必须先问用户**（涉及视觉素材）。
+   - ⚠️ **为什么它偏重**：64×64 的显示尺寸在用 1330×1146 的原图。`dev-server.js` 已经给图片发 `public, max-age=86400`（不再每次重下），但线上仍是 2.6MB 的首屏负担。优化方向是生成 128×128 缩略图给导航与个人中心用（原图保留），**涉及视觉素材，动手前必须先问用户** —— 详见根目录 `TODO.md` 第 2 条。
 6. **本机工具链**：Go 已装为便携版 `C:\Users\22629\go-portable\go\bin\go.exe`（go1.27.1，已 `go env -w GOPROXY=https://goproxy.cn,direct GOSUMDB=off`，直接 `go build` 即可）；Rust `cargo 1.97` 且 `wasm32-unknown-unknown` target 已装；wasm-bindgen CLI 在 `C:\Users\22629\.local\bin\wasm-bindgen-0.2.128-*\wasm-bindgen.exe`（须与 Cargo.toml 的 wasm-bindgen 版本一致 0.2.128）。
    ✅ **原生（宿主）Rust 也能编译链接**：host 目标为 `x86_64-pc-windows-gnu`，mingw gcc/ar 已在 PATH 上，所以 `backend-rust/` 用 `rusqlite` 的 `bundled` 特性（现场编译 sqlite3.c）可以正常 `cargo test` / `cargo build --release`。链接时的 `corrupt .drectve at end of def file` 是 mingw 的无害告警。
    ✅ **宿主 `cargo test` 现在可以运行**（2026-09-13 实测 118 个测试通过；本文档此前记录的「缺 mingw `as`/MSVC SDK 无法链接」已不再成立）。完整验证路径：`cargo test` → `cargo check --target wasm32-unknown-unknown` → `cargo build --target wasm32-unknown-unknown --release` → `wasm-bindgen` 生成 `pkg/` → 浏览器端到端。

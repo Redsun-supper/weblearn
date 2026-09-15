@@ -435,6 +435,8 @@ document.addEventListener('DOMContentLoaded', function() {
         void layer.offsetWidth;
 
         // ---- ③ 形变：头像长成「返回主页面」胶囊（与遮罩扩散同时开始）----
+        // is-morphing 只提供过渡与裁剪、is-flying 提供胶囊外观（见 main.css 的注释）
+        btn.classList.add('is-morphing');
         btn.classList.add('is-flying');
         void btn.offsetWidth;
         btn.style.left = MORPH_TARGET.left + 'px';
@@ -446,9 +448,30 @@ document.addEventListener('DOMContentLoaded', function() {
         layer.style.transition = '';
         layer.style.clipPath = 'circle(' + radius + 'px' + origin;
 
-        window.setTimeout(function() {
+        // ---- ⑤ 等形变**真正结束**再换页 ----
+        // 不能只靠 setTimeout：CSS 过渡与定时器同为 460ms，浏览器最后一次绘制大约在
+        // 450ms，那时宽/高/圆角/底色都还差一点点，换页后是 100% 状态 —— 那一点点就是
+        // 肉眼看到的「跳一下」。所以听过渡结束事件，定时器只作兜底。
+        goWhenSettled(btn, function() {
             window.location.href = target;
-        }, ZOOM_MS);
+        });
+    }
+
+    // 等一个元素的过渡跑完再执行（只认 width：形变那几个属性的时长一致，等一个就够）。
+    // 兜底：过渡被跳过（元素被隐藏等）或事件丢失时，ZOOM_MS + 120 后照样执行。
+    function goWhenSettled(el, done) {
+        var settled = false;
+        var fire = function() {
+            if (settled) return;
+            settled = true;
+            done();
+        };
+        el.addEventListener('transitionend', function onEnd(e) {
+            if (e.propertyName !== 'width') return;
+            el.removeEventListener('transitionend', onEnd);
+            fire();
+        });
+        window.setTimeout(fire, ZOOM_MS + 120);
     }
 
     // 把飞出去的头像放回导航栏。正常流程用不到（换页后这份 DOM 就没了），
@@ -457,12 +480,16 @@ document.addEventListener('DOMContentLoaded', function() {
         var layer = document.getElementById('avatarZoom');
         if (layer) {
             layer.classList.remove('is-armed');
+            // 同 playReturnAnimation 的收尾：先关过渡再清几何，别让它朝兜底值再补一段
+            layer.style.transition = 'none';
             layer.style.clipPath = '';
+            void layer.offsetWidth;
             layer.style.transition = '';
         }
         var btn = document.getElementById('navAvatar');
         if (btn) {
             btn.classList.remove('is-flying');
+            btn.classList.remove('is-morphing');
             btn.style.cssText = '';
             var nav = document.querySelector('.rectangle');
             if (nav && btn.parentNode !== nav) {
@@ -470,6 +497,114 @@ document.addEventListener('DOMContentLoaded', function() {
             }
         }
         zoomPlaying = false;
+    }
+
+    // ===================== 反向转场：从个人中心返回 =====================
+    // 账号页那边先在本地把组件淡出，再带 ?from=account 跳回本页。
+    // 本页要做的是「倒放」：一进来（第一帧之前）就把画面摆成**账号页最后一帧**的样子 ——
+    // 遮罩整屏盖住 + 头像已经是胶囊的形状和位置；等页面在遮罩下面画好，再同时
+    // ① 把圆圈缩回头像 ② 把胶囊变回头像。
+    var FROM_ACCOUNT = /[?&]from=account(&|=|$)/.test(window.location.search);
+
+    // 前置条件：导航栏必须可见（头像才有落点）。沉浸模式下导航栏会连头像一起隐藏，
+    // 这种情况本轮先跳过反向动画（原因与候选方案记在根目录 TODO.md）。
+    // 判据用英语模块同一个键，同步可读，不会和它的异步初始化抢时序。
+    function returnHasLandingSpot() {
+        try {
+            return window.localStorage.getItem('reviewImmersive') === '0';
+        } catch (e) {
+            return false; // 读不到 localStorage（隐私模式）→ 按「不安全」处理，退回普通跳转
+        }
+    }
+
+    // 等页面在遮罩下面画好（load + 两帧）再开始倒放，否则缩圈时露出的是还没画完的页面
+    function whenPageReady(fn) {
+        var run = function() {
+            window.requestAnimationFrame(function() {
+                window.requestAnimationFrame(fn);
+            });
+        };
+        if (document.readyState === 'complete') run();
+        else window.addEventListener('load', run);
+    }
+
+    // 返回 false 表示「这次不播倒放」（调用方负责把 is-returning 摘掉，恢复正常显示）
+    function playReturnAnimation() {
+        var btn = document.getElementById('navAvatar');
+        var layer = document.getElementById('avatarZoom');
+        if (!btn || !layer || !canZoom() || prefersReducedMotion() || !returnHasLandingSpot()) {
+            return false;
+        }
+
+        // 头像在导航栏里的位置（正向过场结束时它也是回到这里）
+        var rect = btn.getBoundingClientRect();
+        if (!rect.width) return false; // 导航栏没排上版 → 不播
+        var cx = rect.left + rect.width / 2;
+        var cy = rect.top + rect.height / 2;
+        var dx = Math.max(cx, window.innerWidth - cx);
+        var dy = Math.max(cy, window.innerHeight - cy);
+        var radius = Math.ceil(Math.sqrt(dx * dx + dy * dy)) + 32;
+        var origin = ' at ' + cx + 'px ' + cy + 'px)';
+
+        zoomPlaying = true; // 倒放期间头像不响应点击（它正被当作动画元素用）
+
+        // ---- 第一帧：全部无过渡，直接摆成「账号页最后一帧」----
+        btn.classList.add('is-morphing');
+        btn.classList.add('is-flying');
+        btn.style.cssText = 'position:fixed;left:' + MORPH_TARGET.left + 'px;top:' + MORPH_TARGET.top +
+            'px;width:' + MORPH_TARGET.width + 'px;height:' + MORPH_TARGET.height +
+            'px;margin:0;transform:none;z-index:9001;transition:none;';
+        document.body.appendChild(btn);
+
+        layer.style.transition = 'none';
+        layer.classList.add('is-armed');
+        layer.style.clipPath = 'circle(' + radius + 'px' + origin;
+        void layer.offsetWidth;
+
+        // 遮罩已经盖住了：让页面内容正常显示（它会一直待在遮罩下面，等圆圈缩小时露出来）
+        document.documentElement.classList.remove('is-returning');
+
+        whenPageReady(function() {
+            // ---- 倒放开始：圆圈缩回头像 + 胶囊变回头像 ----
+            btn.style.transition = '';
+            void btn.offsetWidth;              // 让过渡重新生效，再改几何
+            btn.classList.remove('is-flying'); // 外观变回头像（边框/圆角/底色由 is-morphing 兜住过渡）
+            btn.style.left = rect.left + 'px';
+            btn.style.top = rect.top + 'px';
+            btn.style.width = rect.width + 'px';
+            btn.style.height = rect.height + 'px';
+
+            layer.style.transition = '';
+            layer.style.clipPath = 'circle(0px' + origin;
+
+            goWhenSettled(btn, function() {
+                // 先摘过渡再清行内几何：否则「top:18px → CSS 的 50% + translateY(-50%)」
+                // 会被当成一次新的过渡，头像会晃一下
+                btn.classList.remove('is-morphing');
+                btn.classList.remove('is-flying');
+                btn.style.cssText = '';
+                var nav = document.querySelector('.rectangle');
+                if (nav) nav.insertBefore(btn, nav.firstChild);
+
+                layer.classList.remove('is-armed');
+                // ⚠️ 先关过渡再清几何：否则清除行内 clip-path 会立刻朝样式表的兜底值
+                // （circle(0px at 50% 50%)）再补一段过渡 —— 圆心会从头像漂向屏幕正中
+                // （实测过一次：calc(5.69% + 54.94px)）。半径是 0 所以看不见，
+                // 但那是白白多跑一段合成，收尾就该干干净净。
+                layer.style.transition = 'none';
+                layer.style.clipPath = '';
+                void layer.offsetWidth;
+                layer.style.transition = '';
+                zoomPlaying = false;
+
+                // 参数用完就抹掉：刷新时不会再播一遍（URL 也干净）
+                if (window.history && window.history.replaceState) {
+                    window.history.replaceState(null, '', window.location.pathname);
+                }
+            });
+        });
+
+        return true;
     }
 
     // 问一次登录态：只用来决定头像的状态点与提示文案（点了都能进个人中心）
@@ -508,6 +643,13 @@ document.addEventListener('DOMContentLoaded', function() {
     var navAvatarEl = document.getElementById('navAvatar');
     if (navAvatarEl) {
         navAvatarEl.addEventListener('click', playAvatarZoom);
+    }
+
+    // 带着 ?from=account 回来（= 刚从个人中心点返回）→ 播反向过场（倒放）。
+    // 播不了（沉浸模式 / 减少动效 / 不支持 clip-path）时要把 is-returning 摘掉，
+    // 否则首页会一直停在 index.html 里那段内联脚本设的「先别画内容」状态。
+    if (FROM_ACCOUNT && !playReturnAnimation()) {
+        document.documentElement.classList.remove('is-returning');
     }
 
     renderAvatarState();

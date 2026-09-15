@@ -94,6 +94,21 @@ body.acc-page {
     }
 }
 
+/* 退场（点返回时）：组件逆序淡淡落下去，然后再换页。
+   动作方向与 accRise 相反，看起来就是「收拢回去」。 */
+@keyframes accFall {
+    from {
+        opacity: 1;
+        transform: none;
+    }
+    to {
+        opacity: 0;
+        transform: translateY(8px) scale(0.99);
+    }
+}
+
+/* ⚠️ 必须写在所有 .is-enter* 之后（见下面 .acc-hero-avatar.is-enter 之后那条）：
+   同类选择器靠出现顺序决定胜负，退场时元素上万一还挂着入场类就输了。 */
 .is-enter-right {
     animation: accSlideFromRight 0.3s cubic-bezier(0.22, 0.61, 0.36, 1) both;
 }
@@ -107,6 +122,12 @@ body.acc-page {
     animation: accPop 0.5s cubic-bezier(0.22, 0.61, 0.36, 1) both;
 }
 
+/* 退场：点返回时组件逆序落下去，再换页（动作见上面的 accFall）。
+   放在所有入场规则之后 —— 同类选择器靠顺序决定胜负。 */
+.is-exit {
+    animation: accFall 0.26s cubic-bezier(0.4, 0, 1, 1) both;
+}
+
 /* 从首页头像扩散进来时（?from=avatar）：身份卡已经在「遮罩下面」就位了，
    此处不再播入场动画，否则会看到它从头像位置又跳一次 */
 .from-avatar .acc-hero [data-enter],
@@ -115,17 +136,29 @@ body.acc-page {
     animation: none;
 }
 
-/* 无障碍：系统开启「减少动态效果」时不播任何入场动画，滑块也直接就位 */
+/* 无障碍：系统开启「减少动态效果」时不播任何入场/退场动画，滑块也直接就位 */
 @media (prefers-reduced-motion: reduce) {
     .is-enter,
     .is-enter-right,
     .is-enter-left,
+    .is-exit,
     .acc-hero-avatar.is-enter {
         animation: none;
     }
 
     .acc-tabs-thumb {
         transition: none;
+    }
+
+    /* 加载卡的淡出也省掉，改成即时（account.js 里的 setTimeout 时长不变） */
+    .acc-loading {
+        transition: none;
+    }
+
+    /* 脉冲点静止，避免「一直闪」对前庭敏感的人不友好 */
+    .acc-dots i {
+        animation: none;
+        opacity: 0.5;
     }
 }
 
@@ -284,8 +317,59 @@ body.acc-page {
     font-size: 15px;
 }
 
+/* 面板舞台：加载卡在这里是绝对定位的浮层（见 .acc-loading），
+   所以它在目标面板之上淡出时不会影响布局高度 */
+.acc-stage {
+    position: relative;
+}
+
+/* 加载卡：**绝对定位的浮层**，浮在新面板上面淡出（account.js 的 showOnly 挂 is-leaving）。
+   为什么不用「先藏旧的再显示新的」：那样两次布局高度不一样，会出现一次高度跳变。 */
 .acc-loading {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 0;
     text-align: center;
+    transition: opacity 0.18s linear;
+}
+
+.acc-loading.is-leaving {
+    opacity: 0;
+}
+
+/* 加载指示：三个脉冲点（纯 CSS，让被刻意延长的等待看起来是「在做事」） */
+.acc-dots {
+    display: inline-flex;
+    gap: 6px;
+    margin-top: 12px;
+}
+
+.acc-dots i {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background-color: #90a4ae;
+    animation: accPulse 1s infinite ease-in-out;
+}
+
+.acc-dots i:nth-child(2) {
+    animation-delay: 0.15s;
+}
+
+.acc-dots i:nth-child(3) {
+    animation-delay: 0.3s;
+}
+
+@keyframes accPulse {
+    0%, 100% {
+        opacity: 0.25;
+        transform: scale(0.8);
+    }
+    40% {
+        opacity: 1;
+        transform: scale(1);
+    }
 }
 
 .acc-muted {

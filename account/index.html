@@ -35,8 +35,10 @@
         <a class="acc-home-btn" id="accHome" href="../index.html" title="返回广学主页面">
             <span class="acc-home-arrow" aria-hidden="true">←</span> 返回主页面
         </a>
-        <a class="acc-brand" href="../index.html">广学</a>
-        <span class="acc-brand-sub">个人中心</span>
+        <!-- 品牌与徽章带 data-enter：由 account.js 的 playTopbarIn() 排在遮罩溶掉的那一刻
+             浮入（之前是凭空出现，很突兀）。返回按钮不参与动画 —— 它是正向形变的落点。 -->
+        <a class="acc-brand" href="../index.html" data-enter>广学</a>
+        <span class="acc-brand-sub" data-enter>个人中心</span>
     </header>
 
     <main class="acc-wrap">
@@ -54,9 +56,16 @@
             <span class="acc-hero-role" id="heroRole" data-enter hidden>管理员</span>
         </section>
 
-        <!-- 未登录且正在检测时的占位，避免页面闪一下空白 -->
+        <!-- 面板舞台：加载卡在这里是**绝对定位的浮层**，切换时它浮在新面板上面淡出，
+             不会把下面的内容顶下去（否则就是一次高度跳变）。 -->
+        <div class="acc-stage">
+
+        <!-- 未登录且正在检测时的占位。这一屏有**最短显示时长**（account.js 的
+             MIN_CHECK_MS）：本地 /me 只要几毫秒，一返回就切面板的话它会一闪而过，
+             后面的表单就像凭空冒出来。三个脉冲点让这段等待看起来是「在做事」。 -->
         <section class="acc-card acc-loading" id="panelLoading" data-enter>
             <p class="acc-muted">正在检查登录状态…</p>
+            <span class="acc-dots" aria-hidden="true"><i></i><i></i><i></i></span>
         </section>
 
         <!-- ===================== 已登录：账号信息 ===================== -->
@@ -177,6 +186,9 @@
                 <p class="acc-hint" data-enter>注册成功后会自动登录，可以直接回到站点开始学习。</p>
             </form>
         </section>
+
+        </div>
+        <!-- 面板舞台结束标签 -->
     </main>
 
     <footer class="acc-footer">

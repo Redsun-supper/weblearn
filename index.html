@@ -12,6 +12,15 @@
     <title>Document</title>
     <!-- link引入外部CSS样式表，rel指定关系为stylesheet，href指定样式文件路径 -->
     <link rel="stylesheet" href="main.css">
+    <!-- 从个人中心返回时（?from=account）先把主界面内容藏住：反向过场的第一帧必须已经
+         是「整屏被遮罩盖住」的样子，否则会先闪一下主界面再开始倒放。
+         这段必须内联在 head 里 —— 外链的 main.js 在 body 末尾，来不及。
+         样式见 main.css 的 html.is-returning；main.js 摆好遮罩后会立刻摘掉这个类。 -->
+    <script>
+        if (/[?&]from=account(&|=|$)/.test(location.search)) {
+            document.documentElement.className += ' is-returning';
+        }
+    </script>
 <!-- head结束标签 -->
 </head>
 <!-- body元素包含所有可见的页面内容，是用户实际看到的部分 -->
@@ -25,8 +34,10 @@
                 title="个人中心" aria-label="进入个人中心">
             <!-- img是图片元素，src指定图片路径，alt提供替代文本用于无障碍访问 -->
             <img src="image/avatar.png" alt="头像" class="avatar">
-            <!-- 过场里头像会长成「返回主页面」胶囊，这行字就是那时候露出来的内容 -->
-            <span class="avatar-morph-label" aria-hidden="true">← 返回主页面</span>
+            <!-- 过场里头像会长成「返回主页面」胶囊，这行字就是那时候露出来的内容。
+                 ⚠️ 结构与字号必须与 account/index.html 的 .acc-home-btn 一致（那边是
+                 「箭头 span + 文字」），否则换页那一帧会看到文字微跳。 -->
+            <span class="avatar-morph-label" aria-hidden="true"><span class="avatar-morph-arrow">←</span> 返回主页面</span>
             <!-- 登录态小圆点：已登录时由 main.js 给按钮挂 is-signed 类点亮 -->
             <span class="avatar-dot" id="navAvatarDot" aria-hidden="true"></span>
         <!-- 头像按钮结束标签 -->

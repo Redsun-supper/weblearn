@@ -114,27 +114,36 @@ body {
     display: block;
 }
 
-/* 过场开始时给头像本体加这个类：它会长成个人中心左上角那颗「返回主页面」胶囊。
-   位置与尺寸由 main.js 的行内样式给出（目标值见那边的 MORPH_TARGET），
-   这里只定义「长成什么样子」和「用多久长成」。 */
-.rounded-square.is-flying {
+/* 过场期间（正反两个方向都用）：只提供「过渡」与「裁剪」，不改外观。
+   外观由 .is-flying（胶囊）或元素自身的样式（头像）决定 —— 拆成两个类是为了让
+   **反向**也能有过渡：反向时要摘掉 .is-flying 让外观变回头像，如果过渡挂在
+   .is-flying 上，摘掉的那一刻过渡就没了，边框/圆角/底色会硬切。 */
+.rounded-square.is-morphing {
     /* 时长必须与 .avatar-zoom 的扩散一致（460ms），两件事是同时发生的 */
     transition: top 0.46s cubic-bezier(0.33, 0, 0.2, 1),
                 left 0.46s cubic-bezier(0.33, 0, 0.2, 1),
                 width 0.46s cubic-bezier(0.33, 0, 0.2, 1),
                 height 0.46s cubic-bezier(0.33, 0, 0.2, 1),
                 border-radius 0.46s cubic-bezier(0.33, 0, 0.2, 1),
-                background-color 0.46s linear,
+                border-width 0.46s linear,
                 border-color 0.46s linear,
+                background-color 0.46s linear,
                 box-shadow 0.46s linear;
-    /* 形变目标：与 account.css 的 .acc-home-btn 完全一致的外观 */
+    /* 提示合成器单独处理这一层：形状与底色都在变，不提升的话每帧都要重绘 */
+    will-change: top, left, width, height, border-radius, background-color;
+    /* 变窄的那段时间会把文字裁掉，看起来像胶囊展开时把字「吐」出来；
+       反向缩回去时也靠它把字收掉（否则文字会露在胶囊外面） */
+    overflow: hidden;
+}
+
+/* 胶囊的样子：正向形变的目标 = 反向形变的起点。
+   ⚠️ 必须与 account.css 的 .acc-home-btn 完全一致，否则换页那一下会看到跳变。 */
+.rounded-square.is-flying {
     border-width: 1px;
     border-color: rgba(255, 255, 255, 0.32);
     border-radius: 999px;
     background-color: rgba(255, 255, 255, 0.12);
     box-shadow: none;
-    /* 变窄的那段时间会把文字裁掉，看起来像胶囊展开时把字「吐」出来 */
-    overflow: hidden;
 }
 
 .rounded-square.is-flying .avatar {
@@ -149,12 +158,19 @@ body {
     opacity: 1;
 }
 
-/* 形变后露出的文字（平时完全透明，不占视线） */
+/* 形变后露出的文字。⚠️ 排版必须与 account.css 的 .acc-home-btn 一致：
+   都是 flex + gap 6px + 左右内边距 14px，箭头 14px、文字 13px ——
+   这样胶囊落地后文字停在同一个位置，换页看不出接缝。 */
 .avatar-morph-label {
     position: absolute;
-    left: 13px;
-    top: 50%;
-    transform: translateY(-50%);
+    left: 0;
+    right: 0;
+    top: 0;
+    bottom: 0;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 0 14px;
     color: #ffffff;
     font-size: 13px;
     line-height: 1;
@@ -162,6 +178,11 @@ body {
     opacity: 0;
     pointer-events: none;
     transition: opacity 0.28s linear;
+}
+
+.avatar-morph-arrow {
+    font-size: 14px;
+    line-height: 1;
 }
 
 /* 类选择器，选中class为nav-items的元素，用于包含9个导航矩形项的容器 */
@@ -235,6 +256,8 @@ body {
     /* 圆角由图片自己裁：容器改成 overflow:visible 之后，裁剪不能在容器上做，
        9px = 容器圆角 12px − 边框 3px，正好贴合容器内沿 */
     border-radius: 9px;
+    /* 过场里照片的淡入淡出（与 .avatar-morph-label 的时长一致） */
+    transition: opacity 0.28s linear;
 }
 
 /* ===================== 头像 → 个人中心的过场遮罩 ===================== *
@@ -273,6 +296,27 @@ body {
 
 /* 第一帧：可见（此时半径仍是 0，屏幕上看不到东西，但过渡的起点已经就位） */
 .avatar-zoom.is-armed {
+    visibility: visible;
+}
+
+/* ===================== 反向过场（从个人中心返回）=====================
+ * index.html 的 head 里那段内联脚本会在 ?from=account 时给 <html> 挂上 is-returning：
+ * 遮罩还没就位之前先别把主界面画出来（只画一层底色），避免「先闪一下主界面再倒放」。
+ * 底色与 .avatar-zoom 的渐变逐字一致，所以两者衔接看不出来。
+ * main.js 一把遮罩摆好就会立刻摘下这个类，内容随即在遮罩下面正常渲染。 */
+html.is-returning {
+    background-image: linear-gradient(160deg, #1f2d3d 0%, #14507d 45%, #1565c0 100%);
+    background-attachment: fixed;
+    background-repeat: no-repeat;
+    background-size: cover;
+}
+
+html.is-returning body > *:not(.avatar-zoom) {
+    visibility: hidden;
+}
+
+/* 被 JS 搬到 body 上的头像（倒放的起点）要重新可见：visibility 允许被子元素改写 */
+html.is-returning .rounded-square.is-flying {
     visibility: visible;
 }
 

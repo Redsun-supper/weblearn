@@ -161,6 +161,8 @@
         var visible = PANEL_GROUPS[group] || [];
         Object.keys(PANEL_GROUPS).forEach(function (key) {
             PANEL_GROUPS[key].forEach(function (id) {
+                // 加载卡单独处理：它是**绝对定位的浮层**，要「淡出」而不是立刻藏掉
+                if (id === 'panelLoading') return;
                 var node = $(id);
                 if (!node) return;
                 if (visible.indexOf(id) >= 0) {
@@ -170,8 +172,48 @@
                 }
             });
         });
+
+        // 加载卡：新面板已经在下面渲染好了，让它在这一层之上淡出 180ms 再藏起来。
+        // （淡出时长与 account.css 的 .acc-loading 过渡一致）
+        var loading = $('panelLoading');
+        if (loading) {
+            if (group === 'loading') {
+                clearTimeout(loadingFadeTimer);
+                loadingFadeTimer = null;
+                loading.classList.remove('is-leaving');
+                loading.removeAttribute('hidden');
+            } else if (!loading.hasAttribute('hidden')) {
+                loading.classList.add('is-leaving');
+                clearTimeout(loadingFadeTimer);
+                loadingFadeTimer = window.setTimeout(function() {
+                    loadingFadeTimer = null;
+                    loading.setAttribute('hidden', 'hidden');
+                    loading.classList.remove('is-leaving');
+                }, LOADING_FADE_MS);
+            }
+        }
+
         // 显示之后再排动效：几块面板会按顺序依次浮入
         playEnter(visible.map(function (id) { return $(id); }));
+    }
+
+    // 加载卡的交叉淡出时长（毫秒）：与 account.css 的 .acc-loading 过渡一致
+    var LOADING_FADE_MS = 180;
+    var loadingFadeTimer = null;
+
+    // 顶栏的入场：品牌与徽章各错开一点（动作仍是 accRise，画风不变）。
+    // 为什么单独排而不是并进面板那套：顶栏不在面板分组里，而且它必须在遮罩溶掉的
+    // 那一刻"到位"—— 之前没有动画，两个文字是凭空出现的（用户反馈很突兀）。
+    // ⚠️ 返回按钮（.acc-home-btn）永远不参与：它是正向形变的落点，动了就前功尽弃。
+    function playTopbarIn() {
+        [['.acc-brand', 60], ['.acc-brand-sub', 90]].forEach(function(pair) {
+            var el = document.querySelector(pair[0]);
+            if (!el) return;
+            for (var k = 0; k < ENTER_CLASSES.length; k++) el.classList.remove(ENTER_CLASSES[k]);
+            el.classList.remove('is-exit');
+            el.style.animationDelay = pair[1] + 'ms';
+            el.classList.add('is-enter');
+        });
     }
 
     // 卡片高度过渡的时长（毫秒）：只在这里写一次，过渡是行内设的，不用和 CSS 对齐
@@ -344,23 +386,35 @@
         return li;
     }
 
+    // 「正在检查登录状态」这一屏的**最短显示时长**（毫秒）。
+    // 本地 /me 只要几毫秒，一返回就切面板的话它会一闪而过，后面的表单像凭空冒出来。
+    // 语义：响应晚于阈值 → 回来后立刻开始；早于阈值 → 等到阈值再开始（见 refreshState）。
+    var MIN_CHECK_MS = 600;
+
     // 问服务端「我是谁」：决定显示哪一块面板
     function refreshState() {
+        var t0 = Date.now();
         return api('GET', '/api/auth/me').then(function (res) {
-            if (res.status === 200 && res.data && res.data.data && res.data.data.user) {
-                showAccount(res.data.data.user);
-                return true;
-            }
-            // 顺序有讲究：先 switchTab 让滑块就位（此刻面板还藏着，字段入场会被跳过），
-            // 再由 showOnly 把整块面板按「浮起淡入」放出来 —— 这样首屏是统一的入场动画，
-            // 而不是登录表单单独从左边滑进来。
-            setHero(null);
-            switchTab('login');
-            showOnly('auth');
-            if (res.networkError) {
-                setMsg($('loginMsg'), messageOf(res), 'error');
-            }
-            return false;
+            var wait = Math.max(0, MIN_CHECK_MS - (Date.now() - t0));
+            return new Promise(function (resolve) {
+                window.setTimeout(function () {
+                    if (res.status === 200 && res.data && res.data.data && res.data.data.user) {
+                        showAccount(res.data.data.user);
+                        resolve(true);
+                        return;
+                    }
+                    // 顺序有讲究：先 switchTab 让滑块就位（此刻面板还藏着，字段入场会被跳过），
+                    // 再由 showOnly 把整块面板按「浮起淡入」放出来 —— 这样首屏是统一的入场动画，
+                    // 而不是登录表单单独从左边滑进来。
+                    setHero(null);
+                    switchTab('login');
+                    showOnly('auth');
+                    if (res.networkError) {
+                        setMsg($('loginMsg'), messageOf(res), 'error');
+                    }
+                    resolve(false);
+                }, wait);
+            });
         });
     }
 
@@ -518,6 +572,48 @@
         });
     }
 
+    // ===================== 反向转场：点返回 =====================
+    //
+    // 顺序是刻意的（用户要的效果）：**先在本页把组件淡出**，再跳到首页并带上
+    // ?from=account —— 首页那边会一进来就把画面摆成「本页最后一帧」（遮罩盖满 +
+    // 头像已经是胶囊的样子），然后把圆圈缩回头像，等于把来时的过场倒放一遍。
+    //
+    // ⚠️ 返回按钮（.acc-home-btn）与顶栏**不参与淡出**：那颗按钮是反向形变的起点，
+    // 它必须留在原地，等首页的胶囊接着它继续演。
+    var EXIT_STEP_MS = 18;   // 组件之间退场的错开间隔
+    var EXIT_MS = 260;       // 单个组件的退场时长（与 account.css 的 accFall 一致）
+    var leaving = false;
+
+    // 收集当前**可见**面板里的所有组件（含身份卡），逆序排延时
+    function playExit() {
+        var nodes = [];
+        var all = document.querySelectorAll('.acc-wrap [data-enter]');
+        for (var i = 0; i < all.length; i++) {
+            // 藏着的面板里的组件不参与（closest 会把它们找出来）
+            if (all[i].closest('[hidden]')) continue;
+            nodes.push(all[i]);
+        }
+
+        for (var k = 0; k < nodes.length; k++) {
+            // 逆序：最后进场的最先退场，看起来像「收拢回去」
+            var el = nodes[nodes.length - 1 - k];
+            for (var c = 0; c < ENTER_CLASSES.length; c++) el.classList.remove(ENTER_CLASSES[c]);
+            el.style.animationDelay = (k * EXIT_STEP_MS) + 'ms';
+            el.classList.add('is-exit');
+        }
+        return EXIT_MS + nodes.length * EXIT_STEP_MS;
+    }
+
+    function leaveToHome(event) {
+        if (event) event.preventDefault();
+        if (leaving) return;   // 动画期间再点不重复触发
+        leaving = true;
+        var wait = playExit();
+        window.setTimeout(function () {
+            window.location.href = '../index.html?from=account';
+        }, wait);
+    }
+
     // ===================== 启动 =====================
 
     document.addEventListener('DOMContentLoaded', function () {
@@ -529,6 +625,17 @@
         } else {
             playEnter([document.querySelector('.acc-hero')]);
         }
+
+        // 顶栏的品牌与徽章单独入场（返回按钮不动）
+        playTopbarIn();
+
+        // 三处「回首页」的入口都走同一条反向转场：左上角按钮、品牌、操作卡里的「回到站点」
+        ['accHome', 'accBack'].forEach(function (id) {
+            var el = $(id);
+            if (el) el.addEventListener('click', leaveToHome);
+        });
+        var brand = document.querySelector('.acc-brand');
+        if (brand) brand.addEventListener('click', leaveToHome);
 
         var tabLogin = $('tabLogin');
         var tabRegister = $('tabRegister');
@@ -567,6 +674,34 @@
         refreshState();
     });
 
+    // 浏览器「前进后退缓存」（bfcache）把本页整页恢复回来时：退场动画已经把组件透明掉了，
+    // 脚本又不会重跑 —— 不复位的话回来就是一片空白。这里把退场类摘掉并重播入场。
+    window.addEventListener('pageshow', function (event) {
+        if (!event.persisted) return;
+        leaving = false;
+        document.querySelectorAll('.is-exit').forEach(function (el) {
+            el.classList.remove('is-exit');
+            el.style.animationDelay = '';
+        });
+        playTopbarIn();
+        // 按当前可见的那一组重播入场
+        var group = 'auth';
+        Object.keys(PANEL_GROUPS).forEach(function (key) {
+            if (key === 'loading') return;
+            PANEL_GROUPS[key].forEach(function (id) {
+                var card = $(id);
+                if (card && !card.hasAttribute('hidden')) group = key;
+            });
+        });
+        showOnly(group);
+    });
+
     // 暴露到 window 便于在控制台调试（playEnter 方便单独重放某个组件的入场动效）
-    window.__guangxueAccount = { api: api, refreshState: refreshState, playEnter: playEnter };
+    window.__guangxueAccount = {
+        api: api,
+        refreshState: refreshState,
+        playEnter: playEnter,
+        playExit: playExit,
+        leaveToHome: leaveToHome
+    };
 })();
