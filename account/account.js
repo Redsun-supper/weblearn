@@ -119,17 +119,22 @@
         return nodes;
     }
 
+    // 三种入场类：默认「浮起淡入」，切标签页时按方向「从侧边滑入」（动作在 account.css）
+    var ENTER_CLASSES = ['is-enter', 'is-enter-right', 'is-enter-left'];
+
     // 给这些组件排一遍入场动效。
+    //   mode：'' = 浮起淡入 | 'right' = 从右侧滑入 | 'left' = 从左侧滑入
     // 每次都先摘类再挂：① display:none 的元素不会播动画，所以必须在显示之后再挂；
     // ② 同一块面板重新显示时要能重播，所以中间强制一次重排。
-    function playEnter(cards) {
+    function playEnter(cards, mode) {
         var nodes = collectEnterNodes(cards);
+        var cls = mode === 'right' ? 'is-enter-right' : (mode === 'left' ? 'is-enter-left' : 'is-enter');
         for (var i = 0; i < nodes.length; i++) {
             var el = nodes[i];
-            el.classList.remove('is-enter');
+            for (var k = 0; k < ENTER_CLASSES.length; k++) el.classList.remove(ENTER_CLASSES[k]);
             void el.offsetWidth;
             el.style.animationDelay = (i * ENTER_STEP_MS) + 'ms';
-            el.classList.add('is-enter');
+            el.classList.add(cls);
         }
     }
 
@@ -158,8 +163,20 @@
         if (tabRegister) tabRegister.className = 'acc-tab' + (isLogin ? '' : ' is-active');
         if ($('formLogin')) $('formLogin').hidden = !isLogin;
         if ($('formRegister')) $('formRegister').hidden = isLogin;
-        // 切到哪张表单，哪张的字段就重新入场一次（藏起来的那张会被 collectEnterNodes 跳过）
-        playEnter([isLogin ? $('formLogin') : $('formRegister')]);
+
+        // 滑块滑到对应的位置（首屏就是「登录」，所以初次进来它已经在左边、不会先滑一下）
+        var thumb = $('tabsThumb');
+        if (thumb) {
+            if (isLogin) {
+                thumb.classList.remove('is-second');
+            } else {
+                thumb.classList.add('is-second');
+            }
+        }
+
+        // 表单顺着点击方向滑进来：切到「注册」从右边来，切回「登录」从左边来
+        // （藏起来的那张会被 collectEnterNodes 跳过）
+        playEnter([isLogin ? $('formLogin') : $('formRegister')], isLogin ? 'left' : 'right');
     }
 
     // ===================== 当前账号 =====================
@@ -262,9 +279,12 @@
                 showAccount(res.data.data.user);
                 return true;
             }
-            showOnly('auth');
+            // 顺序有讲究：先 switchTab 让滑块就位（此刻面板还藏着，字段入场会被跳过），
+            // 再由 showOnly 把整块面板按「浮起淡入」放出来 —— 这样首屏是统一的入场动画，
+            // 而不是登录表单单独从左边滑进来。
             setHero(null);
             switchTab('login');
+            showOnly('auth');
             if (res.networkError) {
                 setMsg($('loginMsg'), messageOf(res), 'error');
             }

@@ -69,6 +69,39 @@ body.acc-page {
     animation: accRise 0.42s cubic-bezier(0.22, 0.61, 0.36, 1) both;
 }
 
+/* 切标签页时的入场：不做「原地淡入」，而是**顺着点击方向从侧边滑进来**——
+   切到「注册」从右边来、切回「登录」从左边来，和滑块的移动方向一致。
+   动作在下面这几个 keyframes 里，什么时候开始仍由 account.js 排延时。 */
+@keyframes accSlideFromRight {
+    from {
+        opacity: 0;
+        transform: translateX(22px);
+    }
+    to {
+        opacity: 1;
+        transform: none;
+    }
+}
+
+@keyframes accSlideFromLeft {
+    from {
+        opacity: 0;
+        transform: translateX(-22px);
+    }
+    to {
+        opacity: 1;
+        transform: none;
+    }
+}
+
+.is-enter-right {
+    animation: accSlideFromRight 0.3s cubic-bezier(0.22, 0.61, 0.36, 1) both;
+}
+
+.is-enter-left {
+    animation: accSlideFromLeft 0.3s cubic-bezier(0.22, 0.61, 0.36, 1) both;
+}
+
 /* 身份卡里的头像用回弹那套 */
 .acc-hero-avatar.is-enter {
     animation: accPop 0.5s cubic-bezier(0.22, 0.61, 0.36, 1) both;
@@ -82,11 +115,17 @@ body.acc-page {
     animation: none;
 }
 
-/* 无障碍：系统开启「减少动态效果」时不播任何入场动画 */
+/* 无障碍：系统开启「减少动态效果」时不播任何入场动画，滑块也直接就位 */
 @media (prefers-reduced-motion: reduce) {
     .is-enter,
+    .is-enter-right,
+    .is-enter-left,
     .acc-hero-avatar.is-enter {
         animation: none;
+    }
+
+    .acc-tabs-thumb {
+        transition: none;
     }
 }
 
@@ -233,6 +272,31 @@ body.acc-page {
     padding: 4px;
     border-radius: 10px;
     background-color: #f1f3f5;
+    /* 滑块要相对它定位 */
+    position: relative;
+}
+
+/* 会滑动的白底高亮（分段控件的那块「滑块」）。
+   几何说明：容器的 100% 是它的 padding box（无边框），所以
+     · 每个按钮宽度 = (100% − 左右内边距 8px − 间距 8px) / 2 = (100% − 16px) / 2
+     · 第二个位置 = 自身宽度 + 间距 → translateX(calc(100% + 8px))
+   两个按钮是 flex:1 等宽的，所以用百分比就够，不需要 JS 去量像素。 */
+.acc-tabs-thumb {
+    position: absolute;
+    top: 4px;
+    left: 4px;
+    width: calc((100% - 16px) / 2);
+    height: calc(100% - 8px);
+    border-radius: 8px;
+    background-color: #ffffff;
+    box-shadow: 0 1px 4px rgba(38, 50, 56, 0.12);
+    pointer-events: none;
+    transition: transform 0.28s cubic-bezier(0.34, 0.86, 0.36, 1);
+}
+
+/* 选中「注册」时滑块滑到右边（首屏默认是「登录」，所以初始就在左边、不会先滑一下） */
+.acc-tabs-thumb.is-second {
+    transform: translateX(calc(100% + 8px));
 }
 
 .acc-tab {
@@ -245,18 +309,19 @@ body.acc-page {
     font-family: inherit;
     font-size: 14px;
     cursor: pointer;
-    transition: background-color 0.2s, color 0.2s;
+    transition: color 0.2s;
+    /* 相对定位 + 在 DOM 里位于滑块之后：保证文字画在滑块上面 */
+    position: relative;
 }
 
 .acc-tab:hover {
     color: #37474f;
 }
 
+/* 选中态只改文字（白底高亮由 .acc-tabs-thumb 提供，所以这里不能再加背景） */
 .acc-tab.is-active {
-    background-color: #ffffff;
     color: #263238;
     font-weight: bold;
-    box-shadow: 0 1px 4px rgba(38, 50, 56, 0.12);
 }
 
 /* ===================== 表单 ===================== */

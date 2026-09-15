@@ -97,6 +97,9 @@
         <!-- ===================== 未登录：登录 / 注册 ===================== -->
         <section class="acc-card" id="panelAuth" data-enter hidden>
             <div class="acc-tabs" role="tablist" data-enter>
+                <!-- 滑动滑块：白底高亮不再挂在按钮上，而是这块底座按点击方向滑过去
+                     （宽度用百分比算，两个按钮等宽，所以纯 CSS 就能对准，不依赖 JS 量尺寸） -->
+                <span class="acc-tabs-thumb" id="tabsThumb" aria-hidden="true"></span>
                 <button class="acc-tab is-active" type="button" id="tabLogin">登录</button>
                 <button class="acc-tab" type="button" id="tabRegister">注册</button>
             </div>
