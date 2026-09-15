@@ -448,6 +448,32 @@ body.acc-page {
     font-size: 12px;
 }
 
+/* 说明文字里可点击的「注册」：看着像链接，其实是按钮（点了切标签页） */
+.acc-link-btn {
+    padding: 0;
+    border: none;
+    background: none;
+    color: #1565c0;
+    font-family: inherit;
+    font-size: inherit;
+    line-height: inherit;
+    text-decoration: underline;
+    cursor: pointer;
+}
+
+.acc-link-btn:hover {
+    color: #0d47a1;
+}
+
+/* 提示里出现的代码样式（例如邀请码里的 `-`） */
+.acc-hint code {
+    padding: 0 3px;
+    border-radius: 4px;
+    background-color: #eef2f5;
+    color: #546e7a;
+    font-family: Consolas, "Courier New", monospace;
+}
+
 .acc-info {
     display: grid;
     gap: 10px;

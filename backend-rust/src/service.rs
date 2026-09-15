@@ -3,7 +3,7 @@
 //! 分层约定：
 //!   - 慢操作（Argon2 哈希/校验、发信）**一律在数据库锁之外**完成；
 //!   - 需要原子的动作（占邀请码 + 校验验证码 + 建用户 + 建会话）放进一个事务；
-//!   - 每个状态变更都写审计日志（`audit_logs`），但**绝不写口令与验证码明文**。
+//!   - 每个状态变更都写审计日志（`audit_logs`），但**绝不写密码与验证码明文**。
 
 use std::sync::Arc;
 
@@ -35,6 +35,20 @@ use crate::store::SqliteStore;
 enum TxOutcome<T> {
     Commit(T),
     Reject(AuthError),
+}
+
+/// 查邀请码：先按**原样**查（`-` 是邀请码自身格式的一部分，后台将来靠它区分用途），
+/// 查不到再按「去掉全部 `-`」查一次 —— 这样管理员手抄成
+/// `XXXX-XXXX-XXXX-XXXX` 的老习惯仍然能用。
+fn find_invite(conn: &rusqlite::Connection, code: &str) -> crate::store::StoreResult<Option<InviteRow>> {
+    if let Some(inv) = sql::find_invite_by_code(conn, code)? {
+        return Ok(Some(inv));
+    }
+    let stripped = code.replace('-', "");
+    if stripped != code {
+        return sql::find_invite_by_code(conn, &stripped);
+    }
+    Ok(None)
 }
 
 /// 一次成功的登录/注册/刷新所返回的东西
@@ -69,6 +83,7 @@ pub struct AuthUser {
 pub struct RegisterInput {
     pub email: String,
     pub email_code: String,
+    /// 邀请码（可选，多个用空格分隔）：空 = 普通用户；非空 = 兑换成功即升级为管理员
     pub invite_code: String,
     pub password: String,
     pub username: Option<String>,
@@ -177,13 +192,18 @@ impl AuthService {
 
     // ------------------------------------------------------------ 邮箱验证码
 
-    /// 发送注册验证码：先确认邀请码有效，再发码（避免变成开放邮件中继）
+    /// 发送注册验证码。
+    ///
+    /// 邀请码是**可选**的：不填就是开放注册（邮箱验证码是唯一门槛），
+    /// 填了就逐个校验，让用户在这一步就拿到「码不对」的反馈，而不是等到注册才失败。
     pub async fn request_email_code(&self, email_raw: &str, invite_code_raw: &str, ip: &str) -> Result<CodeSent> {
         let email = validate::normalize_email(email_raw)
             .ok_or_else(|| AuthError::InvalidParams("邮箱格式不正确".into()))?;
-        let invite_code = invite::normalize_code(invite_code_raw);
-        if !invite::is_plausible(&invite_code) {
-            return Err(AuthError::InvalidInvite);
+        let codes = invite::split_codes(invite_code_raw);
+        for code in &codes {
+            if !invite::is_plausible(code) {
+                return Err(AuthError::InvalidInvite);
+            }
         }
 
         // 限流：同邮箱 1 次/分钟、5 次/小时；同 IP 20 次/小时
@@ -195,15 +215,17 @@ impl AuthService {
 
         let now = self.clock.now();
         let email_q = email.clone();
-        let invite_q = invite_code.clone();
+        let codes_q = codes.clone();
         let registered = self
             .read(move |conn| {
-                let inv = sql::find_invite_by_code(conn, &invite_q)?.ok_or(AuthError::InvalidInvite)?;
-                match invite::evaluate(inv.disabled, inv.used_count, inv.max_uses, inv.expires_at, now) {
-                    InviteState::Usable => {}
-                    InviteState::Disabled => return Err(AuthError::InvalidInvite),
-                    InviteState::Expired => return Err(AuthError::InviteExpired),
-                    InviteState::Exhausted => return Err(AuthError::InviteExhausted),
+                for code in &codes_q {
+                    let inv = find_invite(conn, code)?.ok_or(AuthError::InvalidInvite)?;
+                    match invite::evaluate(inv.disabled, inv.used_count, inv.max_uses, inv.expires_at, now) {
+                        InviteState::Usable => {}
+                        InviteState::Disabled => return Err(AuthError::InvalidInvite),
+                        InviteState::Expired => return Err(AuthError::InviteExpired),
+                        InviteState::Exhausted => return Err(AuthError::InviteExhausted),
+                    }
                 }
                 Ok(sql::find_user_by_email(conn, &email_q)?.is_some())
             })
@@ -260,9 +282,13 @@ impl AuthService {
         if !email_code::is_well_formed(&input.email_code) {
             return Err(AuthError::InvalidParams("验证码应为 6 位数字".into()));
         }
-        let invite_code = invite::normalize_code(&input.invite_code);
-        if !invite::is_plausible(&invite_code) {
-            return Err(AuthError::InvalidInvite);
+        // 邀请码**可选**：不填 = 普通用户（开放注册）；填了就逐个校验，
+        // 注册成功后把账号升级成管理员（将来还可以按 `-` 前缀区分成积分 / 礼物等用途）。
+        let codes = invite::split_codes(&input.invite_code);
+        for code in &codes {
+            if !invite::is_plausible(code) {
+                return Err(AuthError::InvalidInvite);
+            }
         }
         self.limiter.check(&format!("register:ip:{ip}"), &[self.cfg.rate.register_ip])?;
 
@@ -278,7 +304,7 @@ impl AuthService {
         let ttl = self.refresh_ttl_seconds();
 
         let email_w = email.clone();
-        let invite_w = invite_code.clone();
+        let codes_w = codes.clone();
         let code_w = input.email_code.clone();
         let device_w = device.clone();
         let ua_w = ua.to_string();
@@ -286,15 +312,20 @@ impl AuthService {
 
         let (user_id, session_id, refresh_token) = match self
             .write(move |conn| -> Result<TxOutcome<(i64, i64, String)>> {
-                // ① 邀请码
-                let Some(inv) = sql::find_invite_by_code(conn, &invite_w)? else {
-                    return Ok(TxOutcome::Reject(AuthError::InvalidInvite));
-                };
-                match invite::evaluate(inv.disabled, inv.used_count, inv.max_uses, inv.expires_at, now) {
-                    InviteState::Usable => {}
-                    InviteState::Disabled => return Ok(TxOutcome::Reject(AuthError::InvalidInvite)),
-                    InviteState::Expired => return Ok(TxOutcome::Reject(AuthError::InviteExpired)),
-                    InviteState::Exhausted => return Ok(TxOutcome::Reject(AuthError::InviteExhausted)),
+                // ① 邀请码（可选，可多张）：逐个校验，全部有效才继续。
+                //    放在验证码之前是有意的——填错了码要优先报「邀请码无效」。
+                let mut redeemed: Vec<InviteRow> = Vec::new();
+                for code in &codes_w {
+                    let Some(inv) = find_invite(conn, code)? else {
+                        return Ok(TxOutcome::Reject(AuthError::InvalidInvite));
+                    };
+                    match invite::evaluate(inv.disabled, inv.used_count, inv.max_uses, inv.expires_at, now) {
+                        InviteState::Usable => {}
+                        InviteState::Disabled => return Ok(TxOutcome::Reject(AuthError::InvalidInvite)),
+                        InviteState::Expired => return Ok(TxOutcome::Reject(AuthError::InviteExpired)),
+                        InviteState::Exhausted => return Ok(TxOutcome::Reject(AuthError::InviteExhausted)),
+                    }
+                    redeemed.push(inv);
                 }
 
                 // ② 邮箱验证码（错误一次就累加尝试次数）
@@ -321,18 +352,28 @@ impl AuthService {
                     return Ok(TxOutcome::Reject(AuthError::EmailTaken));
                 }
 
-                // ④ 占邀请码额度（条件更新，返回值 0 说明刚好被别人用掉了）
-                if sql::consume_invite(conn, inv.id, now)? == 0 {
-                    return Ok(TxOutcome::Reject(AuthError::InviteExhausted));
+                // ④ 逐个占邀请码额度（条件更新，返回值 0 说明刚好被别人用掉了）。
+                //    ⚠️ 这一步排在验证码之后：这里的 Reject 是要**提交**的（验证码已经被正确用掉，
+                //    烧掉它是应该的）。代价是极端并发下若第 N 张券刚好被抢光，前面几张的核销
+                //    会留在账上——这是可接受的账目偏差，换取的是失败语义与原来完全一致。
+                for inv in &redeemed {
+                    if sql::consume_invite(conn, inv.id, now)? == 0 {
+                        return Ok(TxOutcome::Reject(AuthError::InviteExhausted));
+                    }
                 }
 
                 // ⑤ 建用户 + 登录标识（多方式登录的预留位）
+                //    带邀请码 → 管理员（兑换成功的标志）；不带 → 普通用户
+                let role = if redeemed.is_empty() { "user" } else { "admin" };
                 let user_id =
-                    sql::insert_user(conn, &email_w, username.as_deref(), &password_hash, "user", Some(now), now)?;
+                    sql::insert_user(conn, &email_w, username.as_deref(), &password_hash, role, Some(now), now)?;
                 sql::insert_identity(conn, user_id, "email", &email_w, Some(now), now)?;
-                sql::insert_invite_use(conn, inv.id, Some(user_id), &email_w, &ip_w, now)?;
-                audit(now, conn, "register", Some(user_id), &email_w, &ip_w, &ua_w, "邮箱注册")?;
-                audit(now, conn, "invite_use", Some(user_id), &inv.code, &ip_w, &ua_w, "")?;
+                for inv in &redeemed {
+                    sql::insert_invite_use(conn, inv.id, Some(user_id), &email_w, &ip_w, now)?;
+                    audit(now, conn, "invite_use", Some(user_id), &inv.code, &ip_w, &ua_w, "邀请码兑换")?;
+                }
+                let register_note = if redeemed.is_empty() { "邮箱注册" } else { "邮箱注册（邀请码升级为管理员）" };
+                audit(now, conn, "register", Some(user_id), &email_w, &ip_w, &ua_w, register_note)?;
 
                 // ⑥ 注册即登录：新建一个会话
                 let family = uuid::Uuid::new_v4().to_string();
@@ -398,8 +439,8 @@ impl AuthService {
                 .write(move |conn| Ok(sql::record_login_failure(conn, user_id, threshold, minutes, now)?))
                 .await?;
             let detail = match locked {
-                Some(_) => format!("口令不正确（第 {attempts} 次，已锁定）"),
-                None => format!("口令不正确（第 {attempts} 次）"),
+                Some(_) => format!("密码不正确（第 {attempts} 次，已锁定）"),
+                None => format!("密码不正确（第 {attempts} 次）"),
             };
             self.audit_fail(Some(user.id), &email, ip, ua, "login_fail", &detail).await;
             return Err(if locked.is_some() { AuthError::AccountLocked } else { AuthError::BadCredentials });
@@ -718,7 +759,7 @@ impl AuthService {
 
     // ------------------------------------------------------------ 管理员
 
-    /// 确保管理员账号存在（幂等：已存在就跳过，绝不覆盖已有口令）
+    /// 确保管理员账号存在（幂等：已存在就跳过，绝不覆盖已有密码）
     pub async fn seed_admin(&self, email_raw: &str, password: &str) -> Result<bool> {
         let email = validate::normalize_email(email_raw)
             .ok_or_else(|| AuthError::InvalidParams("管理员邮箱格式不正确".into()))?;
@@ -748,7 +789,7 @@ impl AuthService {
         .await
     }
 
-    /// 改口令（CLI 用；会顺带吊销该用户的全部会话）
+    /// 改密码（CLI 用；会顺带吊销该用户的全部会话）
     pub async fn set_password(&self, email_raw: &str, password: &str) -> Result<()> {
         let email = validate::normalize_email(email_raw)
             .ok_or_else(|| AuthError::InvalidParams("邮箱格式不正确".into()))?;

@@ -11,7 +11,7 @@ use serde_json::json;
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum AuthError {
-    /// 参数不合法（邮箱格式、口令强度、缺失字段……）
+    /// 参数不合法（邮箱格式、密码强度、缺失字段……）
     #[error("{0}")]
     InvalidParams(String),
     #[error("邀请码无效")]

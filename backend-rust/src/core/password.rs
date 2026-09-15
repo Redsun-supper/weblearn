@@ -1,11 +1,11 @@
-//! 口令哈希：Argon2id（PHC 字符串）
+//! 密码哈希：Argon2id（PHC 字符串）
 //!
 //! 要点：
 //!   - 参数（内存/迭代/并行度）**写进哈希本身**，所以日后调整参数不会让老哈希失效；
-//!   - 每个口令用独立随机盐（16 字节）；
+//!   - 每个密码用独立随机盐（16 字节）；
 //!   - 校验走 `password_hash` 的比对实现（恒定时间）；
 //!   - 提供 `dummy_verify`：账号不存在时也做一次同参数哈希，让响应时间与
-//!     「账号存在但口令错」接近，避免通过响应耗时枚举邮箱。
+//!     「账号存在但密码错」接近，避免通过响应耗时枚举邮箱。
 
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
 use argon2::{Algorithm, Argon2, Params, Version};
@@ -16,7 +16,7 @@ use crate::error::{AuthError, Result};
 
 /// 盐长度（字节）
 const SALT_LEN: usize = 16;
-/// 生成假哈希用的口令（只为耗时，不代表任何真实账号）
+/// 生成假哈希用的密码（只为耗时，不代表任何真实账号）
 const DUMMY_PASSWORD: &str = "dummy-password-for-timing-only-0";
 
 pub struct PasswordCodec {
@@ -47,13 +47,13 @@ impl PasswordCodec {
         self.hasher()
             .hash_password(password.as_bytes(), &salt)
             .map(|h| h.to_string())
-            .map_err(|e| AuthError::Internal(format!("计算口令哈希失败: {e}")))
+            .map_err(|e| AuthError::Internal(format!("计算密码哈希失败: {e}")))
     }
 
-    /// 校验口令；解析失败（库里的哈希被写坏）一律按「不匹配」处理
+    /// 校验密码；解析失败（库里的哈希被写坏）一律按「不匹配」处理
     pub fn verify(&self, password: &str, phc: &str) -> bool {
         let Ok(parsed) = PasswordHash::new(phc) else {
-            tracing::error!("库中的口令哈希无法解析，按不匹配处理");
+            tracing::error!("库中的密码哈希无法解析，按不匹配处理");
             return false;
         };
         self.hasher().verify_password(password.as_bytes(), &parsed).is_ok()
@@ -102,7 +102,7 @@ mod tests {
     #[test]
     fn verify_accepts_unicode_and_long_passwords() {
         let codec = fast();
-        let unicode = "口令Abc123汉字";
+        let unicode = "密码Abc123汉字";
         let long = format!("{}{}", "a1".repeat(60), "Z9");
         assert!(codec.verify(unicode, &codec.hash(unicode).unwrap()));
         assert!(codec.verify(&long, &codec.hash(&long).unwrap()));

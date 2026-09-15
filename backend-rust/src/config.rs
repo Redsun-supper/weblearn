@@ -4,7 +4,7 @@
 //! ⚠️ 生产环境（`APP_ENV=production`）有两条硬性要求，不满足直接启动失败：
 //!   1. 必须显式提供 `AUTH_JWT_SECRET`（否则每次重启密钥都变，且令牌可被伪造）；
 //!   2. 必须显式提供 `AUTH_ADMIN_PASSWORD`（或显式关掉 `AUTH_SEED_ADMIN`），
-//!      不允许把源码里的默认口令带上线。
+//!      不允许把源码里的默认密码带上线。
 
 use std::time::Duration;
 
@@ -13,7 +13,7 @@ use base64::Engine as _;
 
 /// 初始管理员邮箱（需求指定）
 pub const DEFAULT_ADMIN_EMAIL: &str = "2262997289@qq.com";
-/// 初始管理员口令（**仅 development 允许作为默认值**）
+/// 初始管理员密码（**仅 development 允许作为默认值**）
 pub const DEFAULT_ADMIN_PASSWORD: &str = "7289HR_RedSun";
 /// 开发环境兜底密钥（生产必须覆盖）
 const DEV_INSECURE_SECRET: &str = "guangxue-dev-insecure-secret";
@@ -269,7 +269,7 @@ impl Config {
             Some(p) => {
                 cfg.admin_password_is_default = p == DEFAULT_ADMIN_PASSWORD;
                 if cfg.is_production() && cfg.admin_password_is_default {
-                    return Err("生产环境不允许使用默认管理员口令，请设置 AUTH_ADMIN_PASSWORD".to_string());
+                    return Err("生产环境不允许使用默认管理员密码，请设置 AUTH_ADMIN_PASSWORD".to_string());
                 }
                 Some(p)
             }
@@ -278,7 +278,7 @@ impl Config {
                 if cfg.is_production() {
                     None
                 } else {
-                    // 开发环境用需求里指定的默认口令，开箱即可登录
+                    // 开发环境用需求里指定的默认密码，开箱即可登录
                     cfg.admin_password_is_default = true;
                     Some(DEFAULT_ADMIN_PASSWORD.to_string())
                 }

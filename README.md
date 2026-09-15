@@ -146,7 +146,7 @@ e:\porject\4/
 │   │   ├── store/               # 事务边界与全部 SQL
 │   │   ├── service.rs           # 业务规则（注册/登录/刷新/会话/邀请码）
 │   │   ├── rate_limit.rs        # 内存滑动窗口限流
-│   │   ├── core/                # 纯逻辑：口令 / 令牌 / 邀请码 / 验证码 / 校验
+│   │   ├── core/                # 纯逻辑：密码 / 令牌 / 邀请码 / 验证码 / 校验
 │   │   ├── mail/                # 邮件发送（开发模式只打日志，配好 SMTP 即启用）
 │   │   ├── http/                # axum 路由、Cookie、CSRF、鉴权提取器
 │   │   └── bin/                 # seed-admin / invite 命令行工具
@@ -306,7 +306,7 @@ modules/<学科>/admin/  各学科自己的后台模块，按需动态加载
 | 方法 | 路径 | 说明 | 状态 |
 |------|------|------|------|
 | GET | `/api/auth/health` | 账号服务健康检查 | ✅ 可用 |
-| POST | `/api/auth/email-code` | 发注册验证码（**先校验邀请码再发信**，避免开放邮件中继） | ✅ 可用 |
+| POST | `/api/auth/email-code` | 发注册验证码（邀请码可选：填了先校验；不填直接发） | ✅ 可用 |
 | POST | `/api/auth/register` | 邮箱 + 邀请码 + 验证码注册，成功即登录 | ✅ 可用 |
 | POST | `/api/auth/login` | 登录（**每次登录新建会话 → 多端同时在线**） | ✅ 可用 |
 | POST | `/api/auth/refresh` | 轮换 refresh 令牌；旧令牌重放会吊销整条轮换链 | ✅ 可用 |
@@ -612,14 +612,20 @@ go run ./cmd/seed -file my_words.json -db guangxue.db
 只负责 `/api/auth/*`；Go 主后端继续负责词汇复习接口。线上 Nginx 与本地 `dev-server.js`
 都按前缀分流，两边形态一致。
 
-### 注册：邀请码 + 邮箱验证码，两道门
+### 注册：邮箱验证码是门槛，邀请码是「升级券」
 
-1. `POST /api/auth/email-code`：先确认**邀请码有效**（未停用、未过期、没用完），
-   再给该邮箱发 6 位验证码（10 分钟有效、最多试 5 次，重发会让旧码立即失效）；
-2. `POST /api/auth/register`：邀请码 + 验证码 + 口令三样齐了才建号；邀请码用量在
-   **同一事务**里占位，所以同一枚码被并发使用时只有一个能成功。
+1. `POST /api/auth/email-code`：给该邮箱发 6 位验证码（10 分钟有效、最多试 5 次，
+   重发会让旧码立即失效）。**邀请码可选**——填了就先校验（未停用 / 未过期 / 没用完），
+   让用户在发码这一步就拿到「码不对」的反馈；不填直接发码。
+2. `POST /api/auth/register`：验证码 + 邮箱 + 密码即可建号，**注册完就是登录状态**。
+   - **不带邀请码** → 普通用户（`role=user`），也就是**开放注册**；
+   - **带邀请码** → 注册即**升级为管理员**（`role=admin`）。将来同一个入口还会承载
+     积分 / 礼物之类的兑换（后台靠邀请码里的 `-` 前缀区分用途）。
+   - 邀请码用量在**同一事务**里占位，所以同一枚码被并发使用时只有一个能成功；
+     多个邀请码用**空格**分隔，一张张依次核销（同一个码写两遍只扣一次）。
 
-> 「先校验邀请码再发信」是刻意的：否则这个接口就成了任何人都能用来群发邮件的开放中继。
+> ⚠️ 邀请码现在等同于「管理员授权」：拿到码的人注册出来就是管理员。
+> 所以码只发给信得过的人，用完可以 `POST /api/auth/admin/invites/{id}/disable` 停用。
 > 邀请码由管理员生成：`POST /api/auth/admin/invites`（明文码只在生成响应里出现一次），
 > 或命令行 `cargo run --release --bin invite -- create --count 3`。
 
@@ -633,20 +639,21 @@ go run ./cmd/seed -file my_words.json -db guangxue.db
 - refresh 令牌**每次使用都轮换**；一枚已用过的令牌再次出现即判定重放，
   **整条轮换链立即吊销**，窃取者与本人都会掉线重新登录。
 
-### 口令与登录态
+### 密码与登录态
 
-- 口令用 **Argon2id** 哈希（OWASP 推荐参数），库里只有 PHC 串，永不存明文；
+- 密码用 **Argon2id** 哈希（OWASP 推荐参数），库里只有 PHC 串，永不存明文；
 - 登录态放 **httpOnly Cookie**（JS 读不到，XSS 也偷不走）：access 15 分钟（HS256 JWT）、
   refresh 30 天（库中只存 SHA-256 摘要）；
 - 受保护接口每次都会校验会话表，所以**登出与踢端是即时生效的**，不必等 access 过期；
 - 防爆破：账号连续失败 5 次锁 15 分钟（落库），另有 IP / 邮箱维度的滑动窗口限流；
-- 权限等级**只预留** `users.role`（`user`/`admin`）与 `users.status` 字段，尚未实现 RBAC。
+- 权限等级：`users.role`（`user`/`admin`）已实际使用——**带邀请码注册即为 `admin`**；
+  `users.status` 与更细的 RBAC 仍是预留字段。
 
 ### 页面与门禁（前端怎么用这套接口）
 
 | 入口 | 做什么 |
 |------|--------|
-| `account/`（个人中心） | 打开先问 `GET /api/auth/me`：已登录显示**身份卡**（头像 + 昵称 + 角色徽章）、账号信息、**登录中的设备列表**（可「登出其他设备」或「退出登录」）、可用操作（管理员多一个进后台的按钮）；未登录显示登录 / 注册表单。注册表单的「获取验证码」带 60 秒倒计时，**本地开发会自动调 `/api/auth/dev/codes` 把验证码填进表单**（生产环境该接口不存在，静默忽略）。所有组件按顺序入场（`data-enter` + `playEnter()`）；**标签栏的选中高亮是滑动的滑块**（`.acc-tabs-thumb`，切标签时滑过去），表单按点击方向从侧边滑入，同时**白色卡片会平滑地向下延伸 / 向上回缩**到新表单的高度（`animateCardHeight()`：量旧高 → 换内容 → 量新高 → 过渡 → 收尾还原成自动高度）；带 `?from=avatar` 进来时跳过身份卡的入场，与首页过场衔接 |
+| `account/`（个人中心） | 打开先问 `GET /api/auth/me`：已登录显示**身份卡**（头像 + 昵称 + 角色徽章）、账号信息、**登录中的设备列表**（可「登出其他设备」或「退出登录」）、可用操作（管理员多一个进后台的按钮）；未登录显示登录 / 注册表单，登录表单下面的小字里「注册」二字**可点击**，点了直接切到注册标签页。**邀请码可留空**（直接注册成普通用户），填了注册后就是管理员；多个邀请码用空格分隔。注册表单的「获取验证码」带 60 秒倒计时，**本地开发会自动调 `/api/auth/dev/codes` 把验证码填进表单**（生产环境该接口不存在，静默忽略）。所有组件按顺序入场（`data-enter` + `playEnter()`）；**标签栏的选中高亮是滑动的滑块**（`.acc-tabs-thumb`，切标签时滑过去），表单按点击方向从侧边滑入，同时**白色卡片会平滑地向下延伸 / 向上回缩**到新表单的高度（`animateCardHeight()`：量旧高 → 换内容 → 量新高 → 过渡 → 收尾还原成自动高度）；带 `?from=avatar` 进来时跳过身份卡的入场，与首页过场衔接 |
 | `admin/`（后台） | 打开先 `checkAuth()` 问服务端：`role=admin` 才渲染后台，否则只显示登录表单（普通账号会明确提示「不是管理员」）。顶栏显示当前账号与「退出登录」 |
 | 站点左上角**头像** | 个人中心的入口（原来是右上角的「登录 / 注册」文字链接）：点击后以头像为圆心扩散一层遮罩盖满全屏，再跳到 `account/?from=avatar`。已登录时头像右下角亮一个绿点、`title` 显示昵称；未登录时是「登录 / 注册 · 个人中心」。⚠️ 它在 `.rectangle` 里，**沉浸模式下会随导航栏一起隐藏**（复习页默认沉浸） |
 
@@ -736,10 +743,10 @@ go build -o server main.go
 cd backend-rust
 cargo build --release           # 产出 target/release/guangxue-auth.exe
 
-# 生产启动（务必显式提供密钥与管理员口令，见 backend-rust/README.md）
+# 生产启动（务必显式提供密钥与管理员密码，见 backend-rust/README.md）
 APP_ENV=production \
 AUTH_JWT_SECRET='一串足够长的随机值' \
-AUTH_ADMIN_PASSWORD='管理员口令' \
+AUTH_ADMIN_PASSWORD='管理员密码' \
 ./target/release/guangxue-auth
 ```
 
@@ -770,9 +777,9 @@ AUTH_ADMIN_PASSWORD='管理员口令' \
 | `AUTH_ALLOWED_ORIGINS` | CSRF 来源白名单 | `http://127.0.0.1:8899,http://localhost:8899` |
 | `AUTH_MAIL_MODE` | `log` 只打日志 / `smtp` 真发信 | `log` |
 | `AUTH_SMTP_*` | SMTP 主机/端口/账号/授权码/发件人/加密方式 | — |
-| `AUTH_ADMIN_EMAIL` / `AUTH_ADMIN_PASSWORD` | 初始管理员 | `2262997289@qq.com` / 开发默认口令 |
+| `AUTH_ADMIN_EMAIL` / `AUTH_ADMIN_PASSWORD` | 初始管理员 | `2262997289@qq.com` / 开发默认密码 |
 | `AUTH_SEED_ADMIN` | 启动时确保管理员存在（幂等） | 随 `APP_ENV` |
-| `AUTH_ARGON2_M_COST` / `_T_COST` / `_P_COST` | 口令哈希参数 | `19456` / `2` / `1` |
+| `AUTH_ARGON2_M_COST` / `_T_COST` / `_P_COST` | 密码哈希参数 | `19456` / `2` / `1` |
 | `AUTH_RL_*` / `AUTH_LOCK_THRESHOLD` / `AUTH_LOCK_MINUTES` | 限流与锁定 | 见 `.env.example` |
 
 ---
@@ -815,8 +822,8 @@ AUTH_ADMIN_PASSWORD='管理员口令' \
 - [x] 英语种子词表与导入命令（`backend-go/cmd/seed`，100 词）
 - [x] **账号系统（Rust 认证服务）**：邮箱注册（管理员邀请码 + 邮箱验证码）、多端同时登录、
       令牌轮换与重放检测、会话管理、邀请码管理（`backend-rust/`）
-- [x] 账号系统安全基线：Argon2id 口令哈希、httpOnly Cookie 登录态、CSRF 来源校验、
-      账号锁定与限流、审计日志（不含口令与验证码明文）
+- [x] 账号系统安全基线：Argon2id 密码哈希、httpOnly Cookie 登录态、CSRF 来源校验、
+      账号锁定与限流、审计日志（不含密码与验证码明文）
 - [x] 账号系统与 Go 后端按前缀分流（`/api/auth/*` → 8081），本地 `dev-server.js` 与线上 Nginx 同形态
 - [x] 个人中心页面 `account/`（身份卡 / 账号信息 / 登录中的设备 / 可用操作，本地开发自动回填验证码，全部组件带入场动效）
 - [x] 后台登录门禁（`admin/` 只放行 `role=admin`）与站点左上角头像入口（点头像扩散过场进个人中心，含登录态圆点）

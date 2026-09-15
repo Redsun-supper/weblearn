@@ -88,7 +88,7 @@ impl TestApp {
         created.codes[0].code.clone()
     }
 
-    /// 确保管理员存在（口令默认用开发默认值）
+    /// 确保管理员存在（密码默认用开发默认值）
     pub async fn seed_admin(&self, email: &str, password: &str) {
         self.state.service.seed_admin(email, password).await.expect("建管理员");
     }
@@ -367,8 +367,58 @@ pub async fn fetch_dev_code(client: &mut Client, email: &str) -> String {
     res.data("code").as_str().expect("验证码是字符串").to_string()
 }
 
-/// 一步到位：建邀请码 + 注册一个新账号
+/// 一步到位：建邀请码 + 注册一个新账号。
+///
+/// ⚠️ 带邀请码注册**会升级成管理员**（邀请码现在是兑换券，不是注册门槛）——
+/// 需要普通用户请改用 [`register_open`]。
 pub async fn register_new(app: &TestApp, client: &mut Client, email: &str, password: &str) -> Resp {
     let invite = app.new_invite(1, 7).await;
     register(app, client, email, password, &invite).await
+}
+
+/// **不填邀请码**的注册（开放注册路径）：注册出来应当是普通用户。
+pub async fn register_open(_app: &TestApp, client: &mut Client, email: &str, password: &str) -> Resp {
+    let sent = client
+        .post("/api/auth/email-code", serde_json::json!({ "email": email }))
+        .await;
+    assert_eq!(sent.status, StatusCode::OK, "不带邀请码发码失败：{}", sent.body);
+    let code = fetch_dev_code(client, email).await;
+    client
+        .post(
+            "/api/auth/register",
+            serde_json::json!({
+                "email": email,
+                "email_code": code,
+                "password": password,
+                "username": "测试用户",
+            }),
+        )
+        .await
+}
+
+/// 用一串邀请码注册（多个用空格分隔）
+pub async fn register_with_codes(
+    _app: &TestApp,
+    client: &mut Client,
+    email: &str,
+    password: &str,
+    codes: &str,
+) -> Resp {
+    let sent = client
+        .post("/api/auth/email-code", serde_json::json!({ "email": email, "invite_code": codes }))
+        .await;
+    assert_eq!(sent.status, StatusCode::OK, "带邀请码发码失败：{}", sent.body);
+    let code = fetch_dev_code(client, email).await;
+    client
+        .post(
+            "/api/auth/register",
+            serde_json::json!({
+                "email": email,
+                "email_code": code,
+                "invite_code": codes,
+                "password": password,
+                "username": "测试用户",
+            }),
+        )
+        .await
 }

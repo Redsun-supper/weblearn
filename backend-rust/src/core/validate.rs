@@ -53,20 +53,20 @@ pub fn mask_email(email: &str) -> String {
     }
 }
 
-/// 口令强度：8~128 个字符，且同时包含字母与数字
+/// 密码强度：8~128 个字符，且同时包含字母与数字
 pub fn validate_password(password: &str) -> Result<(), String> {
     let len = password.chars().count();
     if len < 8 {
-        return Err("口令至少 8 个字符".to_string());
+        return Err("密码至少 8 个字符".to_string());
     }
     if len > 128 {
-        return Err("口令最长 128 个字符".to_string());
+        return Err("密码最长 128 个字符".to_string());
     }
     if !password.chars().any(|c| c.is_ascii_alphabetic()) {
-        return Err("口令需要包含字母".to_string());
+        return Err("密码需要包含字母".to_string());
     }
     if !password.chars().any(|c| c.is_ascii_digit()) {
-        return Err("口令需要包含数字".to_string());
+        return Err("密码需要包含数字".to_string());
     }
     Ok(())
 }

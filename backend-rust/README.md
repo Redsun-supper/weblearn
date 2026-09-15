@@ -52,11 +52,11 @@ pwsh scripts/smoke.ps1 -BaseUrl http://127.0.0.1:8899
   邮件模式    : log（只打日志，不发信）
   ...
   ⚠️ 未设置 AUTH_JWT_SECRET，本次已随机生成：重启后旧令牌会失效（正式部署请固定它）
-  ⚠️ 正在使用默认管理员口令，请首次登录后立即更换（生产环境会拒绝启动）
+  ⚠️ 正在使用默认管理员密码，请首次登录后立即更换（生产环境会拒绝启动）
 ```
 
 **初始管理员**：`2262997289@qq.com` / `7289HR_RedSun`（`role=admin`，邮箱视为已验证）。
-口令可用 `AUTH_ADMIN_PASSWORD` 覆盖；`--reset-password` 可重置（见下方 CLI）。
+密码可用 `AUTH_ADMIN_PASSWORD` 覆盖；`--reset-password` 可重置（见下方 CLI）。
 
 ---
 
@@ -68,8 +68,8 @@ pwsh scripts/smoke.ps1 -BaseUrl http://127.0.0.1:8899
 | 方法 | 路径 | 鉴权 | 说明 |
 |------|------|------|------|
 | GET | `/health` | 无 | 服务健康检查（含邮件模式、调试接口开关） |
-| POST | `/email-code` | 无 | 发注册验证码。**先校验邀请码有效再发信**，避免成为开放邮件中继 |
-| POST | `/register` | 无 | `{email, email_code, invite_code, password, username?, device_label?}`，成功即登录 |
+| POST | `/email-code` | 无 | 发注册验证码。邀请码**可选**：填了就先校验有效再发信；不填直接发（开放注册） |
+| POST | `/register` | 无 | `{email, email_code, password, username?, device_label?, invite_code?}`，成功即登录；**带邀请码 → `role=admin`** |
 | POST | `/login` | 无 | `{email, password, device_label?}`，**每次登录新建一个会话**（多端并存） |
 | POST | `/refresh` | refresh Cookie | 轮换 refresh + 换发 access；命中已轮换过的令牌即判重放 |
 | POST | `/logout` | 会话（幂等） | 只吊销当前这个端，并清 Cookie |
@@ -85,11 +85,11 @@ pwsh scripts/smoke.ps1 -BaseUrl http://127.0.0.1:8899
 
 | `error` | HTTP | 场景 |
 |---------|------|------|
-| `invalid_params` | 400 | 邮箱格式 / 口令强度 / 参数缺失 |
-| `invalid_invite` | 400 | 邀请码不存在、被停用 |
+| `invalid_params` | 400 | 邮箱格式 / 密码强度 / 参数缺失 |
+| `invalid_invite` | 400 | 邀请码不存在、被停用（**只在填了邀请码时才会出现**） |
 | `invite_expired` / `invite_exhausted` | 400 | 邀请码过期 / 用尽 |
 | `invalid_code` / `code_expired` / `code_attempts_exceeded` | 400 | 验证码错误 / 过期 / 试错超限 |
-| `bad_credentials` | 401 | 口令错误（**与「账号不存在」同一文案**，避免枚举邮箱） |
+| `bad_credentials` | 401 | 密码错误（**与「账号不存在」同一文案**，避免枚举邮箱） |
 | `unauthenticated` | 401 | 未登录、access 过期、会话被吊销、refresh 重放 |
 | `forbidden` | 403 | 账号停用、角色不足、CSRF 来源校验失败 |
 | `email_taken` | 409 | 邮箱已注册 |
@@ -123,17 +123,18 @@ pwsh scripts/smoke.ps1 -BaseUrl http://127.0.0.1:8899
 
 | 面向 | 做法与理由 |
 |------|-----------|
-| 口令存储 | **Argon2id**（默认 `m=19456 KiB, t=2, p=1`，即 OWASP 推荐值），每个口令独立 16 字节盐，库里只有 PHC 串；参数写在哈希里，日后调参不会让老哈希失效 |
-| 传输 | 线上靠 **HTTPS（Nginx 终止 TLS）**；本地 `http://127.0.0.1` 仅用于回环调试。明文口令只存在于 TLS 通道与服务器内存 |
+| 密码存储 | **Argon2id**（默认 `m=19456 KiB, t=2, p=1`，即 OWASP 推荐值），每个密码独立 16 字节盐，库里只有 PHC 串；参数写在哈希里，日后调参不会让老哈希失效 |
+| 传输 | 线上靠 **HTTPS（Nginx 终止 TLS）**；本地 `http://127.0.0.1` 仅用于回环调试。明文密码只存在于 TLS 通道与服务器内存 |
 | 登录态 | **httpOnly Cookie**：JS 读不到令牌（XSS 也偷不走）。access 是 15 分钟 HS256 JWT，refresh 是 32 字节随机串（库里只存 SHA-256 摘要） |
 | 即时吊销 | 受保护接口除验签外还要查 `sessions`（未吊销、未过期）+ 用户 `status='active'`，所以**登出后 access 立刻失效**，不用等 15 分钟 |
 | 多端登录 | 每次登录新建一行会话，端与端互不影响；`/sessions` 可看到设备名与最近活跃；`/logout-all` 可一键踢掉全部端 |
 | 重放防护 | refresh 每次使用都轮换；**已轮换过的令牌再次出现即判定重放**，整条轮换链（含当前端）一起吊销 |
 | 暴力破解 | ① 账号维度：连续失败 5 次锁 15 分钟（落库，重启也绕不过）；② IP/邮箱维度：滑动窗口限流（登录 20 次/15 分、发码 1 次/分且 5 次/时、发码 IP 20 次/时、注册 IP 10 次/时） |
+| 邮件滥用 | ⚠️ 注册开放后 `/email-code` 对任意邮箱都会发码，**这是本服务目前唯一的对外发信面**。现有防线只有限流（同邮箱 1 次/分、5 次/时；同 IP 20 次/时）。要上线真 SMTP 前建议再加一层（图形验证码 / 预热白名单 / 网关层限流） |
 | 验证码 | 6 位数字，库里只存 **HMAC-SHA256(pepper, email:code)**；10 分钟有效、最多 5 次尝试；重发会让旧码立即失效 |
 | CSRF | `SameSite=Lax` + 非 GET 请求校验 `Origin` 白名单；没有 `Origin` 时要求 `Content-Type: application/json`（跨站表单发不出 JSON） |
-| 计时攻击 | 账号不存在时也执行一次同参数 Argon2 校验（`dummy_verify`），响应时间与「口令错误」接近；验证码/HMAC 比对用恒定时间比较 |
-| 审计 | `audit_logs` 记录注册/登录成败/登出/重放/邀请码操作；**不含口令与验证码明文**；日志里的邮箱打码（`22***@qq.com`） |
+| 计时攻击 | 账号不存在时也执行一次同参数 Argon2 校验（`dummy_verify`），响应时间与「密码错误」接近；验证码/HMAC 比对用恒定时间比较 |
+| 审计 | `audit_logs` 记录注册/登录成败/登出/重放/邀请码操作；**不含密码与验证码明文**；日志里的邮箱打码（`22***@qq.com`） |
 | 权限等级 | 只预留 `users.role`（`user`/`admin`）与 `users.status`（`active`/`disabled`）字段，**不实现 RBAC**；唯一的准入检查是邀请码管理接口的 `role == 'admin'` |
 
 > ⚠️ **「加密上传」的口径**：本项目不做应用层信封加密，传输安全完全交给 TLS。
@@ -159,7 +160,7 @@ pwsh scripts/smoke.ps1 -BaseUrl http://127.0.0.1:8899
 
 | 表 | 用途 |
 |----|------|
-| `users` | 账号：邮箱（唯一）、Argon2id 口令哈希、`role`/`status`（预留）、失败次数与锁定时间 |
+| `users` | 账号：邮箱（唯一）、Argon2id 密码哈希、`role`/`status`（预留）、失败次数与锁定时间 |
 | `user_identities` | 登录标识 `(provider, identifier)` 唯一 —— **多方式登录的预留位**，本期只写 `provider='email'` |
 | `sessions` | 一行 = 一个端的登录；`family_id` + `replaced_by` 记录 refresh 轮换链 |
 | `invite_codes` / `invite_uses` | 邀请码与使用留痕（码存明文：它是管理员要核对、转发的短期凭据） |
@@ -189,15 +190,15 @@ SQLite 里比较时间靠字典序，一旦带上可变长度的小数秒（`12:
 | `AUTH_MAIL_MODE` | `log` | `log` 只打日志；`smtp` 真发信 |
 | `AUTH_SMTP_HOST/PORT/USERNAME/PASSWORD/FROM/TLS` | — | QQ 邮箱填**授权码**（不是登录密码）；465 用 `tls`，587 用 `starttls` |
 | `AUTH_DEV_ENDPOINTS` | 随 `APP_ENV` | 生产强制关闭 |
-| `AUTH_ADMIN_EMAIL` / `AUTH_ADMIN_PASSWORD` | `2262997289@qq.com` / `7289HR_RedSun` | 初始管理员；生产必须显式提供口令 |
-| `AUTH_SEED_ADMIN` | 随 `APP_ENV` | 启动时确保管理员存在（幂等，不覆盖已有口令） |
-| `AUTH_ARGON2_M_COST/T_COST/P_COST` | `19456/2/1` | 口令哈希参数 |
+| `AUTH_ADMIN_EMAIL` / `AUTH_ADMIN_PASSWORD` | `2262997289@qq.com` / `7289HR_RedSun` | 初始管理员；生产必须显式提供密码 |
+| `AUTH_SEED_ADMIN` | 随 `APP_ENV` | 启动时确保管理员存在（幂等，不覆盖已有密码） |
+| `AUTH_ARGON2_M_COST/T_COST/P_COST` | `19456/2/1` | 密码哈希参数 |
 | `AUTH_RL_*` / `AUTH_LOCK_THRESHOLD` / `AUTH_LOCK_MINUTES` | 见 `.env.example` | 限流与锁定 |
 
 **生产环境的两条硬性检查**（不满足直接启动失败，不会带着危险默认值跑起来）：
 
 1. 必须显式提供 `AUTH_JWT_SECRET`；
-2. 必须显式提供 `AUTH_ADMIN_PASSWORD`（或 `AUTH_SEED_ADMIN=false`），且不许用默认口令；
+2. 必须显式提供 `AUTH_ADMIN_PASSWORD`（或 `AUTH_SEED_ADMIN=false`），且不许用默认密码；
    同时 `AUTH_DEV_ENDPOINTS` 必须关闭。
 
 ---
@@ -205,10 +206,10 @@ SQLite 里比较时间靠字典序，一旦带上可变长度的小数秒（`12:
 ## 六、命令行工具
 
 ```bash
-# 建 / 重置管理员（幂等；已存在时不覆盖口令）
+# 建 / 重置管理员（幂等；已存在时不覆盖密码）
 cargo run --release --bin seed-admin
-cargo run --release --bin seed-admin -- --email 2262997289@qq.com --password 新口令
-cargo run --release --bin seed-admin -- --reset-password --password 新口令   # 会吊销该账号全部会话
+cargo run --release --bin seed-admin -- --email 2262997289@qq.com --password 新密码
+cargo run --release --bin seed-admin -- --reset-password --password 新密码   # 会吊销该账号全部会话
 
 # 邀请码
 cargo run --release --bin invite -- create --count 3 --max-uses 1 --expires-in-days 7 --note "第一批"
@@ -217,7 +218,7 @@ cargo run --release --bin invite -- disable 12
 ```
 
 CLI 与 HTTP 接口**共用同一套服务层**（`AuthService`），所以校验规则与行为完全一致
-（例如口令强度、邀请码状态机）。
+（例如密码强度、邀请码状态机）。
 
 ---
 
@@ -245,7 +246,7 @@ backend-rust/
     │   ├── token.rs             # JWT 签发/校验 + refresh 生成与摘要
     │   ├── invite.rs            # 邀请码生成、规范化、状态机
     │   ├── email_code.rs        # 验证码生成、HMAC 摘要、状态机
-    │   └── validate.rs          # 邮箱/口令/用户名/设备名校验
+    │   └── validate.rs          # 邮箱/密码/用户名/设备名校验
     ├── mail/{mod,log_mailer,smtp}.rs
     ├── http/{mod,auth,admin,dev,middleware,extract}.rs
     └── bin/{seed_admin,invite}.rs
@@ -278,11 +279,11 @@ pwsh scripts/smoke.ps1     # 端到端：真实 HTTP + 真实 Cookie
 
 | 文件 | 覆盖内容 |
 |------|---------|
-| `tests/auth_flow.rs` | 注册→me→刷新轮换→登出；重放吊销整族；口令/邮箱校验；令牌过期 |
+| `tests/auth_flow.rs` | 注册→me→刷新轮换→登出；重放吊销整族；密码/邮箱校验；令牌过期 |
 | `tests/invite.rs` | 邀请码状态机、单次使用、**并发占用只有一个成功**、手抄格式规范化、筛选 |
 | `tests/email_code.rs` | 试错上限、过期、一次性、重发失效、发码/登录限流、生产不暴露调试接口 |
 | `tests/multi_device.rs` | 多端并存、单端登出、`logout-all`（含 keep_current）、各自独立刷新 |
-| `tests/security.rs` | 鉴权覆盖、跨站 Origin、Cookie 属性、**响应与库里都不出现口令明文**、审计、账号锁定 |
+| `tests/security.rs` | 鉴权覆盖、跨站 Origin、Cookie 属性、**响应与库里都不出现密码明文**、审计、账号锁定 |
 | `tests/admin.rs` | 初始管理员登录、seed 幂等、非管理员 403、邀请码增删查 |
 
 ---
@@ -303,7 +304,7 @@ location /api/auth/ {
 - 必须走 **HTTPS**（Cookie 才会带 `Secure`；`AUTH_COOKIE_SECURE` 在 production 自动为 true）；
 - `AUTH_JWT_SECRET` 用足够长的随机值并固定下来（换掉 = 所有登录态失效）；
 - 服务以 systemd / nohup 常驻：`AUTH_HOST=127.0.0.1 AUTH_PORT=8081 ./guangxue-auth`；
-- 首次上线后立刻改管理员口令：`seed-admin --reset-password --password 新口令`；
+- 首次上线后立刻改管理员密码：`seed-admin --reset-password --password 新密码`；
 - 接入真实邮件前把 `AUTH_MAIL_MODE=smtp` 与 `AUTH_SMTP_*` 配好（QQ 邮箱用授权码）。
 
 ---

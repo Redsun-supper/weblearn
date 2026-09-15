@@ -8,7 +8,7 @@
 --      本期不写权限判定逻辑（唯一例外：邀请码管理接口做最小 role='admin' 准入）。
 --   3. 不给 email 单开索引：UNIQUE 约束已经自带索引。
 
--- 用户（口令只存 Argon2id PHC 串，永远不存明文）
+-- 用户（密码只存 Argon2id PHC 串，永远不存明文）
 CREATE TABLE IF NOT EXISTS users (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
     email             TEXT    NOT NULL UNIQUE,
@@ -97,7 +97,7 @@ CREATE TABLE IF NOT EXISTS email_codes (
 );
 CREATE INDEX IF NOT EXISTS idx_email_codes_lookup ON email_codes(email, purpose, consumed_at);
 
--- 审计日志（口令、验证码、refresh 明文一律不写进来）
+-- 审计日志（密码、验证码、refresh 明文一律不写进来）
 CREATE TABLE IF NOT EXISTS audit_logs (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     actor_user_id INTEGER,

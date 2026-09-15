@@ -52,7 +52,7 @@ async fn run() -> Result<(), String> {
 
     let state = AppState::init(cfg).await.map_err(|e| e.to_string())?;
 
-    // 初始管理员：幂等（已存在就跳过，绝不覆盖已有口令）
+    // 初始管理员：幂等（已存在就跳过，绝不覆盖已有密码）
     if seed_admin {
         if let Some(password) = admin_password {
             match state.service.seed_admin(&admin_email, &password).await {
@@ -80,7 +80,7 @@ async fn run() -> Result<(), String> {
         println!("  ⚠️ 未设置 AUTH_JWT_SECRET，本次已随机生成：重启后旧令牌会失效（正式部署请固定它）");
     }
     if default_admin_password {
-        println!("  ⚠️ 正在使用默认管理员口令，请首次登录后立即更换（生产环境会拒绝启动）");
+        println!("  ⚠️ 正在使用默认管理员密码，请首次登录后立即更换（生产环境会拒绝启动）");
     }
     if !cookie_secure && !is_production {
         println!("  ℹ️ 本地 http 调试：Cookie 未加 Secure（正是为了让浏览器收下它）");

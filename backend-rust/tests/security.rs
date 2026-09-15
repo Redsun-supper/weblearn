@@ -1,4 +1,4 @@
-//! 安全相关：鉴权覆盖、CSRF、Cookie 属性、口令与令牌不泄露、账号锁定
+//! 安全相关：鉴权覆盖、CSRF、Cookie 属性、密码与令牌不泄露、账号锁定
 
 mod common;
 
@@ -95,7 +95,7 @@ async fn tokens_and_password_never_appear_in_responses() {
     let res = register_new(&app, &mut client, "leak@example.com", password).await;
 
     let raw = serde_json::to_string(&res.body).unwrap();
-    assert!(!raw.contains(password), "响应体里不能有口令明文");
+    assert!(!raw.contains(password), "响应体里不能有密码明文");
     assert!(!raw.contains("password_hash"));
     let access = client.access_cookie().cloned().unwrap();
     assert!(!raw.contains(&access), "access 令牌只应出现在 Set-Cookie 里");
@@ -116,7 +116,7 @@ async fn password_is_stored_as_argon2id_only() {
     let conn = rusqlite::Connection::open(&app.state.cfg.db_path).expect("打开测试库");
     let stored: String = conn
         .query_row("SELECT password_hash FROM users WHERE email = ?1", ["hash@example.com"], |r| r.get(0))
-        .expect("读到口令哈希");
+        .expect("读到密码哈希");
     assert!(stored.starts_with("$argon2id$v=19$"), "库里只能是 Argon2id PHC：{stored}");
     assert!(!stored.contains(password));
 
@@ -149,7 +149,7 @@ async fn account_locks_after_repeated_failures() {
         res.assert_error(expected);
     }
 
-    // 锁定期间即使口令正确也进不去
+    // 锁定期间即使密码正确也进不去
     let blocked = attacker
         .post("/api/auth/login", json!({"email": "lock@example.com", "password": "abc12345"}))
         .await;
@@ -197,6 +197,6 @@ async fn audit_log_records_failures_without_secrets() {
     };
     assert!(
         details.iter().all(|d| !d.contains("wrong12345") && !d.contains("abc12345")),
-        "审计日志里不能出现口令：{details:?}"
+        "审计日志里不能出现密码：{details:?}"
     );
 }

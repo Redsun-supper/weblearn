@@ -5,14 +5,14 @@
 //! ```text
 //! cargo run --release --bin seed-admin
 //! cargo run --release --bin seed-admin -- --email 2262997289@qq.com --password 7289HR_RedSun
-//! cargo run --release --bin seed-admin -- --reset-password --password 新的口令
+//! cargo run --release --bin seed-admin -- --reset-password --password 新的密码
 //! cargo run --release --bin seed-admin -- --db other.db
 //! ```
 //!
 //! 行为：
-//!   - 账号已存在且没给 `--reset-password` → 跳过（**绝不覆盖已有口令**）；
-//!   - 给了 `--reset-password` → 重置口令，并吊销该用户的全部会话；
-//!   - 口令来源优先级：`--password` > `AUTH_ADMIN_PASSWORD` > development 默认口令。
+//!   - 账号已存在且没给 `--reset-password` → 跳过（**绝不覆盖已有密码**）；
+//!   - 给了 `--reset-password` → 重置密码，并吊销该用户的全部会话；
+//!   - 密码来源优先级：`--password` > `AUTH_ADMIN_PASSWORD` > development 默认密码。
 
 use std::process::ExitCode;
 
@@ -48,16 +48,16 @@ async fn run() -> Result<(), String> {
         .or_else(|| cfg.admin_password.clone())
         .unwrap_or_else(|| DEFAULT_ADMIN_PASSWORD.to_string());
     if args.get("--password").is_none() && cfg.admin_password.is_none() {
-        eprintln!("提示：未提供口令，使用 development 默认口令");
+        eprintln!("提示：未提供密码，使用 development 默认密码");
     }
-    // 口令相关的校验交给服务层（与接口走同一套规则）
+    // 密码相关的校验交给服务层（与接口走同一套规则）
     cfg.seed_admin = false; // 这个命令自己负责建号，不需要启动期的自动 seed
 
     let state = AppState::init(cfg).await.map_err(|e| e.to_string())?;
 
     if reset {
         state.service.set_password(&email, &password).await.map_err(|e| e.to_string())?;
-        println!("已重置口令：{email}（该账号的全部会话已失效）");
+        println!("已重置密码：{email}（该账号的全部会话已失效）");
         return Ok(());
     }
 
@@ -66,7 +66,7 @@ async fn run() -> Result<(), String> {
         println!("已创建管理员：{email}（role=admin，邮箱视为已验证）");
     } else {
         println!("管理员已存在，未做任何修改：{email}");
-        println!("  · 需要改口令请加 --reset-password");
+        println!("  · 需要改密码请加 --reset-password");
     }
     Ok(())
 }
@@ -95,12 +95,12 @@ fn print_help() {
 
 选项：
   --email <邮箱>        默认 {DEFAULT_ADMIN_EMAIL}
-  --password <口令>     默认取自 AUTH_ADMIN_PASSWORD，再退回 development 默认口令
-  --reset-password      已存在时重置口令（并吊销该账号全部会话）
+  --password <密码>     默认取自 AUTH_ADMIN_PASSWORD，再退回 development 默认密码
+  --reset-password      已存在时重置密码（并吊销该账号全部会话）
   --db <文件>           SQLite 文件，默认取 AUTH_DB_PATH 或 auth.db
   -h, --help            显示本帮助
 
-说明：口令规则与接口一致（8~128 字符，且同时含字母与数字）。
+说明：密码规则与接口一致（8~128 字符，且同时含字母与数字）。
 "#
     );
 }

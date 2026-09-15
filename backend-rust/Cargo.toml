@@ -33,7 +33,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # SQLite：bundled 会用 mingw gcc 现场编译 sqlite3.c（本机已具备）
 rusqlite = { version = "0.40", features = ["bundled"] }
-# 口令哈希：Argon2id（PHC 字符串，参数写进哈希本身）
+# 密码哈希：Argon2id（PHC 字符串，参数写进哈希本身）
 argon2 = "0.5"
 # access token：HS256 JWT
 jsonwebtoken = "9"
@@ -60,7 +60,7 @@ dotenvy = "0.15"
 tempfile = "3"
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
-# 集成测试要直接查库断言「口令只有 Argon2id、会话只存摘要」
+# 集成测试要直接查库断言「密码只有 Argon2id、会话只存摘要」
 rusqlite = { version = "0.40", features = ["bundled"] }
 
 [profile.release]

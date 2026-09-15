@@ -1,7 +1,7 @@
 //! 数据模型：数据库行（`*Row`）与对外输出（`*Public`）
 //!
 //! 约定：`password_hash` / `refresh_hash` / `code_hash` 只存在于 `*Row`，
-//! 绝不进入任何 `Serialize` 结构——这样「口令与令牌摘要不会出现在响应里」
+//! 绝不进入任何 `Serialize` 结构——这样「密码与令牌摘要不会出现在响应里」
 //! 是类型层面的保证，而不是靠人工检查。
 
 use serde::Serialize;
@@ -9,7 +9,7 @@ use time::OffsetDateTime;
 
 use crate::db::ts;
 
-/// 用户行（含口令哈希，仅服务端使用）
+/// 用户行（含密码哈希，仅服务端使用）
 #[derive(Debug, Clone)]
 pub struct UserRow {
     pub id: i64,
@@ -55,7 +55,7 @@ impl UserRow {
     }
 }
 
-/// 对外的用户信息（无口令、无内部计数）
+/// 对外的用户信息（无密码、无内部计数）
 #[derive(Debug, Clone, Serialize)]
 pub struct UserPublic {
     pub id: i64,

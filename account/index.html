@@ -112,7 +112,7 @@
                            placeholder="2262997289@qq.com" required>
                 </div>
                 <div class="acc-field" data-enter>
-                    <label for="loginPassword">口令</label>
+                    <label for="loginPassword">密码</label>
                     <input type="password" id="loginPassword" autocomplete="current-password"
                            placeholder="至少 8 位，含字母与数字" required>
                 </div>
@@ -122,7 +122,11 @@
                 </div>
                 <p class="acc-msg" id="loginMsg" role="status"></p>
                 <button class="acc-btn acc-btn-primary acc-btn-block" type="submit" id="loginSubmit" data-enter>登录</button>
-                <p class="acc-hint" data-enter>还没有账号？切到「注册」——注册需要管理员派发的邀请码。</p>
+                <!-- 小字里的「注册」是可点的按钮（不是链接）：点了直接切到注册标签页。
+                     放在 form 里必须写 type="button"，否则会当成提交按钮 -->
+                <p class="acc-hint" data-enter>还没有账号？点这里
+                    <button class="acc-link-btn" type="button" id="linkToRegister">注册</button>
+                    —— 邀请码可留空直接注册，填了可升级为管理员。</p>
             </form>
 
             <!-- 注册 -->
@@ -133,8 +137,10 @@
                            placeholder="用于接收验证码，也是登录账号" required>
                 </div>
                 <div class="acc-field" data-enter>
-                    <label for="regInvite">邀请码</label>
-                    <input type="text" id="regInvite" placeholder="管理员派发的邀请码（可带 - 分隔符）" required>
+                    <label for="regInvite">邀请码（可选）</label>
+                    <input type="text" id="regInvite" placeholder="不填直接注册；填了可升级为管理员">
+                    <p class="acc-hint" id="inviteHint">管理员派发的邀请码：多个用<b>空格</b>分隔；
+                        <code>-</code> 是邀请码自身的格式，请原样保留。</p>
                 </div>
                 <div class="acc-field" data-enter>
                     <label for="regCode">邮箱验证码</label>
@@ -146,12 +152,12 @@
                     <p class="acc-hint" id="codeHint">验证码 10 分钟内有效，最多可试 5 次。</p>
                 </div>
                 <div class="acc-field" data-enter>
-                    <label for="regPassword">口令</label>
+                    <label for="regPassword">密码</label>
                     <input type="password" id="regPassword" autocomplete="new-password"
                            placeholder="至少 8 位，且同时包含字母与数字" required>
                 </div>
                 <div class="acc-field" data-enter>
-                    <label for="regPassword2">确认口令</label>
+                    <label for="regPassword2">确认密码</label>
                     <input type="password" id="regPassword2" autocomplete="new-password" required>
                 </div>
                 <p class="acc-msg" id="regMsg" role="status"></p>

@@ -150,7 +150,7 @@ function bindGate() {
             var email = emailNode ? String(emailNode.value || '').trim() : '';
             var password = passwordNode ? passwordNode.value : '';
             if (!email || !password) {
-                setGateMsg('请填写邮箱与口令', 'error');
+                setGateMsg('请填写邮箱与密码', 'error');
                 return;
             }
             setGateMsg('正在登录…');

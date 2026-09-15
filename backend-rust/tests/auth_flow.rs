@@ -11,11 +11,12 @@ async fn register_returns_user_and_session_cookies() {
     let app = spawn().await;
     let mut client = Client::new(&app);
 
-    let res = register_new(&app, &mut client, "alice@example.com", "abc12345").await;
+    // 走开放注册（不带邀请码）→ 普通用户；带邀请码会升级成管理员，见 tests/invite.rs
+    let res = register_open(&app, &mut client, "alice@example.com", "abc12345").await;
     res.assert_status(StatusCode::OK);
     assert_eq!(res.field("/data/user/email").unwrap(), "alice@example.com");
     assert_eq!(res.field("/data/user/role").unwrap(), "user");
-    assert!(res.field("/data/user/password").is_none(), "响应里不能有口令字段");
+    assert!(res.field("/data/user/password").is_none(), "响应里不能有密码字段");
     assert!(client.access_cookie().is_some(), "注册后应拿到 access cookie");
     assert!(client.refresh_cookie().is_some(), "注册后应拿到 refresh cookie");
 

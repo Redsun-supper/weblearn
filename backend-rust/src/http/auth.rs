@@ -16,6 +16,7 @@ use crate::AppState;
 #[derive(Debug, Deserialize)]
 pub struct EmailCodeReq {
     pub email: String,
+    /// 邀请码（**可选**，多个用空格分隔）。填了就先校验，用于「带码注册升级管理员」
     #[serde(default)]
     pub invite_code: String,
 }
@@ -24,6 +25,7 @@ pub struct EmailCodeReq {
 pub struct RegisterReq {
     pub email: String,
     pub email_code: String,
+    /// 邀请码（**可选**，多个用空格分隔）：不填=普通用户，填了就升级为管理员
     #[serde(default)]
     pub invite_code: String,
     pub password: String,
@@ -60,7 +62,7 @@ pub async fn health(State(state): State<AppState>) -> Json<Value> {
     }))
 }
 
-/// POST /api/auth/email-code —— 发注册验证码（先校验邀请码，再发信）
+/// POST /api/auth/email-code —— 发注册验证码（填了邀请码就先校验，再发信）
 pub async fn email_code(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -74,7 +76,7 @@ pub async fn email_code(
     ))
 }
 
-/// POST /api/auth/register —— 邀请码 + 邮箱验证码注册，成功即登录
+/// POST /api/auth/register —— 邮箱验证码注册，成功即登录；带邀请码则升级为管理员
 pub async fn register(
     State(state): State<AppState>,
     headers: HeaderMap,

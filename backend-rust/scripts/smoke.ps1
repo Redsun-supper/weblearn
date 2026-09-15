@@ -205,7 +205,7 @@ $wrongCode = Invoke-Api -Method POST -Path '/api/auth/register' -Body @{ email =
 Write-Check '没有验证码 → 400 invalid_code' ($wrongCode.Status -eq 400 -and (Get-ErrorCode $wrongCode) -eq 'invalid_code') "HTTP $($wrongCode.Status) $(Get-ErrorCode $wrongCode)"
 
 $wrongPwd = Invoke-Api -Method POST -Path '/api/auth/login' -Body @{ email = $email; password = 'WrongPass123' } -Session (New-Session)
-Write-Check '口令错误 → 401 bad_credentials' ($wrongPwd.Status -eq 401 -and (Get-ErrorCode $wrongPwd) -eq 'bad_credentials') "HTTP $($wrongPwd.Status) $(Get-ErrorCode $wrongPwd)"
+Write-Check '密码错误 → 401 bad_credentials' ($wrongPwd.Status -eq 401 -and (Get-ErrorCode $wrongPwd) -eq 'bad_credentials') "HTTP $($wrongPwd.Status) $(Get-ErrorCode $wrongPwd)"
 
 $unknown = Invoke-Api -Method POST -Path '/api/auth/login' -Body @{ email = "not-registered-$($script:RunId)@example.com"; password = $UserPassword } -Session (New-Session)
 Write-Check '未注册邮箱 → 同样的 401 文案' ($unknown.Status -eq 401 -and $unknown.Json.message -eq $wrongPwd.Json.message) "HTTP $($unknown.Status)"

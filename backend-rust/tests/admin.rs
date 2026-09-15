@@ -37,7 +37,7 @@ async fn seeding_is_idempotent_and_never_overwrites_password() {
     let again = app.state.service.seed_admin(ADMIN_EMAIL, "Different123").await.unwrap();
     assert!(!again, "第二次应当跳过");
 
-    // 原口令仍然可用，说明没被覆盖
+    // 原密码仍然可用，说明没被覆盖
     let mut client = Client::new(&app);
     client
         .post("/api/auth/login", json!({"email": ADMIN_EMAIL, "password": ADMIN_PASSWORD}))
@@ -49,7 +49,10 @@ async fn seeding_is_idempotent_and_never_overwrites_password() {
 async fn normal_user_is_rejected_from_admin_endpoints() {
     let app = spawn().await;
     let mut user = Client::new(&app);
-    register_new(&app, &mut user, "plain@example.com", "abc12345").await;
+    // ⚠️ 必须走「不带邀请码」的开放注册：带邀请码注册现在会升级成管理员
+    register_open(&app, &mut user, "plain@example.com", "abc12345")
+        .await
+        .assert_status(StatusCode::OK);
 
     user.get("/api/auth/admin/invites").await.assert_status(StatusCode::FORBIDDEN);
     user.post("/api/auth/admin/invites", json!({"count": 1}))

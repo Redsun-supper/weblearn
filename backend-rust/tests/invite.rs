@@ -171,3 +171,105 @@ async fn unused_filter_excludes_used_invites() {
     assert!(!codes.contains(&used.as_str()));
     assert!(total >= 1);
 }
+
+// ---------- 邀请码的新定位：不再是注册门槛，而是「升级/兑换券」 ----------
+
+#[tokio::test]
+async fn registration_without_invite_creates_a_normal_user() {
+    let app = spawn().await;
+    let mut client = Client::new(&app);
+
+    // 不填邀请码也能注册（邮箱验证码是门槛），角色是普通用户
+    register_open(&app, &mut client, "open@example.com", "abc12345")
+        .await
+        .assert_status(StatusCode::OK);
+
+    let me = client.me().await;
+    me.assert_status(StatusCode::OK);
+    assert_eq!(me.data("user")["role"], "user", "不填邀请码应是普通用户：{}", me.body);
+}
+
+#[tokio::test]
+async fn registration_with_invite_upgrades_to_admin() {
+    let app = spawn().await;
+    let invite = app.new_invite(1, 7).await;
+    let mut client = Client::new(&app);
+
+    register(&app, &mut client, "vip@example.com", "abc12345", &invite)
+        .await
+        .assert_status(StatusCode::OK);
+
+    // 带邀请码注册 → 直接是管理员
+    let me = client.me().await;
+    me.assert_status(StatusCode::OK);
+    assert_eq!(me.data("user")["role"], "admin", "带邀请码应升级为管理员：{}", me.body);
+
+    // 而且邀请码的额度被正常记账
+    let (items, _) = app.state.service.list_invites(InviteFilter::All, 1, 10).await.unwrap();
+    let row = items.iter().find(|i| i.code == invite).expect("邀请码在列表里");
+    assert_eq!(row.used_count, 1);
+    assert_eq!(row.status, "used");
+}
+
+#[tokio::test]
+async fn space_separated_codes_are_all_consumed() {
+    let app = spawn().await;
+    let first = app.new_invite(1, 7).await;
+    let second = app.new_invite(1, 7).await;
+
+    let mut client = Client::new(&app);
+    // 一次填两张券：空格分隔（`-` 是邀请码自身的格式，不能当分隔符用）
+    let codes = format!("{first}  {second}");
+    register_with_codes(&app, &mut client, "multi@example.com", "abc12345", &codes)
+        .await
+        .assert_status(StatusCode::OK);
+
+    let me = client.me().await;
+    assert_eq!(me.data("user")["role"], "admin", "带券注册应升级为管理员");
+
+    let (items, _) = app.state.service.list_invites(InviteFilter::All, 1, 10).await.unwrap();
+    for code in [&first, &second] {
+        let row = items.iter().find(|i| &i.code == code).expect("邀请码在列表里");
+        assert_eq!(row.used_count, 1, "两张券都该被核销一次：{}", row.code);
+    }
+}
+
+#[tokio::test]
+async fn the_same_code_written_twice_is_only_consumed_once() {
+    let app = spawn().await;
+    let invite = app.new_invite(1, 7).await;
+
+    let mut client = Client::new(&app);
+    // 手抖写两遍同一个码：去重之后仍然是一张券，注册成功且只扣一次
+    let codes = format!("{invite} {}", invite.to_lowercase());
+    register_with_codes(&app, &mut client, "dup@example.com", "abc12345", &codes)
+        .await
+        .assert_status(StatusCode::OK);
+
+    let (items, _) = app.state.service.list_invites(InviteFilter::All, 1, 10).await.unwrap();
+    assert_eq!(items.iter().find(|i| i.code == invite).unwrap().used_count, 1);
+}
+
+#[tokio::test]
+async fn unknown_code_still_rejects_registration() {
+    let app = spawn().await;
+    let mut client = Client::new(&app);
+    // 填了但查不到的码：明确报错，不要静默降级成普通用户（否则用户以为升级成功了）
+    let code = fetch_dev_code_after_send(&mut client, "ghost@example.com").await;
+    let res = client
+        .post(
+            "/api/auth/register",
+            json!({"email": "ghost@example.com", "email_code": code, "invite_code": "ZZZZZZZZZZZZZZZZ", "password": "abc12345"}),
+        )
+        .await;
+    res.assert_status(StatusCode::BAD_REQUEST).assert_error("invalid_invite");
+}
+
+/// 先正常发码（不带邀请码），拿到验证码后再插一个无效邀请码去注册
+async fn fetch_dev_code_after_send(client: &mut Client, email: &str) -> String {
+    client
+        .post("/api/auth/email-code", json!({ "email": email }))
+        .await
+        .assert_status(StatusCode::OK);
+    fetch_dev_code(client, email).await
+}

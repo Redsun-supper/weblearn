@@ -360,7 +360,7 @@
         var btn = $('loginSubmit');
 
         if (!email || !password) {
-            setMsg($('loginMsg'), '请填写邮箱与口令', 'error');
+            setMsg($('loginMsg'), '请填写邮箱与密码', 'error');
             return;
         }
         setMsg($('loginMsg'), '正在登录…');
@@ -378,7 +378,7 @@
                 return;
             }
             setMsg($('loginMsg'), messageOf(res, '登录失败'), 'error');
-            // 登录失败后口令清空，避免误以为还可以直接重试
+            // 登录失败后密码清空，避免误以为还可以直接重试
             if ($('loginPassword')) $('loginPassword').value = '';
         });
     }
@@ -409,9 +409,11 @@
 
     function sendCode() {
         var email = valueOf('regEmail');
+        // 邀请码可选：不填也能发码（开放注册）。填了就一起发过去，
+        // 让服务端在这一步先把「码不对」挡下来，而不是等注册时才失败。
         var invite = valueOf('regInvite');
-        if (!email || !invite) {
-            setMsg($('regMsg'), '请先填写邮箱与邀请码', 'error');
+        if (!email) {
+            setMsg($('regMsg'), '请先填写邮箱', 'error');
             return;
         }
         setMsg($('regMsg'), '正在发送验证码…');
@@ -441,22 +443,23 @@
     function doRegister(event) {
         if (event) event.preventDefault();
         var email = valueOf('regEmail');
+        // 邀请码可选：留空 = 普通用户；填了 = 注册后升级为管理员（多个用空格分隔）
         var invite = valueOf('regInvite');
         var code = valueOf('regCode');
         var password = $('regPassword') ? $('regPassword').value : '';
         var password2 = $('regPassword2') ? $('regPassword2').value : '';
         var btn = $('regSubmit');
 
-        if (!email || !invite || !code || !password) {
-            setMsg($('regMsg'), '请把邮箱、邀请码、验证码、口令都填完整', 'error');
+        if (!email || !code || !password) {
+            setMsg($('regMsg'), '请把邮箱、验证码、密码都填完整', 'error');
             return;
         }
         if (password !== password2) {
-            setMsg($('regMsg'), '两次输入的口令不一致', 'error');
+            setMsg($('regMsg'), '两次输入的密码不一致', 'error');
             return;
         }
         if (password.length < 8) {
-            setMsg($('regMsg'), '口令至少 8 个字符，且同时包含字母与数字', 'error');
+            setMsg($('regMsg'), '密码至少 8 个字符，且同时包含字母与数字', 'error');
             return;
         }
 
@@ -533,11 +536,16 @@
         var btnLogoutOthers = $('btnLogoutOthers');
         if (btnLogoutOthers) btnLogoutOthers.addEventListener('click', function () { doLogout(true); });
 
-        // 邀请码统一成大写（服务端也会规范化，这里只是让输入框看起来干净）
-        var inviteInput = $('regInvite');
-        if (inviteInput) {
-            inviteInput.addEventListener('blur', function () {
-                inviteInput.value = inviteInput.value.replace(/[\s-]/g, '').toUpperCase();
+        // ⚠️ 不要再规范化邀请码输入框的内容：**空格是「多个邀请码」的分隔符**，
+        // **`-` 是邀请码自身的格式**（后台靠它区分用途），大小写交给服务端处理。
+        // （这里以前会把 `[\s-]` 全抹掉再转大写 —— 那正好把这两种语义都破坏了。）
+
+        // 登录表单小字里的那个「注册」：点了直接切到注册标签页，并把光标放进邮箱框
+        var linkToRegister = $('linkToRegister');
+        if (linkToRegister) {
+            linkToRegister.addEventListener('click', function () {
+                switchTab('register');
+                if ($('regEmail')) $('regEmail').focus();
             });
         }
 
