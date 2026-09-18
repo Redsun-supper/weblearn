@@ -449,6 +449,24 @@ node dev-server.js --api-port 8081    # 后端换了端口时对齐
 
 > 💡 `dev-server.js` 仅用于本地开发，部署时无需上传（线上由 Nginx 承担同样的职责）。
 
+### 编译缓存与磁盘占用
+
+`target/` 是可再生的 Rust 编译缓存（调试符号 + 增量编译），两个 crate（账号服务 + wasm 引擎）加起来能到 **4.5 GB** —— 约为仓库源码体积的 300 倍。不过它**全部被 `.gitignore` 排除**，不进版本库、也不会传到云端，只占本地磁盘。
+
+```powershell
+# 先看会删什么（不真删）
+pwsh scripts/clean-build-cache.ps1 -DryRun
+
+# 只删 debug 缓存（推荐：约释放 3.8 GB；release 二进制与浏览器用的 pkg/ 都保留）
+pwsh scripts/clean-build-cache.ps1
+
+# 彻底清空（约 4.5 GB；需先停掉账号服务，否则正在运行的 exe 删不掉）
+pwsh scripts/clean-build-cache.ps1 -All
+```
+
+> 仓库之外还有一处缓存：Go 构建缓存在 `%LOCALAPPDATA%\go-build`（本机约 230 MB），需要时用 `go clean -cache` 清理。
+> 删完缓存后首次 `cargo test` / `cargo build --release` 会重新完整编译，慢一次属正常。
+
 ---
 
 ## 单词表导入（本地开发）

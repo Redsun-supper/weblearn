@@ -8,8 +8,12 @@
 backend-go/server
 backend-go/server.exe
 
-# Rust 编译产物（账号系统认证服务）
-backend-rust/target/
+# Rust 编译产物（任何 crate 的 target/ 都算，含账号服务与 wasm 引擎）
+# ⚠️ 这些是可再生的调试/增量缓存，两个 crate 加起来能到 4.5 GB，永不入库
+**/target/
+
+# wasm-bindgen 生成的 JS 胶水（由 engine 重新构建生成）
+modules/english/engine/pkg/
 
 # 本地密钥 / 环境变量（可能含 JWT 密钥与 SMTP 授权码，永不入库）
 .env
