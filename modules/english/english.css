@@ -77,6 +77,8 @@
 @media (prefers-reduced-motion: reduce) {
     .study-stage.is-out,
     .study-stage.is-in,
+    .study-start.is-leaving,
+    .study.is-entering,
     .study.revealing #reviewExample,
     .study.revealing #reviewExampleCn,
     .study.revealing .sense-block,
@@ -86,6 +88,80 @@
         animation: none;
     }
 }
+
+/* ===================== 起始页 ===================== */
+
+/* 进英语页的第一屏：中间一颗「开始复习单词」，复习界面在这之前完全不加载（见 english.js）。
+ * min-height 与 .study 用同一套算法（减掉导航栏 100px 与内容容器上下各 20px），
+ * 这样点按钮从起始页切到复习界面时页面高度不会跳一下。
+ * 第一屏刻意保持导航栏可见（不套沉浸），用户还能正常切学科、点头像。 */
+.study-start {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 26px;
+    min-height: calc(100vh - 140px);
+    text-align: center;
+}
+
+.study-start-hint {
+    margin: 0;
+    font-size: 14px;
+    color: #9ca3af;
+}
+
+/* 起始页主按钮：沿用复习界面「显示答案」那颗黑色胶囊的语汇，但放大一档 ——
+ * 这一屏只有它一个可点的东西，得撑得住整片留白。
+ * font-family 必须显式 inherit：button 默认不继承页面字体。 */
+.study-start-btn {
+    padding: 16px 44px;
+    border: none;
+    border-radius: 999px;
+    background-color: #111827;
+    color: #ffffff;
+    font-family: inherit;
+    font-size: 17px;
+    letter-spacing: 0.02em;
+    cursor: pointer;
+    transition: background-color 0.2s, transform 0.15s, opacity 0.2s;
+}
+
+.study-start-btn:hover { background-color: #1f2937; }
+.study-start-btn:active { transform: translateY(1px); }
+
+/* 「准备中」：点了开始之后、第一张卡还没建好之前的这段（引擎 + 四个接口）。
+ * 刻意只有「变淡 + 换文案」两件事 —— 这段时间通常几百毫秒，加动效反而显得页面在躁动。
+ * 用 :disabled 而不是加类：顺手把重复点击也挡掉了。 */
+.study-start-btn:disabled {
+    opacity: 0.5;
+    cursor: default;
+}
+
+.study-start-btn:disabled:hover { background-color: #111827; }
+
+/* ===================== 起始页 → 复习界面 的过场 ===================== */
+
+/* 节拍（什么时候播）在 english.js 的 enterReview / START_* 常量里，这里只定义「怎么动」，
+ * 两边靠那几个常量对齐 —— 与揭晓动效是同一套约定（节拍在 JS、动作在 CSS）。
+ *
+ * 语汇沿用模块内既有的那一对：离场淡出上移、入场淡入下浮（同 studyOut / studyIn），
+ * 只是把「卡片」换成了「整屏」。同时 main.css 里导航栏上滑、内容区上移 120px 也在这 460ms 内完成，
+ * 三者合起来就是「整屏往上顶一下、新页面浮上来」。
+ * ⚠️ 改这里的时长就要一起改 main.css 的两条 transition 与 english.js 的 START_*。 */
+
+@keyframes startOut {
+    from { opacity: 1; transform: none; }
+    to   { opacity: 0; transform: translateY(-10px); }
+}
+
+@keyframes startIn {
+    from { opacity: 0; transform: translateY(10px); }
+    to   { opacity: 1; transform: none; }
+}
+
+.study-start.is-leaving { animation: startOut 160ms ease-in both; }
+.study.is-entering { animation: startIn 300ms cubic-bezier(0.22, 1, 0.36, 1) both; }
 
 /* ===================== 整体：纵向撑满内容区 ===================== */
 
@@ -457,4 +533,11 @@
 body.is-immersive .study {
     min-height: 100vh;
     padding: 16px 24px 20px;
+}
+
+/* 起始页照理不会处在沉浸模式（english.js 刻意不套用它，导航栏要留着）。
+ * 但万一 is-immersive 是从上一次复习残留下来的，起始页也得跟着占满整屏，
+ * 否则那颗按钮会偏在屏幕偏上的位置。 */
+body.is-immersive .study-start {
+    min-height: 100vh;
 }
