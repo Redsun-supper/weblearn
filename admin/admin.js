@@ -24,16 +24,16 @@
 
 // ===================== 学科后台注册表 =====================
 // 每新增一个学科后台，就在这里加一行。
-// 注意：main 分支上这里是空的（只有通用骨架），学科后台随各自模块分支加入。
 var SUBJECT_ADMINS = [
     { id: 'english', name: '英语', description: '词条管理', module: '../modules/english/admin/english-admin.js' }
 ];
 
 // 模块路径相对本文件所在目录（/admin/）解析，因此学科后台写 '../modules/<学科>/admin/...'
+// 当前挂载状态：entry = 注册表条目，module = 学科后台模块，ctx = 传给 mount 的通用能力
 var state = {
-    entry: null,   // 当前挂载的注册表条目
-    module: null,  // 当前学科后台模块
-    ctx: null      // 传给 mount 的通用能力
+    entry: null,
+    module: null,
+    ctx: null
 };
 
 // ===================== 启动 =====================
@@ -65,7 +65,8 @@ document.addEventListener('DOMContentLoaded', function () {
 //    所以在补齐之前仍不要把 /admin/ 暴露到公网。
 var CURRENT_USER = null;
 
-// 带会话的请求：自动同源 Cookie，不抛异常，把状态码与响应体交给调用方
+// 带会话的请求：自动同源 Cookie，不抛异常，把状态码与响应体交给调用方；
+// 响应不是 JSON（例如网关 502 页面）时 data 保持 null。
 function apiAuth(path, options) {
     var opts = options || {};
     var init = { method: opts.method || 'GET', credentials: 'same-origin', headers: {} };
@@ -79,7 +80,7 @@ function apiAuth(path, options) {
             try {
                 data = text ? JSON.parse(text) : null;
             } catch (e) {
-                data = null; // 非 JSON（例如网关 502 页面）
+                data = null;
             }
             return { status: res.status, data: data };
         });
@@ -369,7 +370,8 @@ function createContext(entry) {
     };
 }
 
-// 请求助手：自动处理 JSON、把后端的 message 变成 Error、非 2xx 直接抛错。
+// 请求助手：自动处理 JSON、把后端的 message 变成 Error、非 2xx 直接抛错；
+// 响应不是 JSON（例如 nginx 的 502 页面）时 data 保持 null。
 // 注意：后端约定响应体形如 {code, message, data}，code===200 表示业务成功。
 function apiFetch(path, options) {
     var opts = options || {};
@@ -385,7 +387,6 @@ function apiFetch(path, options) {
             try {
                 data = text ? JSON.parse(text) : null;
             } catch (e) {
-                // 非 JSON 响应（例如 nginx 的 502 页面），保持 data 为 null
             }
             if (!res.ok) {
                 throw new Error((data && data.message) ? data.message : ('HTTP ' + res.status + ' ' + path));

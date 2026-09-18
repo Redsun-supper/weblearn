@@ -12,34 +12,36 @@
 
 // ---------- 模块级状态 ----------
 
+// 复习页的全部可变状态。队列、游标、记忆上下文都在引擎（Rust）侧，这里只放界面与今日计划相关的东西。
+// ⚠️ planTotals 是今日计划的分母 {new, probe}，**建会话时算一次后固定**——每次渲染重算会让
+// 分子涨、分母也跟着涨（出现过「新词 1/4、2/5」）；pendingSubmit 是最近一次提交的 Promise，
+// 翻页取数前必须等它落库，否则刚评过的词会被当成到期卡再抽一次。
 var state = {
-    session: null,   // 引擎里的 ReviewSession 实例（队列、游标、记忆上下文都在 Rust 侧）
-    wasm: null,      // WASM 引擎模块命名空间
-    revealed: false, // 当前卡片是否已揭晓答案（主动回忆：揭晓前不允许评分）
-    stats: null,     // 最近一次 /api/reviews/stats 返回的数据
-    card: null,      // 当前卡片的展示数据（渲染与揭晓共用，避免重复向引擎取数）
-    pendingSubmit: null, // 最近一次复习提交的 Promise（补词前要等它落库，避免竞态）
-    refilling: false,    // 是否正在补卡（防止并发补卡）
-    planInfo: null,      // 引擎给的今日计划规模 {new_target, probe_target, plan_len}
-    planTotals: null,    // 今日计划的分母 {new, probe}，建会话时算一次后固定
-    planPhase: '',       // 左下角小字当前处于哪一段：'' / 'plan' / 'review'
-    rounds: null,        // 上一次看到的「过完的轮数」（null = 还没记基线）
-    queueOffset: 0,      // 复习区已经交给引擎多少张（翻页用）
-    queueTotal: 0        // 复习区一共多少张（后端给的总数）
+    session: null,
+    wasm: null,
+    revealed: false,
+    stats: null,
+    card: null,
+    pendingSubmit: null,
+    refilling: false,
+    planInfo: null,
+    planTotals: null,
+    planPhase: '',
+    rounds: null,
+    queueOffset: 0,
+    queueTotal: 0
 };
 
 // 自动朗读开关在 localStorage 中的键名
 var AUTO_SPEAK_KEY = 'reviewAutoSpeak';
 
-// 沉浸模式（隐藏站点导航栏）在 localStorage 中的键名
-// 没有记录时默认**开启**：进入复习页就是要专注，导航栏先收起来
+// 沉浸模式（隐藏站点导航栏）在 localStorage 中的键名；没有记录时默认**开启**（进复习页就是要专注）
 var IMMERSIVE_KEY = 'reviewImmersive';
 
-// 今日计划（每天 5 个新词 + 5 个抽查）在 localStorage 中的键名
-//
+// 今日计划（每天 5 个新词 + 5 个抽查）在 localStorage 中的键名。
 // ⚠️ 为什么配额记在浏览器上而不是服务端：现在没有登录系统，服务端只有一份共享词库，
-// 若在服务端按「每天 5 个」算，等于全站每天共放 5 个新词——你先学了别人就没得学。
-// 记在本地就是「每台设备各自一份计划」，换设备/清缓存会重置（已知代价，等有登录再迁走）。
+// 按「每天 5 个」在服务端算等于全站每天共放 5 个新词——你先学了别人就没得学。
+// 记在本地就是「每台设备各自一份计划」，代价是换设备 / 清缓存会重置（等有登录再迁走）。
 var PLAN_KEY = 'reviewDailyPlan';
 
 // 每天的新词 / 抽查配额
@@ -50,8 +52,8 @@ var DAILY_PROBE_TARGET = 5;
 // 否则「每天都抽到期最远的那几个」会变成新的饥饿
 var PROBE_COOLDOWN_DAYS = 7;
 
-// 取数批量：复习区每次取多少张、新词候选取多少、抽查候选取多少
-// 新词/抽查都多取一些候选，随机抽与冷却过滤才有挑选余地
+// 取数批量：复习区每次取多少张、新词 / 抽查候选取多少
+// （候选多取一些，随机抽与冷却过滤才有挑选余地）
 var QUEUE_PAGE_SIZE = 100;
 var NEW_CANDIDATE_SIZE = 20;
 var PROBE_CANDIDATE_SIZE = 20;
@@ -65,10 +67,8 @@ var ROUND_FLASH_MS = 2600;
 // 引擎模块路径（相对本文件所在目录解析）
 var WASM_MODULE_URL = './engine/pkg/guangxue_wasm.js';
 
-// 换卡过渡时长（毫秒）：需与 english.css 里的离场动画时长保持一致
+// 换卡过渡 / 计划文案切换的时长（毫秒）：必须与 english.css 的 studyOut、planOut 保持一致
 var TRANSITION_MS = 150;
-
-// 左下角计划文案的切换时长（毫秒）：需与 english.css 的 planOut 动画一致
 var PLAN_SWAP_OUT_MS = 160;
 
 // 键盘监听是否已绑定（同一页面内反复切换学科只绑定一次）
@@ -88,21 +88,21 @@ var POS_LABELS = {
 // ---------- 对外入口 ----------
 
 // 初始化复习应用。由 main.js 在英语页 HTML 注入完成后调用。
+// 顺序：释放上一次会话（引擎侧的 ReviewSession 必须显式 free，否则反复进出英语页会泄漏 WASM 内存）→
+// 绑定监听（键盘与语音解锁都只绑一次）→ 恢复开关状态（自动朗读 / 沉浸模式，均默认开启）→
+// 加载引擎并取回今日计划所需的四份数据。
 export function initReviewApp() {
     var statusEl = document.getElementById('reviewStatus');
     if (!statusEl) return; // 当前页面不是英语页，跳过
     statusEl.textContent = '正在加载复习内容...';
 
-    // 释放上一次会话对象，避免反复进出英语页时泄漏 WASM 侧内存
     releaseSession();
 
-    // 键盘快捷键只绑定一次：同一页面内反复切换学科不会重复注册
     if (!keysBound) {
         keysBound = true;
         document.addEventListener('keydown', handleReviewKey);
     }
 
-    // 恢复「自动朗读」开关状态（默认开启）
     var autoEl = document.getElementById('reviewAutoSpeak');
     if (autoEl) {
         autoEl.checked = isAutoSpeakOn();
@@ -111,23 +111,20 @@ export function initReviewApp() {
         });
     }
 
-    // 沉浸模式：把站点导航栏收起来，让复习页占满整屏（默认开启）
     bindClick('studyNavToggle', function() { toggleImmersive(); });
     setImmersive(isImmersiveOn());
 
-    // 浏览器会拦截未经用户交互的语音：首次交互后补读一次当前单词
     if (!unlockBound) {
         unlockBound = true;
         document.addEventListener('pointerdown', unlockSpeech);
         document.addEventListener('keydown', unlockSpeech);
     }
 
-    // 显示答案按钮与发音按钮
     bindClick('reviewRevealBtn', function() { revealAnswer(); });
     bindClick('reviewSpeakWordBtn', function() { speakCurrent('word'); });
     bindClick('reviewSpeakExampleBtn', function() { speakCurrent('example'); });
 
-    // 评分按钮（学科页每次加载都会重建这些元素，直接绑定即可）
+    // 评分按钮：学科页每次加载都会重建这些元素，直接逐个绑定即可
     var buttons = document.querySelectorAll('.rating');
     for (var k = 0; k < buttons.length; k++) {
         buttons[k].addEventListener('click', function() {
@@ -136,7 +133,6 @@ export function initReviewApp() {
         });
     }
 
-    // 加载引擎 → 取回今日计划所需的四份数据 → 交给引擎编排
     var plan = loadTodayPlan();
     state.planPhase = '';
 
@@ -151,8 +147,8 @@ export function initReviewApp() {
             state.stats = statsRes.data;
         }
 
-        // 队列编排（今日计划 + 复习区排序 + 日期换算）全部在引擎内完成。
-        // 直接把接口返回的 JSON 原文交给引擎，本文件不再解析与保存卡片数组。
+        // 队列编排（今日计划 + 复习区排序 + 日期换算）全部在引擎内完成：
+        // 本文件只把接口返回的 JSON 原文递进去，不再自己解析与保存卡片数组。
         state.session = new state.wasm.ReviewSession(
             results[0], // 复习区：整库按紧迫度升序（含未到期）
             results[1], // 新词候选
@@ -160,13 +156,11 @@ export function initReviewApp() {
             JSON.stringify(buildPlanOptions(plan))
         );
 
-        // 记下复习区取到哪儿了：队列走完后按 offset 取下一页
         state.queueOffset = parseQueueMeta(results[0]).count;
         state.queueTotal = parseQueueMeta(results[0]).total;
         state.planInfo = JSON.parse(state.session.plan_json());
 
-        // 今日计划的分母在建会话时**只算一次**：
-        // = 今天此前已经做完的 + 本次队列里排着的。
+        // ⚠️ 今日计划的分母在建会话时**只算一次**：今天此前已经做完的 + 本次队列里排着的。
         // 不能每次渲染时重算，否则分子涨一分母也跟着涨（会出现「新词 1/4、2/5」这种错）。
         state.planTotals = {
             new: plan.newDone + state.planInfo.new_target,
@@ -184,7 +178,7 @@ export function initReviewApp() {
 // 离开英语页时的清理。由 main.js 在切换到其他学科之前调用。
 // 为什么必须显式清理：沉浸模式把 is-immersive 类挂在了 document.body 上，
 // 内容容器被换成别的学科后这个类不会自己消失，导航栏会跟着一起不见。
-// 顺带释放引擎侧会话、取消未读完的语音，避免反复进出英语页时内存与声音残留。
+// 顺带释放引擎侧会话、清掉揭晓动效的定时器，避免反复进出英语页时内存与声音残留。
 export function unmount() {
     document.body.classList.remove('is-immersive');
     cancelRevealAnimation();
@@ -213,8 +207,7 @@ export function unmount() {
     }
 }
 
-// 取今日计划所需的数据。
-// 四份数据各司其职：复习区（整库紧迫度序）/ 新词候选 / 抽查候选 / 顶部统计。
+// 取今日计划所需的数据：复习区（整库紧迫度序）/ 新词候选 / 抽查候选 / 顶部统计
 function fetchDay(queueOffset) {
     return Promise.all([
         fetchText('/api/reviews/queue?limit=' + QUEUE_PAGE_SIZE + '&offset=' + queueOffset),
@@ -247,7 +240,7 @@ function parseQueueMeta(queueText) {
 
 // ---------- 今日计划（每天 5 个新词 + 5 个抽查） ----------
 //
-// 配额和抽查冷却记录都放在浏览器 localStorage 里（原因见 PLAN_KEY 的注释）。
+// 配额与抽查冷却记录都放在浏览器 localStorage 里（原因见 PLAN_KEY 的注释）：
 // 引擎只管「按我给的剩余额度编排队列」，额度的账在这里算。
 
 // 本地日期键（按浏览器本地自然日，跨零点即新的一天）
@@ -340,10 +333,9 @@ function buildPlanOptions(plan) {
     };
 }
 
-// 记一次计划完成（评分成功后调用）
-//
-// 这里**不刷界面**：评分紧接着就是换卡过渡（150ms），界面刷新交给换卡时的
-// renderPlanProgress。若在这里先刷一次，切换动画刚起步就会被换卡那次渲染掐断。
+// 记一次计划完成（评分成功后调用）。
+// ⚠️ 这里**不刷界面**：评分紧接着就是换卡过渡（150ms），界面刷新交给换卡时的 renderPlanProgress。
+// 若在这里先刷一次，切换动画刚起步就会被换卡那次渲染掐断（踩过，表现为「动画没播」）。
 function markPlanDone(kind, wordId) {
     var plan = loadTodayPlan();
     if (kind === 'probe') {
@@ -369,10 +361,8 @@ function releaseSession() {
 
 // ---------- 引擎加载与取数 ----------
 
-// 动态加载 WASM 引擎模块（浏览器原生 import()）
-// 两个关键点：
-// 1. 相对路径必须写成 './xxx' 或 '../xxx'：'engine/pkg/...' 会被当作 bare specifier
-//    （npm 包名）而解析失败；
+// 动态加载 WASM 引擎模块（浏览器原生 import()）。两个关键点：
+// 1. 相对路径必须写成 './xxx'：'engine/pkg/...' 会被当作 bare specifier（npm 包名）而解析失败；
 // 2. wasm-bindgen 的 --target web 产物必须先 await 默认导出（__wbg_init）完成实例化，
 //    否则模块内部变量 wasm 仍是 undefined，调用任何导出函数都会抛 TypeError。
 function loadEngine() {
@@ -393,7 +383,6 @@ function fetchText(url) {
     });
 }
 
-// 取回并解析 JSON
 function fetchJson(url) {
     return fetch(url).then(function(res) {
         if (!res.ok) {
@@ -410,21 +399,19 @@ function renderCard() {
     renderCardNow();
 }
 
-// 评分后切换卡片：先上锁 → 播离场动画 → 更新内容 → 播入场动画
-//
-// 上锁必须发生在过渡**开始前**：过渡期间旧卡的答案与评分按钮还在屏幕上，
+// 评分后切换卡片：先上锁 → 播离场动画 → 更新内容 → 播入场动画。
+// ⚠️ 上锁必须发生在过渡**开始前**：过渡期间旧卡的答案与评分按钮还在屏幕上，
 // 若用户连点或按住数字键，第二次评分会落到下一张卡上（引擎游标已经前进）。
 function advanceCard() {
     state.revealed = false; // 评分守卫立刻失效
     state.card = null;      // 键盘处理器靠 !state.card 直接 return
-    hide('reviewButtons');  // 视觉上让按钮先消失
+    hide('reviewButtons');
     withCardTransition(function() {
         renderCardNow();
     });
 }
 
-// 换卡过渡：给舞台加离场/入场动画类
-// 系统开启「减少动态效果」时直接跳过动画（业务逻辑完全一致）
+// 换卡过渡：给舞台加离场 / 入场动画类；系统开启「减少动态效果」时直接跳过动画（业务逻辑完全一致）
 function withCardTransition(update) {
     var stage = document.getElementById('studyStage');
     if (!stage || prefersReducedMotion()) {
@@ -434,7 +421,7 @@ function withCardTransition(update) {
     stage.classList.remove('is-in');
     stage.classList.add('is-out');
     setTimeout(function() {
-        update(); // 真正换内容
+        update();
         stage.classList.remove('is-out');
         void stage.offsetWidth; // 强制重排，保证入场动画能重新播放
         stage.classList.add('is-in');
@@ -449,30 +436,29 @@ function prefersReducedMotion() {
     return !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
 }
 
-// 把当前卡片画到界面上（幂等；不负责过渡动画）
+// 把当前卡片画到界面上（幂等；不负责过渡动画）。
+// 换卡即重置：新卡一律先藏答案与评分按钮，并掐掉上一张卡可能还在收尾的揭晓动效。
+// ⚠️ 计划小字要在「队列走完」这条分支**之前**刷新：最后一张计划卡评完时队列可能同时见底，
+// 否则小字会停在旧文案上不再切换。
 function renderCardNow() {
     var session = state.session;
     if (!session) return;
 
-    // 换卡即重置揭示状态：新卡一律先隐藏答案与评分按钮
     state.revealed = false;
     state.card = null;
-    cancelRevealAnimation(); // 上一张卡的揭晓动效可能还在收尾，先掐掉
+    cancelRevealAnimation();
     hide('reviewAnswer');
     hide('reviewButtons');
     hide('reviewReveal');
 
     renderStats(state.stats);
-    // 计划小字要在「队列走完」这条分支之前刷新：
-    // 最后一张计划卡评完时队列可能同时见底，否则小字会停在旧文案上不再切换
     renderPlanProgress();
 
     if (session.is_finished()) {
         hideCardBody();
         setStatus('');
         showFinishMessage();
-        // 池子是空的：看看还有没有下一页可取，取到了就能继续
-        maybePrefetch();
+        maybePrefetch(); // 池子是空的：看看还有没有下一页可取，取到了就能继续
         return;
     }
 
@@ -495,16 +481,14 @@ function renderCardNow() {
     renderPlanProgress();
     checkRounds(session.rounds());
 
-    // 无限复习：评完的卡会按新到期时间插回池子，所以这里不再有「剩余张数」的概念，
-    // 改为显示本轮已经复习了多少张（越往下翻越大）
+    // 无限复习：评完的卡会按新到期时间插回池子，所以不再有「剩余张数」的概念，
+    // 这里显示的是本轮已经复习了多少张（越往下翻越大）
     var sourceLabel = sourceLabelOf(state.card.source);
     setStatus('本轮已复习 ' + session.done() + ' 张 · ' + sourceLabel);
     show('reviewReveal');
 
-    // 本轮快走完时预先取复习区的下一页（词库大时要翻好几页）
     maybePrefetch();
 
-    // 开启自动朗读时，每张新卡出现即朗读单词
     if (isAutoSpeakOn()) speakCurrent('word');
 }
 
@@ -542,7 +526,7 @@ function maybePrefetch() {
     // universe = 池中待抽 + 手上这一张；rated = 本轮已评分数
     var universe = state.session.pending_count() + 1;
     var rated = state.session.seen_count();
-    if (universe - rated > PREFETCH_MARGIN) return; // 本轮还早，不急着取
+    if (universe - rated > PREFETCH_MARGIN) return;
 
     state.refilling = true;
 
@@ -648,14 +632,13 @@ function checkRounds(rounds) {
     }, ROUND_FLASH_MS);
 }
 
-// 设置左下角文案：阶段变化时先淡出旧文案、再浮入新文案（见 english.css 的 planOut / planIn）
+// 设置左下角文案：阶段变化时先淡出旧文案、再浮入新文案（见 english.css 的 planOut / planIn）。
+// ⚠️ 文案没变时**直接返回、不要顺手清动画类**：切换动画播到一半时如果有一次多余的渲染
+// （换卡、统计刷新等）进来，就会把动画掐断，看上去像「没播」（踩过）。
 function setPlanText(text, animate) {
     var el = document.getElementById('studyPlanText');
     if (!el) return;
 
-    // 文案没变就什么都不做。
-    // ⚠️ 这里**不能**顺手清掉动画类：切换动画播到一半时如果有一次多余的渲染
-    // （换卡、统计刷新等）进来，就会把动画掐断，看上去像「没播」。
     if (el.textContent === text) return;
 
     clearTimeout(planSwapTimer);
@@ -713,11 +696,11 @@ function renderMeta(meta) {
     }
 }
 
-// 揭晓区：主例句（目标词高亮，配中文翻译）+ 一条条释义块
+// 揭晓区：主例句（目标词高亮，配中文翻译）+ 一条条释义块。
+// 引擎已把例句切成「命中 / 未命中」片段、也把「一个词性一块」的释义拆好了
+// （词条填了多释义就用它，没填则按词性标签自动拆），这里只负责拼成 DOM。
+// 词条没有主例句时不渲染引文块——多释义各自带例句的情况很常见，不能留个空壳。
 function renderAnswer(card) {
-    // ---------- 主例句 ----------
-    // 引擎已切成「命中 / 未命中」片段，这里只负责拼成 DOM。
-    // 词条没有例句时不渲染引文块（多释义各自带例句的情况很常见，不能留个空壳）
     var quote = document.getElementById('reviewExample');
     var parts = card.example_parts || [];
     if (quote) {
@@ -741,7 +724,6 @@ function renderAnswer(card) {
         }
     }
 
-    // 主例句的中文翻译（没填就不显示这一行）
     var quoteCn = document.getElementById('reviewExampleCn');
     if (quoteCn) {
         if (card.example_translation && parts.length > 0) {
@@ -753,8 +735,6 @@ function renderAnswer(card) {
         }
     }
 
-    // ---------- 释义块 ----------
-    // 引擎已经把「一个词性一块」拆好了（词条填了多释义就用它，没填就按词性标签自动拆）
     var sensesBox = document.getElementById('reviewSenses');
     if (!sensesBox) return;
     sensesBox.textContent = '';
@@ -787,7 +767,7 @@ function renderSense(sense) {
     head.appendChild(meaningEl);
     block.appendChild(head);
 
-    // 该释义专属例句（缩进对齐到释义正文那一列）
+    // 该释义专属例句：缩进对齐到释义正文那一列（缩进在 english.css 的 .sense-example 里）
     var parts = sense.example_parts || [];
     if (parts.length > 0) {
         var ex = document.createElement('p');
@@ -838,17 +818,15 @@ function formatNumber(value, digits) {
 
 // ---------- 揭晓与评分 ----------
 
-// 揭晓答案：显示例句与释义，并放出评分按钮
-// 只有揭晓后才允许评分，否则「看着答案打分」会让 FSRS 的记忆状态失真
+// 揭晓答案：显示例句与释义，并放出评分按钮。
+// 只有揭晓后才允许评分——「看着答案打分」会让 FSRS 的记忆状态失真。
+// 揭晓按钮的退场与评分按钮的入场都挂在 playRevealAnimation 的时间线上，所以这里不再直接 hide/show 那两个块。
 function revealAnswer() {
     if (state.revealed) return;
     if (!state.session || state.session.is_finished()) return;
     state.revealed = true;
 
     show('reviewAnswer');
-
-    // 揭晓动效：整块淡入太死板，改成按顺序浮现（见 playRevealAnimation）
-    // 「揭晓按钮退场 → 评分按钮入场」也在这条时间线上，所以这里不再直接 hide/show 按钮
     playRevealAnimation();
 
     var sourceLabel = sourceLabelOf(state.card ? state.card.source : '');
@@ -863,9 +841,9 @@ function revealAnswer() {
 //   译文跟上 ─────────┼─→ 揭晓按钮消失的同一刻，四个评分按钮从它原来的位置依次顶上来
 //   一条条释义块浮现 ─┘   （每块里的目标词高亮再晚一点扫过去，像荧光笔划过去）
 //
-// 为什么分离「动画定义」与「延时」：什么时候开始由这里的数字决定（好调），
-// 动画怎么动（时长/缓动/起止状态）写在 english.css 里，两边只靠这几个常量对齐。
-// 单词本身**不参与动画**：揭晓时它必须待在原位不动（之前整体居中导致上移，已经改掉了）。
+// 「动画定义」与「延时」分离：什么时候开始由这里的常量决定（好调），
+// 动画怎么动（时长 / 缓动 / 起止状态）写在 english.css 里，两边只靠这几个常量对齐。
+// ⚠️ 单词本身**不参与任何动画**：揭晓时它必须待在原位不动（之前整体居中导致单词被顶上去，已改掉）。
 
 // 释义块之间的错开间隔
 var REVEAL_STEP_MS = 60;
@@ -875,8 +853,7 @@ var REVEAL_HEAD_MS = 110;
 var REVEAL_CN_MS = 60;
 // 高亮比它所在的那一块再晚一点（例句先出来，荧光笔才扫过去）
 var REVEAL_HIT_MS = 100;
-// 「显示答案」按钮退场时长。**换人的时刻就是它**：退场动画一播完，
-// 立刻藏掉它、放出评分按钮，中间不留空档也不重叠
+// 「显示答案」按钮退场时长。**换人的时刻就是它**：退场一播完立刻藏掉它、放出评分按钮，中间不留空档也不重叠
 var REVEAL_OUT_MS = 170;
 // 评分按钮：相对「被放出来」那一刻的起步延后，以及它们之间的错开间隔
 var REVEAL_BTN_BASE_MS = 30;
@@ -896,8 +873,7 @@ function setRevealDelay(el, ms) {
     if (el) el.style.animationDelay = ms + 'ms';
 }
 
-// 播放揭晓动效：给各元素排好延时，再给根节点挂 revealing 类触发动画
-// 返回这一轮动效的总时长（毫秒）
+// 播放揭晓动效：给各元素排好延时，再给根节点挂 revealing 类触发动画；返回这一轮动效的总时长（毫秒）
 function playRevealAnimation() {
     var root = document.getElementById('reviewApp');
     if (!root) return 0;
@@ -910,13 +886,11 @@ function playRevealAnimation() {
         return 0;
     }
 
-    // 主例句与它的译文
     setRevealDelay(document.getElementById('reviewExample'), 0);
     setRevealDelay(document.getElementById('reviewExampleCn'), REVEAL_CN_MS);
 
     var i, k;
 
-    // 主例句里的目标词高亮
     var quoteHits = document.querySelectorAll('#reviewExample .study-hit');
     for (k = 0; k < quoteHits.length; k++) {
         setRevealDelay(quoteHits[k], REVEAL_HIT_MS);
@@ -957,8 +931,8 @@ function playRevealAnimation() {
     clearTimeout(revealTimer);
 
     // 揭晓按钮退场动画播完的同一刻换人。
-    // ⚠️ 必须先藏掉揭晓按钮再放评分按钮：两者是底部操作区里相邻的两个块，
-    // 同时显示会让操作区变高，把上面的单词顶上去（那正是之前修掉的毛病）。
+    // ⚠️ 顺序铁律：必须先藏掉揭晓按钮再放评分按钮。两者是底部操作区里相邻的两个块，
+    // 同时显示会让操作区变高、把上面的单词顶上去（那正是之前修掉的毛病）。
     revealSwapTimer = setTimeout(function() {
         revealSwapTimer = null;
         hide('reviewReveal');
@@ -983,8 +957,10 @@ function cancelRevealAnimation() {
     if (root) root.classList.remove('revealing');
 }
 
-// 用户点击评分：交给引擎算新记忆状态 → 引擎返回可直接提交的请求体 → POST 持久化
-// 前置条件：必须已揭晓答案；揭晓前的评分一律忽略（避免误触键盘泄漏答案、也避免凭猜测打分）
+// 用户点击评分：交给引擎算新记忆状态 → 引擎返回可直接提交的请求体 → POST 持久化。
+// 前置条件（铁律）：必须已揭晓答案，揭晓前的评分一律忽略——
+// 既是避免误触键盘泄漏答案，也是避免「凭猜测打分」污染记忆状态。
+// 提交本身不 await：先换卡保证手感，Promise 记进 state.pendingSubmit 供翻页前等待。
 function handleReviewRating(rating) {
     var session = state.session;
     if (!session || session.is_finished()) return;
@@ -993,7 +969,7 @@ function handleReviewRating(rating) {
         return;
     }
 
-    // 引擎内部完成：换算距上次复习天数 → FSRS 计算 → 取对应分支 → 推进游标
+    // 引擎内部完成：换算距上次复习天数 → FSRS 计算 → 取对应分支 → 推进游标；
     // 抽查卡在引擎里按「新卡」重算（返回体里带 is_probe 标记）
     var cardSource = state.card ? state.card.source : '';
     var payload;
@@ -1028,7 +1004,6 @@ function handleReviewRating(rating) {
         return res.json();
     }).then(function(data) {
         if (data && data.code === 200) {
-            // 提交成功后刷新统计（今日新学 / 今日复习 / 剩余待学）
             loadReviewStats();
         } else {
             console.error('提交复习失败:', data);
@@ -1056,8 +1031,8 @@ function loadReviewStats() {
 
 // ---------- 语音合成 ----------
 
-// 读取「自动朗读」开关（持久化在 localStorage）
-// **默认开启**：只有用户显式关掉过（存了 '0'）才是关闭状态
+// 读取「自动朗读」开关（持久化在 localStorage）。
+// **默认开启**：只有用户显式关掉过（存了 '0'）才是关闭状态。
 function isAutoSpeakOn() {
     try {
         var saved = localStorage.getItem(AUTO_SPEAK_KEY);
@@ -1079,7 +1054,7 @@ function unlockSpeech() {
     }
 }
 
-// 保存「自动朗读」开关
+// 保存「自动朗读」开关（'1' / '0'，见 isAutoSpeakOn 的默认值约定）
 function setAutoSpeak(on) {
     try {
         localStorage.setItem(AUTO_SPEAK_KEY, on ? '1' : '0');
@@ -1216,7 +1191,6 @@ function setText(id, value) {
     if (el) el.textContent = (value === null || value === undefined) ? '' : String(value);
 }
 
-// 设置底部状态文字
 function setStatus(text) {
     setText('reviewStatus', text);
 }
@@ -1260,7 +1234,7 @@ function hideMessage() {
     hide('studyMessage');
 }
 
-// 隐藏单词与音标（无卡片时）
+// 隐藏单词、音标与揭晓区（无卡片时）
 function hideCardBody() {
     hide('reviewWord');
     hide('reviewPhoneticRow');

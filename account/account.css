@@ -386,7 +386,7 @@ body.acc-page {
     padding: 4px;
     border-radius: 10px;
     background-color: #f1f3f5;
-    /* 滑块要相对它定位 */
+    /* 绝对定位的滑块（.acc-tabs-thumb）要相对它定位，别删 */
     position: relative;
 }
 

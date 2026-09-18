@@ -132,7 +132,7 @@ impl AuthService {
         self.cfg.refresh_ttl.as_secs() as i64
     }
 
-    /// 只读查询（错误类型固定为 AuthError，方便业务代码用 `?`）
+    /// 只读查询（错误类型固定为 AuthError，业务代码不必写类型标注）
     async fn read<T, F>(&self, f: F) -> Result<T>
     where
         F: FnOnce(&Connection) -> Result<T> + Send + 'static,

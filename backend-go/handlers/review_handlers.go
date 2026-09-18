@@ -26,16 +26,18 @@ func NewReviewHandler(db *gorm.DB) *ReviewHandler {
 
 // ---------- 请求/响应结构 ----------
 
+// addWordItem 批量添加（POST /api/words）里的单条词目。
+// example_translation / senses / book / unit 均可选；senses 留空时展示层按 meaning 里的词性标签自动分块。
 type addWordItem struct {
 	Word               string            `json:"word"`
 	Phonetic           string            `json:"phonetic"`
 	Meaning            string            `json:"meaning"`
 	Example            string            `json:"example"`
-	ExampleTranslation string            `json:"example_translation"` // 例句中文翻译（可选）
-	Senses             models.WordSenses `json:"senses"`              // 多释义（可选）
+	ExampleTranslation string            `json:"example_translation"`
+	Senses             models.WordSenses `json:"senses"`
 	Subject            string            `json:"subject"`
-	Book               string            `json:"book"` // 词书/册（可选）
-	Unit               string            `json:"unit"` // 单元（可选）
+	Book               string            `json:"book"`
+	Unit               string            `json:"unit"`
 }
 
 // updateWordRequest 更新词条请求
@@ -56,15 +58,17 @@ type addWordsRequest struct {
 	Words []addWordItem `json:"words"`
 }
 
+// submitReviewRequest 提交一次复习（POST /api/reviews/submit）的请求体。
+// stability / difficulty / interval_days 都是引擎算好的新状态，后端只负责落库，不重算。
 type submitReviewRequest struct {
 	WordID        uint    `json:"word_id"`
 	Rating        uint8   `json:"rating"`        // 1=Again 2=Hard 3=Good 4=Easy
-	Stability     float64 `json:"stability"`     // 引擎算出的新记忆状态
-	Difficulty    float64 `json:"difficulty"`    // 引擎算出的新记忆状态
+	Stability     float64 `json:"stability"`
+	Difficulty    float64 `json:"difficulty"`
 	IntervalDays  float64 `json:"interval_days"` // 引擎算出的下次间隔（天）
 	DesiredRetain float64 `json:"desired_retention"`
 	// IsProbe 标记「每日抽查」卡：这类卡评分时引擎按**新卡**重算记忆状态（相当于重新体检）。
-	// 日志里的 stability_before 仍是数据库里的真实旧值，所以「今日新学」统计不会被它污染；
+	// ⚠️ 日志里的 stability_before 仍是数据库里的真实旧值，所以「今日新学」统计不会被它污染；
 	// 记这个标记是为了日后做 FSRS 参数优化时能排除这批「间隔被大幅压缩」的记录。
 	IsProbe bool `json:"is_probe"`
 }
@@ -150,7 +154,6 @@ func (h *ReviewHandler) ListWords(c *gin.Context) {
 		offset = 0
 	}
 
-	// 总数：供前端分页使用
 	var total int64
 	if err := h.wordQuery(c).Count(&total).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "统计失败:" + err.Error()})
@@ -244,7 +247,6 @@ func (h *ReviewHandler) UpdateWord(c *gin.Context) {
 		return
 	}
 
-	// 改名时检查唯一性
 	if word != record.Word {
 		var dup models.Word
 		err := h.db.Where("word = ?", word).First(&dup).Error
@@ -301,7 +303,6 @@ func (h *ReviewHandler) DeleteWord(c *gin.Context) {
 		return
 	}
 
-	// 先记下要连带删除的数量，便于前端提示
 	var reviewCount int64
 	h.db.Model(&models.WordReview{}).Where("word_id = ?", id).Count(&reviewCount)
 	var logCount int64
@@ -341,8 +342,7 @@ func (h *ReviewHandler) AddWords(c *gin.Context) {
 		return
 	}
 
-	// 一次性取出已存在的单词建索引，避免逐条 SELECT
-	// （导入几千词时差别很大：原来是 N 次查询 + N 次插入）
+	// 一次性取出已存在的单词建索引，避免逐条 SELECT（导入几千词时差别很大：原来是 N 次查询 + N 次插入）
 	var existingWords []string
 	if err := h.db.Model(&models.Word{}).Pluck("word", &existingWords).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "查询失败:" + err.Error()})
@@ -482,12 +482,11 @@ func (h *ReviewHandler) learnedQuery(order string) *gorm.DB {
 		Order(order)
 }
 
-// QueueReviews 复习队列：**所有已学词**按紧迫度（due_at 升序）排列，包含尚未到期的。
+// QueueReviews 复习队列：**所有已学词**按紧迫度（due_at 升序）排列，含尚未到期的，想多学就能一直往下翻。
 // GET /api/reviews/queue?limit=100&offset=0
 //
-// 与 /api/reviews/due 的区别：due 只给「已经到期」的，queue 给整库并把「离到期还有多久」
-// 一起排好序。当前调度里到期与否只影响**顺序**，不影响是否有资格出现——
-// 想多学就能一直往下翻（已过期的最旧优先；未到期的每 10 个一块、块内打乱，
+// 与 /api/reviews/due 的区别：due 只给「已经到期」的，queue 给整库并把「离到期还有多久」一起排好序。
+// 到期与否只影响**顺序**、不影响能否出现（已过期的最旧优先；未到期的每 10 个一块、块内打乱，
 // 这两件事由客户端引擎负责，见 modules/english/engine/src/session.rs 的 plan_day）。
 //
 // 分页：`total` 是已学词总数，客户端翻到底就说明整库过了一遍。
@@ -530,11 +529,9 @@ func (h *ReviewHandler) QueueReviews(c *gin.Context) {
 // ProbeCandidates 每日抽查候选：**到期时间最远**的已学词（due_at 倒序）。
 // GET /api/reviews/probes?limit=20
 //
-// 用途：每天固定抽几个「最轮不到复习」的词提前确认记忆强度，避免出现
-// 「总是快要过期的那些天天出现，而间隔已经拉到几十天的词永远不出现」。
-//
-// 为什么多给一些候选：客户端还会按 localStorage 里的「最近抽查过的词」过滤，
-// 所以这里按 due_at 倒序多取几条，让它有得挑。
+// 用途：每天固定抽几个「最轮不到复习」的词提前确认记忆强度，避免「总是快过期的天天出现、
+// 而间隔已经拉到几十天的词永远不出现」。
+// 多给候选的原因：客户端还会按 localStorage 里的「最近抽查过的词」过滤，多取几条让它有得挑。
 func (h *ReviewHandler) ProbeCandidates(c *gin.Context) {
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
 	if limit <= 0 || limit > 200 {
@@ -583,7 +580,9 @@ func (h *ReviewHandler) SubmitReview(c *gin.Context) {
 	}
 
 	now := time.Now()
-	// 间隔最短 10 分钟，防止 Again 后马上再次到期
+	// 间隔最短 10 分钟（600 秒），防止 Again 后马上再次到期。
+	// ⚠️ 下限必须与引擎侧一致（session.rs 的 due_ms = now + max(interval_days*86400000, 600000)），
+	// 否则卡插回池子后的排序位置会与服务端实际的 due_at 有偏差。
 	dueSeconds := math.Max(req.IntervalDays*86400, 600)
 	dueAt := now.Add(time.Duration(dueSeconds * float64(time.Second)))
 
@@ -600,7 +599,8 @@ func (h *ReviewHandler) SubmitReview(c *gin.Context) {
 		return
 	}
 
-	// 复习前的稳定度（用于日志）
+	// 复习前的稳定度（用于日志）：⚠️ 必须取库里的真实旧值，不要改成引擎的输入状态，
+	// 否则抽查卡（引擎按新卡重算）会被 stats 统计成「今日新学」
 	stabilityBefore := review.Stability
 	if isNew {
 		review = models.WordReview{WordID: req.WordID}

@@ -50,7 +50,6 @@ async fn run() -> Result<(), String> {
     if args.get("--password").is_none() && cfg.admin_password.is_none() {
         eprintln!("提示：未提供密码，使用 development 默认密码");
     }
-    // 密码相关的校验交给服务层（与接口走同一套规则）
     cfg.seed_admin = false; // 这个命令自己负责建号，不需要启动期的自动 seed
 
     let state = AppState::init(cfg).await.map_err(|e| e.to_string())?;

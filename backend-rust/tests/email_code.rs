@@ -227,7 +227,6 @@ async fn login_is_rate_limited_per_ip() {
         .assert_status(StatusCode::TOO_MANY_REQUESTS)
         .assert_error("rate_limited");
 
-    // 别的 IP 不受影响
     let mut other = Client::new(&app).with_ip("198.51.100.6");
     other
         .post("/api/auth/login", json!({"email": "nobody@example.com", "password": "abc12345"}))

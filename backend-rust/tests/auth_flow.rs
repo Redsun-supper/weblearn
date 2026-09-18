@@ -20,7 +20,6 @@ async fn register_returns_user_and_session_cookies() {
     assert!(client.access_cookie().is_some(), "注册后应拿到 access cookie");
     assert!(client.refresh_cookie().is_some(), "注册后应拿到 refresh cookie");
 
-    // 注册即登录
     let me = client.get("/api/auth/me").await;
     me.assert_status(StatusCode::OK);
     assert_eq!(me.field("/data/user/email").unwrap(), "alice@example.com");
@@ -41,7 +40,6 @@ async fn login_works_after_logout_and_me_requires_session() {
 
     client.get("/api/auth/me").await.assert_status(StatusCode::UNAUTHORIZED);
 
-    // 重新登录
     let again = client
         .post("/api/auth/login", json!({"email": "bob@example.com", "password": "abc12345"}))
         .await;

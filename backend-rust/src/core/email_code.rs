@@ -128,7 +128,6 @@ mod tests {
         assert_eq!(evaluate(0, 5, future, now, true), CodeCheck::Ok);
         assert_eq!(evaluate(0, 5, future, now, false), CodeCheck::Mismatch);
         assert_eq!(evaluate(5, 5, future, now, true), CodeCheck::AttemptsExceeded);
-        // 过期优先于其他一切
         assert_eq!(evaluate(5, 5, now, now, true), CodeCheck::Expired);
         assert_eq!(evaluate(5, 5, at(999_999), now, true), CodeCheck::Expired);
     }

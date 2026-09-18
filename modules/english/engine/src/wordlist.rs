@@ -123,7 +123,6 @@ fn split_whitespace_smart(line: &str) -> Vec<String> {
         return vec![word];
     }
 
-    // 判断第二个 token（rest 的第一段）是否像音标
     match rest.find(char::is_whitespace) {
         None => {
             if looks_like_phonetic(rest) {
@@ -170,7 +169,6 @@ pub fn parse_word_list_core(text: &str) -> WordListParse {
     for (idx, raw) in text.lines().enumerate() {
         let line_no = idx + 1;
         let line = raw.trim();
-        // 跳过空行与注释
         if line.is_empty() || line.starts_with('#') || line.starts_with("//") {
             continue;
         }
@@ -277,7 +275,6 @@ mod tests {
 
     #[test]
     fn space_separated_with_slashed_phonetic() {
-        // 第二个词带斜杠 → 判为音标，其余为释义
         let out = parse_word_list_core("abandon /əˈbæn.dən/ v. 放弃；抛弃");
         let r = &out.rows[0];
         assert_eq!(r.word, "abandon");

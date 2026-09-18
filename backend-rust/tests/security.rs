@@ -155,7 +155,6 @@ async fn account_locks_after_repeated_failures() {
         .await;
     blocked.assert_status(StatusCode::TOO_MANY_REQUESTS).assert_error("account_locked");
 
-    // 锁定到期后恢复
     app.advance(15 * 60 + 1);
     attacker
         .post("/api/auth/login", json!({"email": "lock@example.com", "password": "abc12345"}))

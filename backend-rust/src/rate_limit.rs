@@ -103,7 +103,6 @@ mod tests {
         assert!(limiter.check("a", &rules).is_ok());
         assert!(limiter.check("a", &rules).is_ok());
         assert!(matches!(limiter.check("a", &rules), Err(AuthError::RateLimited)));
-        // 另一个键不受影响
         assert!(limiter.check("b", &rules).is_ok());
     }
 

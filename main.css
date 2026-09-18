@@ -1,80 +1,59 @@
-/* 通配符选择器，选中页面所有元素 */
+/* 全站重置：清掉浏览器给 h1 / p 等元素的默认 margin、padding，
+   并统一成 border-box，让宽高都含内边距与边框，尺寸好算 */
 * {
-    /* 清除所有元素默认的外边距，浏览器会为某些元素（如h1、p等）添加默认margin，清除后便于统一控制布局 */
     margin: 0;
-    /* 清除所有元素默认的内边距，确保元素尺寸计算的一致性 */
     padding: 0;
-    /* 设置盒模型为border-box，使元素的width和height包含padding和border，便于精确控制元素尺寸 */
     box-sizing: border-box;
 }
 
-/* body元素选择器，设置整个页面的基础样式 */
+/* 页面基础样式：字体 / 行高 / 文字色 / 背景色。
+   文字用 #333 而非纯黑，长时间阅读更柔和 */
 body {
-    /* 设置字体族，优先使用Arial，如果系统没有Arial则使用sans-serif无衬线字体作为备选 */
     font-family: Arial, sans-serif;
-    /* 设置行高为字体大小的1.6倍，提高文本可读性和视觉舒适度 */
     line-height: 1.6;
-    /* 设置文本颜色为深灰色（#333），比纯黑更柔和，减少视觉疲劳 */
     color: #333;
-    /* 设置页面背景色为纯白色（#ffffff），提供干净简洁的视觉效果 */
     background-color: #ffffff;
 }
 
-/* 类选择器，选中class为rectangle的元素，用于页面上方的导航栏矩形 */
+/* 顶部导航栏：固定定位，滚动时不动。
+   高度 100px 是全站基准值 —— .content-container 的上外边距、
+   .rounded-square 的垂直居中换算都依赖它 */
 .rectangle {
-    /* 设置定位方式为固定定位，相对于浏览器窗口定位，滚动时保持不动 */
     position: fixed;
-    /* 设置矩形距离窗口顶部为0像素，紧贴顶部 */
     top: 0px;
-    /* 设置矩形距离窗口左侧为0像素，紧贴左侧 */
     left: 0px;
-    /* 设置矩形宽度为100%视口宽度，横跨整个页面顶部 */
     width: 100%;
-    /* 设置矩形高度为100像素，作为导航栏的标准高度 */
     height: 100px;
-    /* 设置矩形背景色为白色，与页面背景一致 */
     background-color: #ffffff;
-    /* 设置外阴影，参数依次为：水平偏移0、垂直偏移4像素、模糊半径15像素、阴影颜色为半透明黑色 */
     box-shadow: 0 4px 15px rgba(0, 0, 0, 0.15);
-    /* 设置z-index为100，确保导航栏在其他元素上方显示 */
     z-index: 100;
 }
 
-/* 类选择器，选中class为rounded-square的元素，用于相对于导航栏定位的圆角正方形 */
+/* 左上角头像 = 个人中心入口：在导航栏里绝对定位，靠 translateY(-50%) 垂直居中。
+   它其实是个 button（键盘可聚焦），所以要清掉浏览器默认的按钮外观；
+   overflow 必须是 visible —— 登录态小圆点要挂在圆角外面，裁剪交给 .avatar 自己做 */
 .rounded-square {
-    /* 设置定位方式为绝对定位，相对于最近的定位父元素（即导航栏矩形）定位 */
     position: absolute;
-    /* 设置正方形距离父元素顶部为50%，使元素顶部位于父元素垂直中点 */
     top: 50%;
-    /* 设置正方形距离父元素左侧为15像素，与导航栏左侧保持适当间距 */
     left: 30px;
-    /* 设置正方形宽度为64像素 */
     width: 64px;
-    /* 设置正方形高度为64像素，与宽度相等形成正方形 */
     height: 64px;
-    /* 使用transform向上平移自身高度的50%，使元素中心点正好位于父元素垂直中间 */
     transform: translateY(-50%);
-    /* 设置圆角半径为12像素，使正方形四角呈现圆润效果 */
     border-radius: 12px;
-    /* 设置边框，参数依次为：边框宽度3像素、实线样式、深灰色边框颜色，使边框更明显 */
     border: 3px solid #ffffff;
-    /* 设置正方形背景色为白色，与页面背景一致 */
     background-color: #ffffff;
-    /* 设置外阴影，参数依次为：水平偏移0、垂直偏移4像素、模糊半径8像素、阴影颜色为半透明黑色，使边框带有外阴影效果 */
     box-shadow: 4px 4px 10px rgba(0, 0, 0, 0.5),
                 0 0 8px rgba(0, 0, 0, 0.15);
-    /* 溢出可见：登录态小圆点要挂在圆角外面，所以不能在容器上裁剪。
+    /* 登录态小圆点要挂在圆角外面，所以不能在容器上裁剪。
        图片自己的圆角由 .avatar 的 border-radius 负责（62px 容器内径 + 边框=9px 圆角） */
     overflow: visible;
-    /* 设置z-index为101，确保头像在导航矩形项上方显示 */
     z-index: 101;
-    /* 头像现在是个 button（键盘可聚焦），把浏览器默认的按钮外观清干净 */
     padding: 0;
     font: inherit;
     cursor: pointer;
     -webkit-appearance: none;
     appearance: none;
-    /* 点击/悬停时的过渡：轻微放大 + 外发光，暗示「这里可以点」 */
+    /* 悬停 / 按下时的过渡：轻微缩放 + 外发光，暗示「这里可以点」 */
     transition: transform 0.18s ease, box-shadow 0.18s ease;
 }
 
@@ -117,9 +96,9 @@ body {
 /* 过场期间（正反两个方向都用）：只提供「过渡」与「裁剪」，不改外观。
    外观由 .is-flying（胶囊）或元素自身的样式（头像）决定 —— 拆成两个类是为了让
    **反向**也能有过渡：反向时要摘掉 .is-flying 让外观变回头像，如果过渡挂在
-   .is-flying 上，摘掉的那一刻过渡就没了，边框/圆角/底色会硬切。 */
+   .is-flying 上，摘掉的那一刻过渡就没了，边框/圆角/底色会硬切。
+   时长必须与 .avatar-zoom 的扩散一致（460ms），两件事是同时发生的。 */
 .rounded-square.is-morphing {
-    /* 时长必须与 .avatar-zoom 的扩散一致（460ms），两件事是同时发生的 */
     transition: top 0.46s cubic-bezier(0.33, 0, 0.2, 1),
                 left 0.46s cubic-bezier(0.33, 0, 0.2, 1),
                 width 0.46s cubic-bezier(0.33, 0, 0.2, 1),
@@ -129,7 +108,7 @@ body {
                 border-color 0.46s linear,
                 background-color 0.46s linear,
                 box-shadow 0.46s linear;
-    /* 提示合成器单独处理这一层：形状与底色都在变，不提升的话每帧都要重绘 */
+    /* 形状与底色都在变，提升成独立合成层，否则每帧都要重绘 */
     will-change: top, left, width, height, border-radius, background-color;
     /* 变窄的那段时间会把文字裁掉，看起来像胶囊展开时把字「吐」出来；
        反向缩回去时也靠它把字收掉（否则文字会露在胶囊外面） */
@@ -185,78 +164,55 @@ body {
     line-height: 1;
 }
 
-/* 类选择器，选中class为nav-items的元素，用于包含9个导航矩形项的容器 */
+/* 导航项容器：绝对定位，左侧 144px = 头像左 30 + 宽 64 + 间距 50。
+   右侧 30px 与头像的左侧留白对称 —— 原先这里留 190px 是为了右上角的
+   「登录 / 注册」文字入口，入口改到头像之后右侧不再有元素，导航项可以铺得更开 */
 .nav-items {
-    /* 设置定位方式为绝对定位，相对于导航栏矩形定位 */
     position: absolute;
-    /* 设置容器距离父元素顶部为0像素，与导航栏顶部对齐 */
     top: 0;
-    /* 设置容器距离父元素左侧为144像素，即头像左侧30px + 头像宽度64px + 间距50px = 144px */
     left: 144px;
-    /* 设置容器距离父元素右侧为30像素：与头像的左侧留白（30px）对称。
-       原先这里留 190px 是为了右上角的「登录 / 注册」文字入口，
-       入口改到头像之后右侧不再有元素，导航项可以铺得更开 */
     right: 30px;
-    /* 设置容器高度为100%父元素高度，填满导航栏高度 */
     height: 100%;
-    /* 使用flexbox布局，使导航矩形项水平排列 */
     display: flex;
-    /* 设置主轴方向为水平从左到右 */
     flex-direction: row;
-    /* 设置子元素在交叉轴上居中对齐，使矩形垂直居中 */
     align-items: center;
 }
 
-/* 类选择器，选中class为nav-rect的元素，用于单个导航矩形项 */
+/* 单个导航项：宽 120px（可自行调整），文字靠 flex 居中；
+   悬停与 .active 用同一档底色表示选中 */
 .nav-rect {
-    /* 设置矩形高度为100%父容器高度，填满导航栏高度 */
     height: 100%;
-    /* 设置矩形宽度为100像素，可由用户自行调整 */
     width: 120px;
-    /* 设置矩形背景色为浅灰色，使其可见 */
     background-color: #ffffff;
-    /* 设置右边框为1像素实线浅灰色，分隔各个矩形项 */
     /* border-right: 1px solid #ffffff; */
-    /* 使用flexbox布局，使文字在矩形内居中 */
     display: flex;
-    /* 设置主轴方向为水平居中 */
     justify-content: center;
-    /* 设置交叉轴方向为垂直居中 */
     align-items: center;
-    /* 设置字体大小为16像素 */
     font-size: 16px;
-    /* 设置字体颜色为深灰色 */
     color: #333;
-    /* 设置鼠标悬停时过渡动画，持续0.3秒 */
     transition: background-color 0.3s;
 }
 
-/* 伪类选择器，选中鼠标悬停状态的nav-rect元素 */
+/* 悬停 / 选中：都用同一档灰色。两条规则选择器权重相同，.active 写在后面，
+   所以选中状态不会被悬停覆盖 */
 .nav-rect:hover {
-    /* 鼠标悬停时背景色变为稍深的灰色，提供视觉反馈 */
     background-color: #e0e0e0;
 }
 
-/* 类选择器，选中class为nav-rect和active的元素，用于被点击激活的导航矩形项 */
 .nav-rect.active {
-    /* 被点击激活时背景色保持为灰色，不被其他状态覆盖 */
     background-color: #e0e0e0;
 }
 
-/* 类选择器，选中class为avatar的元素，用于头像图片 */
+/* 头像照片：填满容器，object-fit: cover 保持比例裁切。
+   圆角必须由图片自己裁：容器的 overflow 是 visible（要给登录态圆点留位置），
+   9px = 容器圆角 12px − 边框 3px，正好贴合容器内沿。
+   这里的 opacity 过渡是过场里照片的淡入淡出，与 .avatar-morph-label 时长一致 */
 .avatar {
-    /* 设置图片宽度为100%父容器宽度，填满容器 */
     width: 100%;
-    /* 设置图片高度为100%父容器高度，填满容器 */
     height: 100%;
-    /* 设置图片缩放方式为覆盖，保持比例裁剪以填满容器 */
     object-fit: cover;
-    /* 设置图片显示方式为块级元素，消除图片底部默认间隙 */
     display: block;
-    /* 圆角由图片自己裁：容器改成 overflow:visible 之后，裁剪不能在容器上做，
-       9px = 容器圆角 12px − 边框 3px，正好贴合容器内沿 */
     border-radius: 9px;
-    /* 过场里照片的淡入淡出（与 .avatar-morph-label 的时长一致） */
     transition: opacity 0.28s linear;
 }
 
@@ -271,7 +227,6 @@ body {
  *   放大过程中颜色始终不变形，落到个人中心那一页时视觉是连续的。
  *   （个人中心页 body 的背景就是下面这同一个渐变，接缝看不出来。） */
 .avatar-zoom {
-    /* 铺满视口，固定定位：不参与文档流，也不需要滚动跟随 */
     position: fixed;
     top: 0;
     left: 0;
@@ -280,16 +235,15 @@ body {
     /* 必须高于导航栏（z-index:100）与内容区，做整个屏幕的过场 */
     z-index: 9000;
     pointer-events: none;
-    /* 平时不可见：JS 算好几何之后才挂 is-armed 让它出现 */
+    /* 平时不可见：JS 算好几何之后挂 is-armed 才出现（此时半径仍是 0） */
     visibility: hidden;
     /* 与 account/account.css 的 body 背景保持同一串渐变 */
     background-image: linear-gradient(160deg, #1f2d3d 0%, #14507d 45%, #1565c0 100%);
     /* 兜底起点（JS 会用行内样式覆盖成头像中心）；没有 JS 时它始终是 hidden，看不见 */
     clip-path: circle(0px at 50% 50%);
     transition: clip-path 0.46s cubic-bezier(0.33, 0, 0.2, 1);
-    /* 过渡期间提示浏览器把这一层交给合成器独立处理：clip-path 是「绘制级」属性，
-       不提升的话每一帧都要把整屏重新画一遍（屏幕越大越明显）。
-       contain: paint 顺带把重绘范围限制在这层里，不让它波及后面的内容。 */
+    /* clip-path 是「绘制级」属性：不提升成独立合成层的话，每帧都要把整屏重画一遍
+       （屏幕越大越明显）；contain: paint 顺带把重绘范围限制在这层里，不波及后面的内容 */
     will-change: clip-path;
     contain: paint;
 }
@@ -328,25 +282,18 @@ html.is-returning .rounded-square.is-flying {
     }
 }
 
-/* 类选择器，选中class为content-container的元素，用于显示加载的HTML内容区域 */
+/* 内容区：上外边距 = 导航栏高度（100px），避免内容被固定导航栏遮住 */
 .content-container {
-    /* 设置上外边距为100像素，等于导航栏高度，避免内容被导航栏遮挡 */
     margin-top: 100px;
-    /* 设置左右内边距为20像素，使内容与边缘保持距离 */
     padding: 20px;
-    /* 设置最小高度为视口高度减去导航栏高度，确保内容区域占满剩余空间 */
     min-height: calc(100vh - 100px);
 }
 
-/* 类选择器，选中class为placeholder-text的元素，用于占位提示文字 */
+/* 占位 / 加载提示文字 */
 .placeholder-text {
-    /* 设置文字颜色为浅灰色 */
     color: #999;
-    /* 设置字体大小为18像素 */
     font-size: 18px;
-    /* 设置文字居中对齐 */
     text-align: center;
-    /* 设置上内边距为100像素，使提示文字垂直居中显示 */
     padding-top: 100px;
 }
 
@@ -357,12 +304,10 @@ html.is-returning .rounded-square.is-flying {
  * main.js 在切换学科时调用上一模块的 unmount() 兜底清理，
  * 因此这里只放通用规则，不掺任何学科逻辑。 */
 body.is-immersive .rectangle {
-    /* 隐藏顶部导航栏（固定定位，不占文档流，隐藏后内容自然上移） */
     display: none;
 }
 
 body.is-immersive .content-container {
-    /* 去掉为导航栏预留的上外边距与内边距，让学科页占满整屏 */
     margin-top: 0;
     padding: 0;
     min-height: 100vh;

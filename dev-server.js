@@ -135,7 +135,6 @@ function proxy(req, res, target) {
   req.pipe(upstream);
 }
 
-// 静态文件
 function serveStatic(req, res) {
   let rel = decodeURIComponent(req.url.split('?')[0]);
   if (rel === '/' || rel.endsWith('/')) rel += 'index.html';

@@ -135,8 +135,7 @@ impl From<StoreError> for AuthError {
     }
 }
 
-/// 让事务闭包里可以直接对 rusqlite 的错误用 `?`
-///（否则 `rusqlite::Error → StoreError → AuthError` 两步转换没法自动完成）
+/// 让事务闭包里的 rusqlite 错误能直接 `?`（两步转换无法自动完成）
 impl From<rusqlite::Error> for AuthError {
     fn from(value: rusqlite::Error) -> Self {
         AuthError::Internal(format!("sqlite: {value}"))

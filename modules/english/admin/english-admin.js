@@ -17,10 +17,13 @@ var ENGINE_URL = '../engine/pkg/guangxue_wasm.js';
 // 每次 POST 的词条数：太大单请求过重，太小请求次数多
 var IMPORT_CHUNK = 200;
 
-var ctx = null;   // 框架注入的通用能力
-var root = null;  // 挂载容器
-var engine = null; // 引擎模块（提供 parse_word_list）
+// 框架注入的通用能力 / 挂载容器 / 引擎模块（提供 parse_word_list）
+var ctx = null;
+var root = null;
+var engine = null;
 
+// 后台视图状态：当前视图 + 列表的筛选与分页 + 编辑中的词条 + 导入面板的原文与解析结果。
+// view 三态：list | editor | import；editing.id 为 0 表示新增。
 var state = {
     view: 'list',   // list | editor | import
     search: '',
@@ -30,10 +33,10 @@ var state = {
     offset: 0,
     total: 0,
     items: [],
-    options: { books: [], units: [] }, // 已有词书/单元，供下拉提示
-    editing: null,  // 编辑中的词条（id 为 0 表示新增）
-    pasteText: '',  // 导入面板里粘贴的原文
-    parse: null,    // 词表解析结果
+    options: { books: [], units: [] },
+    editing: null,
+    pasteText: '',
+    parse: null,
     importBook: '',
     importUnit: '',
     importing: false
@@ -73,7 +76,6 @@ function loadOptions() {
     });
 }
 
-// 词条列表
 function loadList() {
     var params = ['limit=' + state.limit, 'offset=' + state.offset];
     if (state.search) params.push('search=' + encodeURIComponent(state.search));
@@ -277,7 +279,6 @@ function renderSenseEditor(container) {
     }
 
     function build() {
-        // 每条释义一张小卡片：词性窄、释义宽，例句与译文各占一行
         for (var i = 0; i < list.length; i++) {
             (function (index) {
                 var sense = list[index];
@@ -506,6 +507,7 @@ function renderImport() {
     if (state.parse) renderParseResult();
 }
 
+// 解析结果面板：统计徽章 + 前 20 行预览 + 被跳过的错误行（前 50）+ 文件内重复词 + 导入按钮
 function renderParseResult() {
     var el = ctx.el;
     var p = state.parse;
@@ -521,7 +523,6 @@ function renderParseResult() {
         ])
     ]);
 
-    // 预览（最多 20 行）
     var preview = p.rows.slice(0, 20);
     if (preview.length > 0) {
         box.appendChild(el('div', { class: 'admin-table-wrap' }, el('table', { class: 'admin-table' }, [
@@ -545,7 +546,6 @@ function renderParseResult() {
         }
     }
 
-    // 错误行
     if (p.errors.length > 0) {
         box.appendChild(el('div', { class: 'admin-card-title', style: 'margin-top:14px', text: '被跳过的错误行' }));
         box.appendChild(el('div', { class: 'admin-table-wrap' }, el('table', { class: 'admin-table' }, [
@@ -563,14 +563,12 @@ function renderParseResult() {
         }
     }
 
-    // 重复词
     if (p.duplicates.length > 0) {
         box.appendChild(el('div', { class: 'admin-hint', text: '文件内重复（已跳过，大小写不同也算重复）：' +
             p.duplicates.slice(0, 20).map(function (d) { return d.word + '（第 ' + d.line + ' 行）'; }).join('、') +
             (p.duplicates.length > 20 ? ' 等' : '') }));
     }
 
-    // 导入动作
     box.appendChild(el('div', { class: 'admin-actions', style: 'margin-top:14px' }, [
         el('button', {
             class: 'admin-btn admin-btn-primary',

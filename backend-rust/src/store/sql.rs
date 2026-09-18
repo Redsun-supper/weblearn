@@ -1,8 +1,8 @@
 //! SQL 语句集合
 //!
-//! 所有函数都是「同步 + 收 `&Connection`」，因此既能直接用在读路径上，
-//! 也能用在 `SqliteStore::write` 的事务里（`Transaction` 会自动解引用成 `Connection`）。
-//! 列名用显式清单 + 按名取值：写错列名会当场报错，而不是静默串位。
+//! 所有函数都是「同步 + 收 `&Connection`」，读路径与 `SqliteStore::write`
+//! 的事务里都能直接调用。列名用显式清单 + 按名取值：写错列名会当场报错，
+//! 而不是静默串位。
 
 use rusqlite::{params, Connection, OptionalExtension};
 use time::OffsetDateTime;

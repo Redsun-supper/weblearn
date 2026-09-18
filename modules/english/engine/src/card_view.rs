@@ -16,7 +16,6 @@ const POS_TAGS: &[&str] = &[
     "n.", "v.",
 ];
 
-/// 词性标签之间的分隔符
 const POS_SEPARATORS: &[char] = &['/', '、', ','];
 
 /// 词性标签内外都算分隔的字符：空白 / 斜杠 / 顿号 / 逗号 / 分号
@@ -100,7 +99,6 @@ pub fn split_pos(meaning: &str) -> WordMeaning {
                     pos.push('/');
                 }
                 pos.push_str(&trimmed[..len]);
-                // 吃掉标签后面的分隔符（/ 、 , 与空白）
                 let after = &trimmed[len..];
                 let after = after.trim_start();
                 let after = after.trim_start_matches(POS_SEPARATORS);
@@ -534,7 +532,6 @@ mod tests {
         let parts = split_example("He purposed it, but the purpose was clear.", "purpose");
         let hit = parts.iter().find(|p| p.hit).unwrap();
         assert_eq!(hit.text, "purpose");
-        // 前面那段应包含 purposed
         assert!(parts[0].text.contains("purposed"));
     }
 
@@ -548,7 +545,6 @@ mod tests {
 
     #[test]
     fn fallback_expands_to_full_word() {
-        // 变形词：purposed / purposes 都应整体高亮
         let a = split_example("He purposed to go.", "purpose");
         assert_eq!(a.iter().find(|p| p.hit).unwrap().text, "purposed");
         let b = split_example("Its purposes vary.", "purpose");

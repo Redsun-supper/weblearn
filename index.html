@@ -1,16 +1,11 @@
-<!-- 声明文档类型为HTML5，告诉浏览器使用HTML5标准来解析此页面 -->
 <!DOCTYPE html>
-<!-- html根元素，lang="zh-CN"设置页面主要语言为简体中文，有助于搜索引擎优化和屏幕阅读器 -->
+<!-- lang="zh-CN" 供搜索引擎与屏幕阅读器判断页面语言 -->
 <html lang="zh-CN">
-<!-- head元素包含页面的元数据（metadata），不会直接显示在页面上 -->
+<!-- 页面元信息：UTF-8 编码（防中文乱码）、移动端视口、标签页标题、站内样式表 -->
 <head>
-    <!-- meta设置字符编码为UTF-8，支持全球各种语言的字符显示，防止中文乱码 -->
     <meta charset="UTF-8">
-    <!-- meta设置视口，使页面宽度跟随设备宽度，初始缩放比例为1，实现移动端响应式适配 -->
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <!-- title设置浏览器标签页显示的标题，也用于搜索引擎结果和书签 -->
     <title>Document</title>
-    <!-- link引入外部CSS样式表，rel指定关系为stylesheet，href指定样式文件路径 -->
     <link rel="stylesheet" href="main.css">
     <!-- 从个人中心返回时（?from=account）先把主界面内容藏住：反向过场的第一帧必须已经
          是「整屏被遮罩盖住」的样子，否则会先闪一下主界面再开始倒放。
@@ -21,18 +16,15 @@
             document.documentElement.className += ' is-returning';
         }
     </script>
-<!-- head结束标签 -->
 </head>
-<!-- body元素包含所有可见的页面内容，是用户实际看到的部分 -->
 <body>
-    <!-- div是块级容器元素，class="rectangle"用于CSS样式定位，作为页面上方的矩形 -->
+    <!-- 顶部导航栏（.rectangle）：左侧头像 + 9 个学科导航项，点击后由 main.js 加载对应页面 -->
     <div class="rectangle">
         <!-- 头像：暂时作为「个人中心」的唯一入口（原来是右上角的文字链接）。
              button而不是div，是为了键盘也能进入（Tab 聚焦 + 回车触发）。
              点击后 main.js 的 playAvatarZoom() 会让 .avatar-zoom 从头像位置扩散覆盖全屏，再跳转 account/ -->
         <button class="rounded-square" type="button" id="navAvatar"
                 title="个人中心" aria-label="进入个人中心">
-            <!-- img是图片元素，src指定图片路径，alt提供替代文本用于无障碍访问 -->
             <img src="image/avatar.png" alt="头像" class="avatar">
             <!-- 过场里头像会长成「返回主页面」胶囊，这行字就是那时候露出来的内容。
                  ⚠️ 结构与字号必须与 account/index.html 的 .acc-home-btn 一致（那边是
@@ -40,44 +32,29 @@
             <span class="avatar-morph-label" aria-hidden="true"><span class="avatar-morph-arrow">←</span> 返回主页面</span>
             <!-- 登录态小圆点：已登录时由 main.js 给按钮挂 is-signed 类点亮 -->
             <span class="avatar-dot" id="navAvatarDot" aria-hidden="true"></span>
-        <!-- 头像按钮结束标签 -->
         </button>
-        <!-- div是块级容器，class="nav-items"用于包含9个导航矩形项 -->
+        <!-- 学科导航项：data-page 指向该学科的页面路径（有独立模块的写 modules/<学科>/，
+             其余仍是 pages/ 下的占位页），点击由 main.js 加载并缓存 -->
         <div class="nav-items">
-            <!-- div是第一个导航矩形项，class="nav-rect"用于样式定位，data-page属性指定要加载的HTML文件名 -->
             <div class="nav-rect" data-page="pages/chinese.html">语文</div>
-            <!-- div是第二个导航矩形项，data-page属性指定要加载的HTML文件名 -->
             <div class="nav-rect" data-page="pages/math.html">数学</div>
-            <!-- div是第三个导航矩形项；英语已有独立模块，页面放在 modules/english/ 下 -->
             <div class="nav-rect" data-page="modules/english/english.html">英语</div>
-            <!-- div是第四个导航矩形项 -->
             <div class="nav-rect" data-page="pages/physics.html">物理</div>
-            <!-- div是第五个导航矩形项 -->
             <div class="nav-rect" data-page="pages/chemistry.html">化学</div>
-            <!-- div是第六个导航矩形项 -->
             <div class="nav-rect" data-page="pages/biology.html">生物</div>
-            <!-- div是第七个导航矩形项 -->
             <div class="nav-rect" data-page="pages/history.html">历史</div>
-            <!-- div是第八个导航矩形项 -->
             <div class="nav-rect" data-page="pages/politics.html">政治</div>
-            <!-- div是第九个导航矩形项 -->
             <div class="nav-rect" data-page="pages/geography.html">地理</div>
-        <!-- 导航矩形项容器结束标签 -->
         </div>
-    <!-- 导航栏矩形结束标签 -->
     </div>
-    <!-- 全屏扩散遮罩：从头像位置把一个圆放大到盖住整屏，作为进入个人中心的过场。
-         圆心与半径由 main.js 按头像实际位置算好写进 --zoom-* 变量，样式只负责动作 -->
+    <!-- 全屏扩散遮罩：进入个人中心的过场。圆心与半径由 main.js 按头像实际位置
+         实时算好、逐帧写成行内 clip-path（样式表里的值只是兜底） -->
     <div class="avatar-zoom" id="avatarZoom" aria-hidden="true"></div>
-    <!-- div是块级容器，class="content-container"用于显示加载的HTML内容 -->
+    <!-- 内容容器：main.js 把导航项对应的学科页 HTML 注入这里（默认是英语页） -->
     <div class="content-container" id="contentContainer">
-        <!-- p是段落元素，class="placeholder-text"用于显示占位提示文字 -->
         <p class="placeholder-text">请选择一个科目查看内容</p>
-    <!-- 内容容器结束标签 -->
     </div>
-    <!-- script引入外部JavaScript文件，放在body底部确保DOM加载完成后再执行脚本 -->
+    <!-- 放 body 末尾：脚本执行时上面的 DOM 已经就位 -->
     <script src="main.js"></script>
-<!-- body结束标签 -->
 </body>
-<!-- html根元素结束标签 -->
 </html>

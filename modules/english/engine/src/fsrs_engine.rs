@@ -136,9 +136,7 @@ mod tests {
         assert_close(out.again.memory.stability, 0.212);
         assert_close(out.good.memory.stability, 2.3065);
         assert_close(out.easy.memory.stability, 8.2956);
-        // 新卡 interval == stability
         assert_close(out.good.interval_days, out.good.memory.stability);
-        // 排序：easy > good > hard > again
         assert!(out.easy.interval_days > out.good.interval_days);
         assert!(out.good.interval_days > out.hard.interval_days);
         assert!(out.hard.interval_days > out.again.interval_days);
@@ -151,10 +149,8 @@ mod tests {
             difficulty: 2.118104,
         };
         let out = compute_next_states(Some(state), 0.9, 7).unwrap();
-        // 好评后稳定度提升，间隔至少 1 天
         assert!(out.good.memory.stability > state.stability);
         assert!(out.good.interval_days > 1.0);
-        // 评分影响：easy 的新稳定度 > good 的新稳定度 > hard
         assert!(out.easy.memory.stability > out.good.memory.stability);
         assert!(out.good.memory.stability > out.hard.memory.stability);
     }
@@ -166,7 +162,6 @@ mod tests {
             difficulty: 5.0,
         };
         let out = compute_next_states(Some(state), 0.9, 3).unwrap();
-        // Again 应显著压低稳定度（低于 good 分支）
         assert!(out.again.memory.stability < out.good.memory.stability);
     }
 

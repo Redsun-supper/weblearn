@@ -159,7 +159,6 @@ mod tests {
     #[test]
     fn split_codes_uses_whitespace_and_dedups() {
         assert_eq!(split_codes("aaaa bbbb"), vec!["AAAA".to_string(), "BBBB".to_string()]);
-        // 换行 / 多空格 / 前后空白都算分隔
         assert_eq!(split_codes("  aa\n\tbb   cc "), vec!["AA", "BB", "CC"]);
         // 手抖写两遍同一个码 → 只算一次（否则会扣两次额度）
         assert_eq!(split_codes("CODE1 code1"), vec!["CODE1".to_string()]);
@@ -201,9 +200,7 @@ mod tests {
         assert_eq!(evaluate(false, 0, 1, Some(at(1_000_001)), now), InviteState::Usable);
         // 过期：边界上「到期时刻 == 现在」即算过期
         assert_eq!(evaluate(false, 0, 1, Some(at(1_000_000)), now), InviteState::Expired);
-        // 用尽
         assert_eq!(evaluate(false, 1, 1, None, now), InviteState::Exhausted);
-        // 停用优先于其他条件
         assert_eq!(evaluate(true, 5, 1, Some(at(1)), now), InviteState::Disabled);
     }
 }

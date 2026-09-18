@@ -36,14 +36,14 @@ type wordFile struct {
 	Words []wordItem `json:"words"`
 }
 
-// wordItem 单条词目
+// wordItem 单条词目；example_translation 与 senses 可选
 type wordItem struct {
 	Word               string            `json:"word"`
 	Phonetic           string            `json:"phonetic"`
 	Meaning            string            `json:"meaning"`
 	Example            string            `json:"example"`
-	ExampleTranslation string            `json:"example_translation"` // 例句中文翻译（可选）
-	Senses             models.WordSenses `json:"senses"`              // 多释义（可选）
+	ExampleTranslation string            `json:"example_translation"`
+	Senses             models.WordSenses `json:"senses"`
 	Subject            string            `json:"subject"`
 }
 
@@ -78,7 +78,7 @@ func main() {
 			skipped++
 			continue
 		}
-		// 已存在则跳过（保持幂等，可反复执行）
+		// 已存在则跳过（保持幂等）
 		var existing models.Word
 		findErr := db.Where("word = ?", word).First(&existing).Error
 		if findErr == nil {

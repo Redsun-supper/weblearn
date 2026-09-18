@@ -88,7 +88,7 @@ impl TestApp {
         created.codes[0].code.clone()
     }
 
-    /// 确保管理员存在（密码默认用开发默认值）
+    /// 确保管理员存在
     pub async fn seed_admin(&self, email: &str, password: &str) {
         self.state.service.seed_admin(email, password).await.expect("建管理员");
     }
@@ -142,12 +142,10 @@ impl Client {
         self.send(Method::GET, uri, None, true).await
     }
 
-    /// 当前登录用户
     pub async fn me(&mut self) -> Resp {
         self.get("/api/auth/me").await
     }
 
-    /// 我的活跃会话列表
     pub async fn sessions(&mut self) -> Resp {
         self.get("/api/auth/sessions").await
     }
@@ -360,7 +358,6 @@ pub async fn register(
         .await
 }
 
-/// 从开发调试接口读取验证码
 pub async fn fetch_dev_code(client: &mut Client, email: &str) -> String {
     let res = client.get(&format!("/api/auth/dev/codes?email={email}")).await;
     assert_eq!(res.status, StatusCode::OK, "取开发验证码失败：{}", res.body);

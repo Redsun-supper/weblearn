@@ -82,7 +82,6 @@ async fn logout_all_revokes_every_device() {
 
     phone.get("/api/auth/me").await.assert_status(StatusCode::UNAUTHORIZED);
     laptop.get("/api/auth/me").await.assert_status(StatusCode::UNAUTHORIZED);
-    // Cookie 也应被清掉
     assert!(res.raw_cookie("gx_access").unwrap().contains("Max-Age=0"));
 }
 
@@ -91,7 +90,6 @@ async fn each_device_refreshes_independently() {
     let app = spawn().await;
     let (mut phone, mut laptop) = two_devices(&app, "multi5@example.com", "abc12345").await;
 
-    // 手机刷新自己的会话
     phone.post("/api/auth/refresh", json!({})).await.assert_status(StatusCode::OK);
     // 笔记本的令牌不受影响
     laptop.get("/api/auth/me").await.assert_status(StatusCode::OK);

@@ -23,8 +23,10 @@
         return document.getElementById(id);
     }
 
-    // 统一请求：同源自动带 Cookie（credentials: 'same-origin'），自动 JSON，
-    // 不抛异常而是把 { status, data } 交给调用方，便于区分 401 / 业务错误 / 网络错误。
+    // 统一请求：同源自动带 Cookie（credentials: 'same-origin'），自动 JSON。
+    // 不抛异常，而是把 { status, data } 交给调用方 —— 便于区分 401 / 业务错误 / 网络错误；
+    // 非 JSON 响应（网关的 502 页面）与网络层失败（服务没起来 / 断网）都降级成能看懂的结论，
+    // 不让它们变成未捕获异常。
     function api(method, path, body) {
         var init = { method: method, credentials: 'same-origin', headers: {} };
         if (body !== undefined && body !== null) {
@@ -37,13 +39,11 @@
                 try {
                     data = text ? JSON.parse(text) : null;
                 } catch (e) {
-                    // 非 JSON（例如网关的 502 页面）保持 null
                     data = null;
                 }
                 return { status: res.status, ok: res.ok, data: data };
             });
         }).catch(function (err) {
-            // 网络层失败（服务没起来 / 断网）：给一个能看懂的结论，别让它变成未捕获异常
             return { status: 0, ok: false, data: null, networkError: String(err) };
         });
     }
@@ -98,9 +98,8 @@
 
     // 组件之间的错开间隔（毫秒）：「什么时候开始」在这里排延时，
     // 「怎么动」写在 account.css 的 accRise（浮起淡入）/ accPop（头像回弹）。
-    //
-    // 数值取 30ms 而不是更大：个人中心有 30 来个组件，间隔一大整体就要 1.5 秒才装配完，
-    // 看上去像「页面一直在慢慢冒东西」。30ms 能让最后一组在 1 秒内到位。
+    // 取 30ms 而不是更大：个人中心有 30 来个组件，间隔一大整体要 1.5 秒才装配完，
+    // 看上去像「页面一直在慢慢冒东西」；30ms 能让最后一组在 1 秒内到位。
     var ENTER_STEP_MS = 30;
 
     // 面板分组：一组里的卡片一起显示 / 隐藏
@@ -149,7 +148,7 @@
                 nodes[i].classList.remove(ENTER_CLASSES[k]);
             }
         }
-        void document.body.offsetHeight; // 唯一的强制重排：让「摘类」这一帧落定
+        void document.body.offsetHeight;
 
         for (i = 0; i < nodes.length; i++) {
             nodes[i].style.animationDelay = (i * ENTER_STEP_MS) + 'ms';
@@ -157,11 +156,14 @@
         }
     }
 
+    // 一次只显示一组面板（组内的卡片一起显示 / 隐藏）。
+    // 加载卡单独处理：它是**绝对定位的浮层**，要「淡出」而不是立刻藏掉 —— 新面板这时
+    // 已经在它下面渲染好了，让它在上面淡 180ms 再藏（时长与 account.css 的
+    // .acc-loading 过渡一致），否则会看到一次布局高度跳变。显示完再排入场动效。
     function showOnly(group) {
         var visible = PANEL_GROUPS[group] || [];
         Object.keys(PANEL_GROUPS).forEach(function (key) {
             PANEL_GROUPS[key].forEach(function (id) {
-                // 加载卡单独处理：它是**绝对定位的浮层**，要「淡出」而不是立刻藏掉
                 if (id === 'panelLoading') return;
                 var node = $(id);
                 if (!node) return;
@@ -173,8 +175,6 @@
             });
         });
 
-        // 加载卡：新面板已经在下面渲染好了，让它在这一层之上淡出 180ms 再藏起来。
-        // （淡出时长与 account.css 的 .acc-loading 过渡一致）
         var loading = $('panelLoading');
         if (loading) {
             if (group === 'loading') {
@@ -193,7 +193,6 @@
             }
         }
 
-        // 显示之后再排动效：几块面板会按顺序依次浮入
         playEnter(visible.map(function (id) { return $(id); }));
     }
 
@@ -225,13 +224,15 @@
     //   · 过渡期间必须 overflow:hidden，否则新表单会先整个冲出来、再被裁下去
     //   · 收尾一定要清掉行内 height/overflow，让卡片回到「由内容决定高度」
     //     （否则报错文案、窄屏换行把内容撑高时会被裁掉）
+    //   · 起点前先把 transition 关掉，别把上一次没跑完的过渡续上；
+    //     再强制重排一次，这一帧才是真正的过渡起点
     function animateCardHeight(card, from, to) {
         if (!card || from === to || prefersReducedMotion()) return;
 
         card.style.overflow = 'hidden';
-        card.style.transition = 'none'; // 先把起点钉死，别把上一次没跑完的过渡续上
+        card.style.transition = 'none';
         card.style.height = from + 'px';
-        void card.offsetHeight;         // 强制重排，这一帧就是过渡起点
+        void card.offsetHeight;
 
         card.style.transition = 'height ' + HEIGHT_MS + 'ms cubic-bezier(0.22, 0.61, 0.36, 1)';
         card.style.height = to + 'px';
@@ -245,11 +246,13 @@
         }, HEIGHT_MS + 40);
     }
 
+    // 切「登录 / 注册」标签：滑块就位 → 换表单 → 白卡高度过渡 → 新表单顺着点击方向滑入
+    // （切到「注册」从右边来、切回「登录」从左边来，与滑块的移动方向一致）。
+    // ⚠️ 只在卡片已经显示时才量高度：首屏 showOnly 之前它是 hidden，量出来是 0，
+    //    那种情况交给入场动效，不要再额外播一次高度过渡。
     function switchTab(which) {
         var isLogin = which === 'login';
         var card = $('panelAuth');
-        // 只在卡片已经显示时才量高度：首屏 showOnly 之前它是 hidden，量出来是 0，
-        // 那种情况交给入场动效，不要再额外播一次高度过渡
         var measure = !!(card && !card.hasAttribute('hidden'));
         var fromHeight = 0;
 
@@ -267,7 +270,6 @@
         if ($('formLogin')) $('formLogin').hidden = !isLogin;
         if ($('formRegister')) $('formRegister').hidden = isLogin;
 
-        // 滑块滑到对应的位置（首屏就是「登录」，所以初次进来它已经在左边、不会先滑一下）
         var thumb = $('tabsThumb');
         if (thumb) {
             if (isLogin) {
@@ -288,8 +290,6 @@
             animateCardHeight(card, fromHeight, card.getBoundingClientRect().height);
         }
 
-        // 表单顺着点击方向滑进来：切到「注册」从右边来，切回「登录」从左边来
-        // （藏起来的那张会被 collectEnterNodes 跳过）
         playEnter([isLogin ? $('formLogin') : $('formRegister')], isLogin ? 'left' : 'right');
     }
 
@@ -324,7 +324,6 @@
         if ($('accRole')) $('accRole').textContent = user.role === 'admin' ? '管理员' : (user.role || 'user');
         if ($('accCreated')) $('accCreated').textContent = user.created_at || '—';
 
-        // 管理员多一个入口：直接进后台（非管理员看不到这个按钮）
         var adminLink = $('accAdmin');
         if (adminLink) {
             if (user.role === 'admin') {
@@ -446,7 +445,7 @@
                 return;
             }
             setMsg($('loginMsg'), messageOf(res, '登录失败'), 'error');
-            // 登录失败后密码清空，避免误以为还可以直接重试
+            // 清空密码框，避免误以为还能直接重试
             if ($('loginPassword')) $('loginPassword').value = '';
         });
     }
@@ -566,7 +565,6 @@
                 loadSessions();
             } else {
                 setMsg(msgNode, '已退出登录', 'ok');
-                // 重新问一次状态：此时应当回到「登录 / 注册」面板
                 refreshState();
             }
         });
@@ -606,7 +604,7 @@
 
     function leaveToHome(event) {
         if (event) event.preventDefault();
-        if (leaving) return;   // 动画期间再点不重复触发
+        if (leaving) return;
         leaving = true;
         var wait = playExit();
         window.setTimeout(function () {
@@ -626,7 +624,6 @@
             playEnter([document.querySelector('.acc-hero')]);
         }
 
-        // 顶栏的品牌与徽章单独入场（返回按钮不动）
         playTopbarIn();
 
         // 三处「回首页」的入口都走同一条反向转场：左上角按钮、品牌、操作卡里的「回到站点」

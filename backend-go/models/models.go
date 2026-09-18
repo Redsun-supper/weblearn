@@ -8,13 +8,12 @@ import (
 	"time"
 )
 
-// User 用户数据模型
-// 用途：定义用户信息的结构，用于数据库操作和API响应
+// User 用户数据模型（用于数据库操作与 API 响应）
 type User struct {
 	ID       uint   `json:"id" gorm:"primaryKey"`
 	Username string `json:"username" gorm:"uniqueIndex;size:50"`
 	Email    string `json:"email" gorm:"uniqueIndex;size:100"`
-	Password string `json:"-" gorm:"size:255"` // json:"-" 表示不序列化到JSON响应中
+	Password string `json:"-" gorm:"size:255"`
 }
 
 // TableName 指定数据库表名
@@ -65,11 +64,10 @@ func (s WordSenses) Value() (driver.Value, error) {
 	return string(b), nil
 }
 
-// Scan 从数据库读取
+// Scan 从数据库读取。
 //
-// ⚠️ 无论读到什么都先把接收者重置为**非 nil 的空切片**：
-// 只有这样序列化成 JSON 时才是 `[]` 而不是 `null`，
-// 而前端 Rust 引擎按数组解析，遇到 null 会直接报错（"items": null 已经踩过一次）。
+// ⚠️ 无论读到什么都先把接收者重置为**非 nil 的空切片**：只有这样序列化成 JSON 时才是
+// `[]` 而不是 `null`，而前端 Rust 引擎按数组解析，遇到 null 会直接报错（"items": null 已踩过一次）。
 func (s *WordSenses) Scan(src interface{}) error {
 	*s = WordSenses{}
 	if src == nil {
@@ -108,8 +106,7 @@ func (s WordSenses) MarshalJSON() ([]byte, error) {
 	return json.Marshal([]WordSense(s))
 }
 
-// Word 单词词条（词汇库）
-// 说明：纯词条数据，与复习记忆状态分离存储
+// Word 单词词条（纯词条数据；记忆状态另存 WordReview，两者分开）
 type Word struct {
 	ID       uint   `json:"id" gorm:"primaryKey"`
 	Word     string `json:"word" gorm:"uniqueIndex;size:100"`

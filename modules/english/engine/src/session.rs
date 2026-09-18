@@ -66,7 +66,6 @@ const SEEN_GUARD: usize = 10;
 /// 插回池子时的到期时间在引擎里自己算，口径不一致会让排序位置与服务端实际 due_at 有偏差。
 const MIN_INTERVAL_MS: f64 = 600_000.0;
 
-/// 一天的毫秒数
 const MS_PER_DAY: f64 = 86_400_000.0;
 
 // ---------- 接口数据结构 ----------
@@ -311,7 +310,7 @@ pub fn plan_day(
             break;
         }
         if opts.probed_ids.contains(&card.id) || used_ids.contains(&card.id) {
-            continue; // 最近抽过：换下一个候选
+            continue;
         }
         probe_ids.insert(card.id);
         used_ids.insert(card.id);
@@ -330,7 +329,7 @@ pub fn plan_day(
                 .as_deref()
                 .or(card.due_at.as_deref())
                 .and_then(parse_time_ms),
-            due_ms: None, // 计划卡一样排在最前面
+            due_ms: None,
             card: card.clone(),
         });
     }
@@ -399,7 +398,6 @@ pub fn days_elapsed(last_ms: f64, now_ms: f64) -> u32 {
     if !days.is_finite() || days <= 0.0 {
         return 0;
     }
-    // 浮点转整数在 Rust 中是饱和转换，超出 u32 时自动截断到 u32::MAX
     days.min(u32::MAX as f64) as u32
 }
 
@@ -768,7 +766,7 @@ impl ReviewSession {
             return;
         }
         self.rounds += 1;
-        self.round_seen.clear(); // 新一轮重新计数
+        self.round_seen.clear();
     }
 
     /// 评分：用引擎算出新记忆状态，返回可直接作为 `POST /api/reviews/submit`
@@ -788,7 +786,7 @@ impl ReviewSession {
         // 距上次复习的天数在「评分这一刻」换算（与改动前一致）
         let days = match card.last_ms {
             Some(last_ms) => days_elapsed(last_ms, now_ms),
-            None => 0, // 新词
+            None => 0,
         };
 
         // 抽查卡按**新卡**重算：丢掉原来的 stability/difficulty，天数按 0 算。
@@ -1077,7 +1075,6 @@ mod tests {
         }
     }
 
-    /// 今日计划参数
     fn plan_opts(new_limit: u32, probe_limit: u32, now_ms: f64) -> PlanOptions {
         PlanOptions {
             new_limit,
@@ -1116,7 +1113,6 @@ mod tests {
 
         let plan = plan_day(queue, new, probes, &plan_opts(5, 5, 10.0 * MS_PER_DAY), 42);
 
-        // 新词 5 个（不足则全取）+ 抽查 3 个（候选只有 3 个）+ 复习区 3 张
         assert_eq!(plan.new_count, 5);
         assert_eq!(plan.probe_count, 3);
         assert_eq!(plan.plan_len, 8, "计划区 = 新词 + 抽查");
@@ -1427,7 +1423,6 @@ mod tests {
             interval_ms / MS_PER_DAY,
             due / MS_PER_DAY
         );
-        // 池子仍按到期时间升序
         let keys: Vec<f64> = s.pool.iter().map(sort_key).collect();
         let mut sorted = keys.clone();
         sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
@@ -1545,15 +1540,10 @@ mod tests {
 
     #[test]
     fn days_elapsed_floors_and_clamps() {
-        // 0.7 天 → 0
         assert_eq!(days_elapsed(0.0, 0.7 * MS_PER_DAY), 0);
-        // 恰好 2 天 → 2
         assert_eq!(days_elapsed(0.0, 2.0 * MS_PER_DAY), 2);
-        // 2.99 天 → 2（向下取整）
         assert_eq!(days_elapsed(0.0, 2.99 * MS_PER_DAY), 2);
-        // 未来时间（负值）→ 0
         assert_eq!(days_elapsed(10.0 * MS_PER_DAY, 1.0 * MS_PER_DAY), 0);
-        // NaN 与无穷 → 0
         assert_eq!(days_elapsed(f64::NAN, 0.0), 0);
         assert_eq!(days_elapsed(0.0, f64::INFINITY), 0);
     }
@@ -1563,7 +1553,7 @@ mod tests {
         assert_eq!(progress_percent(0, 0), 0);
         assert_eq!(progress_percent(0, 5), 0);
         assert_eq!(progress_percent(1, 5), 20);
-        assert_eq!(progress_percent(2, 3), 67); // 66.67 四舍五入
+        assert_eq!(progress_percent(2, 3), 67);
         assert_eq!(progress_percent(9, 5), 100); // 越界时截断
     }
 
@@ -1769,7 +1759,7 @@ mod tests {
         // 于是 now = 第 10 天时正好距上次 2 天（与断言一致）
         s.current.as_mut().unwrap().last_ms = Some(8.0 * MS_PER_DAY);
 
-        let now = 10.0 * MS_PER_DAY; // 距上次 2 天
+        let now = 10.0 * MS_PER_DAY;
         let v: serde_json::Value = serde_json::from_str(&s.current_json(now)).unwrap();
 
         // 没填多释义时，由 meaning 自动拆成一块

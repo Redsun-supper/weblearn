@@ -5,10 +5,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// HealthCheck 健康检查接口
-// 用途：验证服务器是否正常运行，常用于负载均衡器健康检测
-// 请求方式：GET /api/health
-// 返回：JSON格式的状态信息
+// HealthCheck 健康检查：GET /api/health（供负载均衡 / 探活使用）
 func HealthCheck(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"status":  "ok",
@@ -16,10 +13,7 @@ func HealthCheck(c *gin.Context) {
 	})
 }
 
-// Hello 欢迎接口
-// 用途：示例接口，展示如何返回JSON响应
-// 请求方式：GET /api/hello
-// 返回：JSON格式的欢迎信息
+// Hello 示例接口：GET /api/hello
 func Hello(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"message": "欢迎使用Go后端API",
@@ -27,12 +21,9 @@ func Hello(c *gin.Context) {
 	})
 }
 
-// GetUserInfo 获取用户信息接口
-// 用途：返回当前用户的基本信息
-// 请求方式：GET /api/user/info
-// 返回：JSON格式的用户信息
+// GetUserInfo 获取用户信息：GET /api/user/info
+// TODO: 目前返回固定数据，还没有真的从数据库 / 缓存里取
 func GetUserInfo(c *gin.Context) {
-	// TODO: 从数据库或缓存中获取用户信息
 	c.JSON(http.StatusOK, gin.H{
 		"code":    200,
 		"message": "获取成功",
@@ -44,33 +35,21 @@ func GetUserInfo(c *gin.Context) {
 	})
 }
 
-// UpdateUserInfo 更新用户信息接口
-// 用途：接收客户端提交的用户信息并更新
-// 请求方式：POST /api/user/update
-// 请求体：JSON格式的用户信息
-// 返回：JSON格式的更新结果
+// UpdateUserInfo 更新用户信息：POST /api/user/update
+// TODO: 占位实现——解析请求体、校验合法性、写库都还没做
 func UpdateUserInfo(c *gin.Context) {
-	// TODO: 解析请求体中的用户信息
-	// TODO: 验证数据合法性
-	// TODO: 更新数据库中的用户信息
-	
 	c.JSON(http.StatusOK, gin.H{
 		"code":    200,
 		"message": "更新成功",
 	})
 }
 
-// GetDataList 获取数据列表接口
-// 用途：返回分页的数据列表
-// 请求方式：GET /api/data/list?page=1&size=10
-// 返回：JSON格式的数据列表
+// GetDataList 获取数据列表：GET /api/data/list?page=1&size=10
+// TODO: 目前只回显分页参数，还没有真的查库
 func GetDataList(c *gin.Context) {
-	// 获取分页参数
 	page := c.DefaultQuery("page", "1")
 	size := c.DefaultQuery("size", "10")
-	
-	// TODO: 从数据库中查询数据
-	
+
 	c.JSON(http.StatusOK, gin.H{
 		"code":    200,
 		"message": "获取成功",
@@ -83,16 +62,9 @@ func GetDataList(c *gin.Context) {
 	})
 }
 
-// SubmitData 提交数据接口
-// 用途：接收客户端提交的数据并保存
-// 请求方式：POST /api/data/submit
-// 请求体：JSON格式的数据
-// 返回：JSON格式的提交结果
+// SubmitData 提交数据：POST /api/data/submit
+// TODO: 占位实现——解析请求体、校验合法性、入库都还没做
 func SubmitData(c *gin.Context) {
-	// TODO: 解析请求体中的数据
-	// TODO: 验证数据合法性
-	// TODO: 保存到数据库
-	
 	c.JSON(http.StatusOK, gin.H{
 		"code":    200,
 		"message": "提交成功",

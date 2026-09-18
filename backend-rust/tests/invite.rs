@@ -17,7 +17,6 @@ async fn single_use_invite_is_consumed_after_one_registration() {
         .await
         .assert_status(StatusCode::OK);
 
-    // 同一个邀请码再注册一次：直接 invite_exhausted
     let mut second = Client::new(&app);
     let res = second
         .post(
@@ -49,7 +48,6 @@ async fn multi_use_invite_counts_each_registration() {
         .await;
     res.assert_status(StatusCode::BAD_REQUEST).assert_error("invite_exhausted");
 
-    // 用量应当被记账
     let (items, _) = app.state.service.list_invites(InviteFilter::All, 1, 10).await.unwrap();
     let row = items.iter().find(|i| i.code == invite).expect("邀请码在列表里");
     assert_eq!(row.used_count, 2);
@@ -179,7 +177,6 @@ async fn registration_without_invite_creates_a_normal_user() {
     let app = spawn().await;
     let mut client = Client::new(&app);
 
-    // 不填邀请码也能注册（邮箱验证码是门槛），角色是普通用户
     register_open(&app, &mut client, "open@example.com", "abc12345")
         .await
         .assert_status(StatusCode::OK);
@@ -199,7 +196,6 @@ async fn registration_with_invite_upgrades_to_admin() {
         .await
         .assert_status(StatusCode::OK);
 
-    // 带邀请码注册 → 直接是管理员
     let me = client.me().await;
     me.assert_status(StatusCode::OK);
     assert_eq!(me.data("user")["role"], "admin", "带邀请码应升级为管理员：{}", me.body);

@@ -101,7 +101,6 @@ async fn admin_creates_lists_and_disables_invites() {
     let disabled = after.data("items").as_array().unwrap().clone();
     assert!(disabled.iter().any(|i| i["id"] == json!(id)));
 
-    // 不存在的 id
     admin
         .post("/api/auth/admin/invites/999999/disable", json!({}))
         .await
