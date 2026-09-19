@@ -27,11 +27,6 @@ body {
     background-color: #ffffff;
     box-shadow: 0 4px 15px rgba(0, 0, 0, 0.15);
     z-index: 100;
-    /* 进出沉浸模式时导航栏「上滑淡出」，与内容区的上移合成同一段动作
-       （见文件末尾的沉浸模式规则）。
-       ⚠️ 时长/缓动必须与 modules/english/english.js 的 START_TOTAL_MS / START_EASE 对齐。 */
-    transition: transform 460ms cubic-bezier(0.33, 0, 0.2, 1),
-                opacity 460ms cubic-bezier(0.33, 0, 0.2, 1);
 }
 
 /* 左上角头像 = 个人中心入口：在导航栏里绝对定位，靠 translateY(-50%) 垂直居中。
@@ -292,11 +287,6 @@ html.is-returning .rounded-square.is-flying {
     margin-top: 100px;
     padding: 20px;
     min-height: calc(100vh - 100px);
-    /* 沉浸模式会把上边距与内边距清零（内容整体上移 120px），这里让它平滑过渡 ——
-       和导航栏的上滑一起构成「整屏往上顶」的动作，而不是瞬移。
-       ⚠️ 时长/缓动与 .rectangle 一致，改一处就要改另一处（见文件末尾的沉浸模式规则）。 */
-    transition: margin-top 460ms cubic-bezier(0.33, 0, 0.2, 1),
-                padding 460ms cubic-bezier(0.33, 0, 0.2, 1);
 }
 
 /* 占位 / 加载提示文字 */
@@ -313,39 +303,12 @@ html.is-returning .rounded-square.is-flying {
  * 约定：类名由学科模块自己挂/摘（见 modules/english/english.js），
  * main.js 在切换学科时调用上一模块的 unmount() 兜底清理，
  * 因此这里只放通用规则，不掺任何学科逻辑。 */
-/* ⚠️ 这里**不能用 display: none**：display 不可过渡，导航栏会「啪」地消失、
- * 内容区同时瞬移 120px —— 中间任何淡入淡出都会露出这一下跳变
- * （英语页「起始页 → 复习界面」的过场就是踩这个）。
- * 改成上滑淡出：
- *   · transform / opacity 负责动作；
- *   · visibility 负责「真的不可见、里面的头像也不可聚焦」（纯 opacity:0 仍能被 Tab 聚焦）；
- *     它是**离散**属性，所以配「0s 时长 + 延迟 460ms」—— 等滑出去之后才真正隐藏。
- *     直接写 visibility: hidden 会立刻生效，动画就白做了。
- *   · 退出沉浸时这条规则不再命中，visibility 由上面的基础规则还原，立刻变回可见，
- *     不会倒着再延迟一次（过渡按「变化后状态」的 transition 列表算，所以基础规则里不写 visibility）。
- * 时长/缓动必须与 .rectangle 的基础规则、以及 english.js 的 START_TOTAL_MS 对齐。 */
 body.is-immersive .rectangle {
-    transform: translateY(-100%);
-    opacity: 0;
-    visibility: hidden;
-    pointer-events: none;
-    transition: transform 460ms cubic-bezier(0.33, 0, 0.2, 1),
-                opacity 460ms cubic-bezier(0.33, 0, 0.2, 1),
-                visibility 0s linear 460ms;
+    display: none;
 }
 
 body.is-immersive .content-container {
     margin-top: 0;
     padding: 0;
     min-height: 100vh;
-}
-
-/* 无障碍：系统开启「减少动态效果」时不做上滑/上移过渡，进出沉浸都是瞬间完成
- * （english.js 的 enterReview 同样会跳过整段过场，业务逻辑完全一致） */
-@media (prefers-reduced-motion: reduce) {
-    .rectangle,
-    body.is-immersive .rectangle,
-    .content-container {
-        transition: none;
-    }
 }

@@ -16,7 +16,6 @@
 // ⚠️ planTotals 是今日计划的分母 {new, probe}，**建会话时算一次后固定**——每次渲染重算会让
 // 分子涨、分母也跟着涨（出现过「新词 1/4、2/5」）；pendingSubmit 是最近一次提交的 Promise，
 // 翻页取数前必须等它落库，否则刚评过的词会被当成到期卡再抽一次。
-// started 表示「用户已经点过开始复习单词」：在此之前页面停在起始页，引擎与会话都还没建。
 var state = {
     session: null,
     wasm: null,
@@ -30,9 +29,7 @@ var state = {
     planPhase: '',
     rounds: null,
     queueOffset: 0,
-    queueTotal: 0,
-    started: false,
-    holdAutoSpeak: false
+    queueTotal: 0
 };
 
 // 自动朗读开关在 localStorage 中的键名
@@ -74,28 +71,8 @@ var WASM_MODULE_URL = './engine/pkg/guangxue_wasm.js';
 var TRANSITION_MS = 150;
 var PLAN_SWAP_OUT_MS = 160;
 
-// 「起始页 → 复习界面」这段过场的节拍（毫秒）。
-// ⚠️ 三处必须对齐，改一处就得改三处：
-//   · 起始页退场 / 复习界面入场 → english.css 的 startOut / startIn
-//   · 导航栏上滑 + 内容区上移 120px → main.css 里 .rectangle 与 .content-container 的 transition
-// START_TOTAL_MS 取 460ms，与「点头像进个人中心」那段过场齐平（全站最长的转场就是它）。
-var START_OUT_MS = 160;               // 起始页淡出上移
-var START_IN_MS = 300;                // 复习界面淡入下浮（从换幕那一刻开始算）
-var START_TOTAL_MS = START_OUT_MS + START_IN_MS;
-
-// 过场的两个定时器：换幕（藏起始页 / 放复习界面）与整段收尾
-var startSwapTimer = null;
-var startDoneTimer = null;
-
 // 键盘监听是否已绑定（同一页面内反复切换学科只绑定一次）
 var keysBound = false;
-
-// 页面「世代」：每次进英语页 / 每次离开都 +1。
-// 用途：beginReview 那条异步链（加载引擎 + 四个接口）在慢网下要一两秒，回来时用户
-// 完全可能已经切到别的学科了 —— 那时候 enterReview() 会把 is-immersive 挂到**别人家的
-// body** 上（数学页的导航栏凭空消失），还会念一个词。回调进门先对一下号，对不上就整条丢掉。
-// 注意必须在**建会话之前**就拦掉，否则 ReviewSession 已经创建，WASM 内存就漏了。
-var pageEpoch = 0;
 
 // 语音是否已解锁（浏览器会拦截未经用户交互的 speechSynthesis）
 var speechUnlocked = false;
@@ -110,17 +87,15 @@ var POS_LABELS = {
 
 // ---------- 对外入口 ----------
 
-// 初始化英语页。由 main.js 在英语页 HTML 注入完成后调用。
-//
-// 这一层只做「绑事件 + 决定停在起始页还是直接进复习」，**不碰引擎、不发任何请求**；
-// 真正的启动在 beginReview()。顺序：释放上一次会话（引擎侧的 ReviewSession 必须显式 free，
-// 否则反复进出英语页会泄漏 WASM 内存）→ 绑定监听（键盘与语音解锁都只绑一次）→
-// 恢复自动朗读开关（默认开启）→ 停在起始页等用户点击。
+// 初始化复习应用。由 main.js 在英语页 HTML 注入完成后调用。
+// 顺序：释放上一次会话（引擎侧的 ReviewSession 必须显式 free，否则反复进出英语页会泄漏 WASM 内存）→
+// 绑定监听（键盘与语音解锁都只绑一次）→ 恢复开关状态（自动朗读 / 沉浸模式，均默认开启）→
+// 加载引擎并取回今日计划所需的四份数据。
 export function initReviewApp() {
     var statusEl = document.getElementById('reviewStatus');
     if (!statusEl) return; // 当前页面不是英语页，跳过
+    statusEl.textContent = '正在加载复习内容...';
 
-    pageEpoch++; // 上一次留在半路上的异步链从此作废
     releaseSession();
 
     if (!keysBound) {
@@ -137,10 +112,8 @@ export function initReviewApp() {
     }
 
     bindClick('studyNavToggle', function() { toggleImmersive(); });
+    setImmersive(isImmersiveOn());
 
-    // 语音解锁要**在起始页就装上**：用户点「开始复习单词」的那一次 pointerdown
-    // 正是浏览器认可的用户交互（那时 state.card 还是空的，所以补读分支不会响），
-    // 之后建卡时的自动朗读才不会被拦。
     if (!unlockBound) {
         unlockBound = true;
         document.addEventListener('pointerdown', unlockSpeech);
@@ -160,55 +133,13 @@ export function initReviewApp() {
         });
     }
 
-    var startBtn = document.getElementById('studyStartBtn');
-    if (!startBtn) {
-        beginReview(); // 兜底：万一拿到的是旧结构的缓存页（没有起始页），直接进复习
-        return;
-    }
-
-    // 起始页：刻意**不套用沉浸偏好**，站点导航栏留在原处，用户能正常切学科 / 点头像。
-    // 这里也**不写 localStorage** —— 用户的沉浸偏好留到 beginReview 时再生效，别被这一下改掉。
-    applyImmersive(false);
-    startBtn.addEventListener('click', beginReview);
-}
-
-// 从起始页进入复习：按钮进入「准备中」→ 加载引擎、取数、建会话、渲染第一张卡 → 再播过场。
-// 只允许走一次：state.started 兜一道（按钮同时会被 disabled）。
-//
-// ⚠️ 为什么建会话必须等到点击之后，而不是页面一挂载就建：
-// renderCardNow 末尾会自动朗读单词（自动朗读默认开启），而浏览器不允许「还没有用户交互」的
-// 语音合成 —— 首次朗读被静默丢弃，再由 unlockSpeech 在用户第一次点页面时补读一遍，
-// 听感就是「进来响一次、随便点一下又响一次」。点了按钮之后才建卡，朗读就落在一次真实
-// 交互之后：既不重复，也不会被拦。附带好处是路过英语页的人不用下载 WASM、不发请求。
-//
-// ⚠️ 为什么过场要等第一张卡建好才播（而不是点完立刻换屏）：
-// 换屏后到卡片渲染之间，复习界面是「空单词 + 正在加载」——先换屏就会看到这么一拍空画面，
-// 过场再顺也白搭。代价是按钮要顶几百毫秒的「准备中」，这是划得来的。
-function beginReview() {
-    if (state.started) return;
-    state.started = true;
-
-    // 记下这一路的「世代」：切走学科后 pageEpoch 会变，回调就对不上号了（见 pageEpoch 的注释）
-    var epoch = pageEpoch;
-
-    // 起始页先留在原地，只把按钮压成「准备中」（文案 + 变淡，见 english.css 的 :disabled）
-    setPreparing(true);
-
     var plan = loadTodayPlan();
     state.planPhase = '';
 
     loadEngine().then(function(wasm) {
-        if (epoch !== pageEpoch) return null; // 用户已经切走了，这一路整个丢掉
         state.wasm = wasm;
         return fetchDay(0);
     }).then(function(results) {
-        // results 为 null = 上一步已经判定作废；再对一次号是防「取数过程中才切走」
-        if (!results || epoch !== pageEpoch) return;
-
-        // 页面已经被换成别的学科了：连会话都别建，免得白占一份 WASM 内存。
-        // （enterReview 里还有同样一道闸，那道是给「失败回调迟到」这种情况用的）
-        if (!document.getElementById('reviewApp')) return;
-
         var statsRes = results[3];
 
         // 顶部统计先拿到，渲染卡片时一起显示
@@ -236,87 +167,12 @@ function beginReview() {
             probe: plan.probeDone + state.planInfo.probe_target
         };
 
-        // 卡片是在起始页还盖着的时候渲染的（复习界面此时仍是 display:none），
-        // 所以把这次的自动朗读压住，交给过场结束的 finishEnter 补 —— 否则单词会比画面先出声。
-        state.holdAutoSpeak = true;
         renderCard();
-        state.holdAutoSpeak = false;
-
-        enterReview();
     }).catch(function(err) {
-        if (epoch !== pageEpoch) return; // 用户已经切走了：别在别人家的页面上报错
         setStatus('');
         showMessage('复习功能加载失败', String(err) + '（需通过服务器访问，并确认已生成 WASM 引擎）');
         console.error('复习功能初始化失败:', err);
-        // 失败也要把用户送进复习界面：卡在起始页的「准备中」上没有任何出路
-        enterReview();
     });
-}
-
-// 「准备中」：按钮换文案 + 变淡，同时 disabled 挡掉重复点击
-function setPreparing(on) {
-    var btn = document.getElementById('studyStartBtn');
-    if (!btn) return;
-    btn.disabled = on;
-    btn.textContent = on ? '正在准备…' : '开始复习单词';
-}
-
-// 起始页 → 复习界面的过场。
-//
-// 时序（总长 START_TOTAL_MS = 460ms，与「点头像进个人中心」那段齐平）：
-//   0ms              套用沉浸偏好（要进沉浸的话，导航栏从这里开始上滑、内容区开始上移 120px，
-//                    这两条过渡写在 main.css 里），同时给起始页挂 is-leaving 让它淡出上移
-//   START_OUT_MS     换幕：藏起始页、放复习界面，给复习界面挂 is-entering 淡入下浮
-//   START_TOTAL_MS   收尾：摘掉动画类、恢复按钮、补上被压住的首卡朗读
-//
-// ⚠️ 沉浸偏好是「用户存过就照办」：偏好是「不进沉浸」的话导航栏不动，这段过场自然退化成
-// 单纯的淡出淡入 —— 别为了动画好看去覆盖用户的偏好（起始页那边同理，用的是 applyImmersive）。
-function enterReview() {
-    var app = document.getElementById('reviewApp');
-    var start = document.getElementById('studyStart');
-
-    // ⚠️ 复习界面都不在了 = 内容容器已经被换成别的学科了，**立刻收手**。
-    // 这一条比 unmount() 的世代校验还早一步：main.js 是先 innerHTML 换页、再调 unmount()，
-    // 中间有一个窗口，异步链正好在这个窗口里回来就会踩中。
-    // 少了它，setImmersive 挂上去的就是别人家的 body —— 数学页的导航栏会凭空消失。
-    if (!app) return;
-
-    // 无障碍：系统开启「减少动态效果」时一步到位，业务逻辑完全一致
-    if (!start || prefersReducedMotion()) {
-        hide('studyStart');
-        show('reviewApp');
-        setImmersive(isImmersiveOn());
-        finishEnter();
-        return;
-    }
-
-    setImmersive(isImmersiveOn());
-    start.classList.add('is-leaving');
-
-    clearTimeout(startSwapTimer);
-    clearTimeout(startDoneTimer);
-
-    startSwapTimer = setTimeout(function() {
-        startSwapTimer = null;
-        hide('studyStart');
-        start.classList.remove('is-leaving');
-        show('reviewApp');
-        app.classList.add('is-entering');
-    }, START_OUT_MS);
-
-    startDoneTimer = setTimeout(function() {
-        startDoneTimer = null;
-        app.classList.remove('is-entering');
-        finishEnter();
-    }, START_TOTAL_MS);
-}
-
-// 过场收尾：把起始页的按钮恢复原样（下次进英语页还要能点），并补上被压住的首次朗读。
-// 朗读放在这一刻而不是建卡那一刻，是为了让单词和画面同时出现；
-// 失败路径下 state.card 是空的，这里自然什么都不做。
-function finishEnter() {
-    setPreparing(false);
-    if (isAutoSpeakOn() && state.card) speakCurrent('word');
 }
 
 // 离开英语页时的清理。由 main.js 在切换到其他学科之前调用。
@@ -325,30 +181,11 @@ function finishEnter() {
 // 顺带释放引擎侧会话、清掉揭晓动效的定时器，避免反复进出英语页时内存与声音残留。
 export function unmount() {
     document.body.classList.remove('is-immersive');
-
-    // 世代 +1：beginReview 那条还在飞的异步链从此作废（否则它回来时会把 is-immersive
-    // 挂到我们已经切过去的那个学科页上）。定时器与动画类在下面一并抹平。
-    pageEpoch++;
-
     cancelRevealAnimation();
     clearTimeout(planSwapTimer);
     clearTimeout(roundFlashTimer);
     planSwapTimer = null;
     roundFlashTimer = null;
-
-    // 过场还没播完就被切走学科：定时器必须清掉，否则它会在别的学科页上把
-    // 复习界面「放出来」（那时 DOM 早换了，虽然取不到元素，但类会挂到新页面的同名元素上）。
-    // 顺带把两边的动画类与按钮状态抹平，保证下次进英语页是干净的起始页。
-    clearTimeout(startSwapTimer);
-    clearTimeout(startDoneTimer);
-    startSwapTimer = null;
-    startDoneTimer = null;
-    var startEl = document.getElementById('studyStart');
-    if (startEl) startEl.classList.remove('is-leaving');
-    var appEl = document.getElementById('reviewApp');
-    if (appEl) appEl.classList.remove('is-entering');
-    setPreparing(false);
-
     releaseSession();
     state.card = null;
     state.revealed = false;
@@ -361,9 +198,6 @@ export function unmount() {
     state.rounds = null;
     state.queueOffset = 0;
     state.queueTotal = 0;
-    // 回到起始页待命：下次进英语页要重新点「开始复习单词」，不会直接续上这次的复习
-    state.started = false;
-    state.holdAutoSpeak = false;
     if (window.speechSynthesis) {
         try {
             window.speechSynthesis.cancel();
@@ -655,8 +489,7 @@ function renderCardNow() {
 
     maybePrefetch();
 
-    // holdAutoSpeak：首卡是在起始页还盖着的时候建的，朗读要压到过场结束（见 finishEnter）
-    if (isAutoSpeakOn() && !state.holdAutoSpeak) speakCurrent('word');
+    if (isAutoSpeakOn()) speakCurrent('word');
 }
 
 // 卡片来源 → 界面文案
@@ -1244,21 +1077,9 @@ function isImmersiveOn() {
     return raw !== '0';
 }
 
-// 应用沉浸模式：给 body 挂 is-immersive 类，站点级样式（main.css）据此隐藏导航栏并让内容区占满整屏。
-// 这里只负责挂/摘类与更新按钮文案，样式一律写在 CSS 里；**顺带把偏好存下来**。
+// 应用沉浸模式：给 body 挂 is-immersive 类，站点级样式（main.css）据此隐藏导航栏并让内容区占满整屏
+// 这里只负责挂/摘类与更新按钮文案，样式一律写在 CSS 里
 function setImmersive(on) {
-    applyImmersive(on);
-    try {
-        localStorage.setItem(IMMERSIVE_KEY, on ? '1' : '0');
-    } catch (e) {
-        // 存不下也不影响本次使用
-    }
-}
-
-// 只改界面、**不写偏好**。
-// 起始页用它强制显示导航栏（起始页刻意不进沉浸），但那不代表用户想把沉浸偏好关掉 ——
-// 要是这里用 setImmersive，用户每进一次英语页就会被永久改成「非沉浸」。
-function applyImmersive(on) {
     if (on) {
         document.body.classList.add('is-immersive');
     } else {
@@ -1269,6 +1090,12 @@ function applyImmersive(on) {
     if (btn) {
         btn.textContent = on ? '显示导航栏' : '沉浸模式';
         btn.title = on ? '显示站点导航栏（Esc）' : '隐藏站点导航栏，全屏专注复习（Esc）';
+    }
+
+    try {
+        localStorage.setItem(IMMERSIVE_KEY, on ? '1' : '0');
+    } catch (e) {
+        // 存不下也不影响本次使用
     }
 }
 
@@ -1314,12 +1141,6 @@ function speakCurrent(kind) {
 function handleReviewKey(e) {
     // 不在英语复习页时直接忽略
     if (!document.getElementById('reviewStatus')) return;
-
-    // 还停在起始页：一个复习按键都不处理。
-    // 尤其 Esc —— 它会切成沉浸模式把导航栏藏起来，而起始页刻意是要留着导航栏的。
-    // 起始页的键盘操作交给那颗 <button> 自己：聚焦后回车 / 空格就是原生点击。
-    if (!state.started) return;
-
     var target = e.target;
     if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
         return; // 正在操作输入控件时不拦截按键
@@ -1374,16 +1195,13 @@ function setStatus(text) {
     setText('reviewStatus', text);
 }
 
-// 显示元素（按各自的布局类型还原 display）。
-// ⚠️ 布局是 flex 的必须在这里登记：show() 兜底那句是 display:block，
-// 用错会把纵向布局连居中一起打散（reviewApp / studyStart 整页都是 flex 列）。
+// 显示元素（按各自的布局类型还原 display）
 function show(id) {
     var el = document.getElementById(id);
     if (!el) return;
     if (id === 'reviewPhoneticRow') {
         el.style.display = 'inline-flex';
-    } else if (id === 'reviewButtons' || id === 'reviewReveal' || id === 'reviewAnswer' ||
-               id === 'reviewApp' || id === 'studyStart') {
+    } else if (id === 'reviewButtons' || id === 'reviewReveal' || id === 'reviewAnswer') {
         el.style.display = 'flex';
     } else {
         el.style.display = 'block';

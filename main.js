@@ -56,13 +56,11 @@ document.addEventListener('DOMContentLoaded', function() {
     // 历史：v1 初版；v2 英语页新增「显示答案」按钮；v3 英语页迁到 modules/english/；
     //       v4 英语复习界面改版（极简全屏：顶栏统计 / 大字号单词 / 例句高亮 / 粉彩评分按钮）；
     //       v5 英语页顶栏改成「沉浸模式」开关（隐藏站点导航栏），揭晓区改为每条释义一块；
-    //       v6 英语页底部新增左下角「今日计划」小字；
-    //       v7 英语页新增起始页（中间一颗「开始复习单词」），复习会话改为点击后才建
-    //          （原来一挂载就建会话会自动朗读，且首次交互还会补读一遍，同一个词响两次）
+    //       v6 英语页底部新增左下角「今日计划」小字
     const CACHE_EXPIRY = 30 * 24 * 60 * 60 * 1000;
     const CACHE_PREFIX = 'pageCache_';
     const CACHE_META_KEY = 'pageCache_meta';
-    const CACHE_VERSION = 7;
+    const CACHE_VERSION = 6;
     const CACHE_VERSION_KEY = 'pageCache_version';
     
     // 缓存元数据 { 页面路径: 最后访问时间戳 } 的读写；读失败（脏 JSON / 隐私模式）按「没有元数据」处理

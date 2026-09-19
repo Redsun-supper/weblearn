@@ -56,33 +56,10 @@
 
 ## 4. 转场时长的「人工对齐」还没有兜底
 
-同一个时长写在多处，靠注释互相提醒。**2026-09 又多了英语页那段过场**，现在一共这些：
-
-| 时长 | 参与方 |
-|------|--------|
-| 460ms（头像过场） | `main.js` 的 `ZOOM_MS`/`goWhenSettled`、`main.css` 的 `.avatar-zoom`/`.is-morphing`、`account.css` 的 `accFall`/`.is-loading` |
-| 460ms（起始页过场） | `english.js` 的 `START_TOTAL_MS`、`english.css` 的 `startOut`/`startIn`、`main.css` 的 `.rectangle` + `body.is-immersive .rectangle` + `.content-container` |
-| 160ms（起始页退场） | `english.js` 的 `START_OUT_MS`、`english.css` 的 `startOut` |
-| 160 / 240ms（计划小字切换） | `english.js` 的 `PLAN_SWAP_OUT_MS`、`english.css` 的 `planOut` / `planIn` |
-| 150 / 240ms | `english.js` 的 `TRANSITION_MS`、`english.css` 的 `studyOut`/`studyIn` |
-
-改一处忘另一处就会出现「过渡没跑完就换页」「两层动画错位」这类微妙问题（已经踩过一次）。
+正反两个转场的时长写在三处，靠注释互相提醒：`main.js` 的 `ZOOM_MS`/`goWhenSettled`、
+`main.css` 的 `.avatar-zoom`/`.is-morphing` 过渡、`account.css` 的 `accFall`/`.is-loading`。
+改一处忘另一处就会出现「过渡没跑完就换页」这类微妙问题（已经踩过一次）。
 
 **候选**：用 CSS 自定义属性（`:root { --morph: 460ms }`）统一，JS 侧读 `getComputedStyle`
 取值 —— 代价是 JS 要读一次样式，且 IE 系不支持（本项目已放弃 IE）。
 暂时按「注释互指 + 验收脚本」兜着，不动。
-
-**现状补充**：英语页那段过场的时长已经**三处交叉引用**（`english.js` / `english.css` / `main.css`
-各自的注释里都写了「必须与另两处对齐」），`CLAUDE.md` 与 `modules/english/README.md` 也各记了一遍。
-也就是说这条的维护成本还在涨 —— 真要做统一，现在是个合适的时机。
-
----
-
-## 5. 英语页：切走再切回来会回到起始页（已定方案，暂缓实现）
-
-从英语页切到别的学科、再切回来时会回到**起始页**（要重新点一次「开始复习单词」），
-而不是接着刚才那张卡。用户已拍板：这版先这样，「同一次会话内记住」留到以后。
-
-**完整记录在 [`modules/english/FUTURE.md`](modules/english/FUTURE.md)** —— 里面写了为什么
-这件事不是「记住一个布尔值」那么简单（DOM 每次重建 + `unmount()` 会 `free()` 掉 WASM 会话
-+ 引擎没有「恢复到第 N 张」的接口），以及三个候选方案。要动它之前先把那份读完。

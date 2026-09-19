@@ -3,26 +3,10 @@
 <!-- 逻辑在同目录的 english.js，样式在同目录的 english.css，调度引擎在同目录的 engine/ -->
 <link rel="stylesheet" href="modules/english/english.css">
 
-<!-- 起始页：进英语页默认看到的这一屏，中间只有一颗「开始复习单词」。
-     ⚠️ 为什么要有这一屏、而且复习会话必须等点击才建：
-     复习界面一挂载就会自动朗读单词（isAutoSpeakOn 默认开启），而浏览器会拦截
-     「还没有用户交互」的 speechSynthesis —— 首次朗读被静默丢弃，再由 unlockSpeech
-     在用户第一次点页面时补读一遍，听起来就是「进来响一次、随便点一下又响一次」。
-     把建会话推迟到这颗按钮被按下之后（见 english.js 的 beginReview），
-     朗读就只发生在一次真实交互之后：既不重复，也不会被浏览器拦截。
-     附带好处：只是路过英语页的用户不用下载 WASM、也不用发那几个接口请求。 -->
-<div class="study-start" id="studyStart">
-    <p class="study-start-hint">准备好就开始今天的复习</p>
-    <button class="study-start-btn" id="studyStartBtn" type="button">开始复习单词</button>
-</div>
-
 <!-- 复习界面：极简全屏风格，大量留白，不做卡片包裹。
      关键设计：进入卡片只显示单词与音标；点「显示答案」后才揭晓例句（目标词高亮）与释义，
-     并放出评分按钮，保证评分基于真实回忆结果，避免「看着答案打分」污染 FSRS 记忆状态。
-     ⚠️ 默认 display:none，等用户点了「开始复习单词」才由 beginReview 放出来。
-     必须写在标签上而不是等 JS 去藏：main.js 是「先注入片段、再动态 import 模块」，
-     首次进站时那次 import 要走网络，中间会有一帧把复习界面（空单词 + 「正在加载」）画出来。 -->
-<div class="study" id="reviewApp" style="display:none;">
+     并放出评分按钮，保证评分基于真实回忆结果，避免「看着答案打分」污染 FSRS 记忆状态。 -->
+<div class="study" id="reviewApp">
 
     <!-- 顶栏：沉浸模式开关 / 今日统计 / 当前卡片的记忆元信息 -->
     <header class="study-top">
