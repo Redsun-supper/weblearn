@@ -40,7 +40,7 @@
 **待定**：生成一张 128×128 缩略图（例如 `image/avatar-thumb.png`，约 5–15KB）给导航与个人中心用，
 **原图保留不动**。省掉 99% 流量，线上（Nginx 那侧）收益比本地明显。
 
-⚠️ **涉及视觉素材，动手前必须先问用户**（见 `CLAUDE.md` 边界第 5 条）。
+⚠️ **涉及视觉素材，动手前必须先问用户**（见 [`docs/boundaries.md`](docs/boundaries.md) 第 5 节与 `CLAUDE.md` 红线第 4 条）。
 
 ---
 
@@ -73,7 +73,7 @@
 暂时按「注释互指 + 验收脚本」兜着，不动。
 
 **现状补充**：英语页那段过场的时长已经**三处交叉引用**（`english.js` / `english.css` / `main.css`
-各自的注释里都写了「必须与另两处对齐」），`CLAUDE.md` 与 `modules/english/README.md` 也各记了一遍。
+各自的注释里都写了「必须与另两处对齐」），[`docs/english-ui.md`](docs/english-ui.md) 与 `modules/english/README.md` 也各记了一遍。
 也就是说这条的维护成本还在涨 —— 真要做统一，现在是个合适的时机。
 
 ---
