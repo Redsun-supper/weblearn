@@ -46,10 +46,15 @@
 - ✅ **原生（宿主）Rust 也能编译链接**：host 目标为 `x86_64-pc-windows-gnu`，mingw gcc/ar 已在 PATH 上，
   所以 `backend-rust/` 用 `rusqlite` 的 `bundled` 特性（现场编译 sqlite3.c）可以正常 `cargo test` / `cargo build --release`。
   链接时的 `corrupt .drectve at end of def file` 是 mingw 的**无害告警**。
-- ✅ **宿主 `cargo test` 现在可以运行**（2026-09-13 实测 118 个测试通过；本文档此前记录的
-  「缺 mingw `as`/MSVC SDK 无法链接」**已不再成立**）。完整验证路径：
-  `cargo test` → `cargo check --target wasm32-unknown-unknown` → `cargo build --target wasm32-unknown-unknown --release`
+- ✅ **宿主 `cargo test` 现在可以运行**（本文档此前记录的「缺 mingw `as`/MSVC SDK 无法链接」**已不再成立**）。
+  ⚠️ **两套测试的数字别混用**（2026-09 复测）：`backend-rust/` = **90 项**（41 单元 + 49 集成），
+  `modules/english/engine/` = **118 项**；此前文档里那个「118」是**引擎**的，不是账号服务的。
+- 完整验证路径：`pwsh scripts/verify.ps1`（一键跑 Go 构建/vet/测试 + 上面两套测试 + wasm32 目标检查），
+  或手工：`cargo test` → `cargo check --target wasm32-unknown-unknown` → `cargo build --target wasm32-unknown-unknown --release`
   → `wasm-bindgen` 生成 `pkg/` → 浏览器端到端。
+- **数据库备份**：`pwsh scripts/backup.ps1`（→ `backend-go/cmd/backup/main.go`）对 `guangxue.db` 与 `backend-rust/auth.db` 执行 SQLite
+  `VACUUM INTO` 快照，产物落在 `backups/<时间戳>/`（已 gitignore），`-Keep N` 只保留最近 N 份（只删输出目录下形如 `20260930-225615` 的子目录）。
+  ⚠️ **别用「复制 `.db` 文件」当备份**：实测磁盘上 `auth.db` 只有 4 KB、安全快照是 124 KB —— WAL 里那部分直接拷贝会丢（约 97%）。
 - ⚠️ 但 `JsValue` 在非 wasm32 目标上未实现（调用即 `panic: function not implemented on non-wasm32 targets`，
   无法 unwinding 会直接 abort）：**纯计算层不要碰 `JsValue`**，把它留在 wasm 导出方法的边界上。
 

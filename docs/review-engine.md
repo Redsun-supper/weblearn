@@ -17,7 +17,7 @@
   - ⚠️ 「前 10 张随机抽」的窗口如果永远不往后放宽，**排在后面的卡会被饿死、轮次永远凑不齐**（踩过，`round_completes_even_when_some_cards_are_far_in_the_future` 锁住）。
 - **分页取数**：池子永不空，所以「空了再取下一页」的旧条件再也触发不了。改成按**本轮进度**预取：本轮已评分数逼近池子总量（差 ≤ `PREFETCH_MARGIN`=5）时取下一页（`maybePrefetch`）。追加只进复习区，**新词与抽查不因翻页变多**。
 - **抽查卡评分时按「新卡」重算**（丢掉原 stability/difficulty，天数按 0 算），等于重新体检：它的间隔会被压缩回几天，从而很快回来重新标定。请求体里带 `is_probe: true`，后端记进 `review_logs.is_probe`（**`stability_before` 仍是库里的真实旧值**，所以「今日新学」统计不会被污染）。日后做 FSRS 参数优化时要排除这批记录。
-- **每日配额记在浏览器 localStorage**（`reviewDailyPlan`：日期 / 新词数 / 抽查数 / 各词的抽查时间）。⚠️ 因为现在**没有登录系统**，服务端只有一份共享词库：若在服务端按「每天 5 个」算，等于全站每天共放 5 个新词，你先学了别人就没得学。代价是换设备/清缓存会重置——等有登录再迁到服务端。
+- **每日配额记在浏览器 localStorage**（`reviewDailyPlan`：日期 / 新词数 / 抽查数 / 各词的抽查时间）。⚠️ 原因：**复习侧尚未接入登录**（服务端只有一份共享词库）——若在服务端按「每天 5 个」算，等于全站每天共放 5 个新词，你先学了别人就没得学。代价是换设备/清缓存会重置；**等复习接口接入账号（多用户化）后应迁到服务端**，改法见 [`roadmap.md`](roadmap.md) 第 3 节。
 - **流程**：取 `/api/reviews/queue`（整库紧迫度序，分页）+ `/api/reviews/new`（新词候选）+ `/api/reviews/probes`（到期最远的候选）+ `/api/reviews/stats` 的 **JSON 原文** → `new ReviewSession(queueText, newText, probeText, planJson)`（`planJson` = `{new_limit, probe_limit, probed_ids, now_ms}`，两个 limit 是**今天还剩多少额度**）→ 渲染时 `current_json()` → 评分时 `rate(rating, Date.now())` 返回**可直接 POST 的请求体**（同时把卡按新到期时间插回池子）→ 后端写 `word_reviews`（due_at = now + 间隔）并记 `review_logs`。分页用 `session.append(queueText, planJson)`（**只追加复习区**）+ `pending_count()/seen_count()/rounds()` 判断时机。
 - wasm 侧方法一览：`done()` 本轮已评分数 · `pending_count()` 池中待抽 · `seen_count()` 本轮已评过的不同卡数 · `rounds()` 过完的轮数 · `total()` 池中 + 手上 · `plan_json()` 今日计划规模 · `current_json(now_ms)` · `rate(rating, now_ms)` · `append(queueJson, planJson)`。
 - 记忆状态 `{stability, difficulty}` 与 SQLite `word_reviews` 字段一一对应；间隔最短 10 分钟。
@@ -30,5 +30,11 @@
 
 ## 构建与测试
 
-`engine/pkg/` 由 wasm-bindgen 生成（已 gitignore），缺失时需在 `modules/english/engine/` 下重新构建，
-命令见 [`../modules/english/README.md`](../modules/english/README.md)；完整工具链与验证路径见 [`boundaries.md`](boundaries.md)。
+- **测试**：`modules/english/engine` 有 **118 项**宿主测试（`cargo test`，秒级）；账号服务那份「90 项」是另一个 crate，**别混用这两个数字**。
+- **一键验证**：仓库根跑 `pwsh scripts/verify.ps1`（Go 构建/vet/测试 + 账号服务测试 + 引擎宿主测试 + wasm32 目标检查，全绿约 45 秒，只读不改仓库）。
+- **`engine/pkg/` 由 wasm-bindgen 生成（已 gitignore）**，缺失时需在 `modules/english/engine/` 下重新构建，三段命令见
+  [`../modules/english/engine/README.md`](../modules/english/engine/README.md)：`cargo check --target wasm32-unknown-unknown`
+  → `cargo build --target wasm32-unknown-unknown --release` → `wasm-bindgen --target web --out-dir pkg --out-name guangxue_wasm
+  target/wasm32-unknown-unknown/release/guangxue_wasm.wasm`。
+  ⚠️ 本机 `wasm-bindgen` **不在 PATH**，实际在 `C:\Users\22629\.local\bin\wasm-bindgen-0.2.128-x86_64-pc-windows-msvc\wasm-bindgen.exe`；版本必须与 `Cargo.toml` 的 `wasm-bindgen = 0.2.128` 一致。
+- 完整工具链与验证路径见 [`boundaries.md`](boundaries.md)。

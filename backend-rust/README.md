@@ -19,7 +19,7 @@
 ```bash
 cd backend-rust
 
-# 1) 跑测试（83 项：39 单元 + 44 集成）
+# 1) 跑测试（90 项：41 单元 + 49 集成）
 cargo test
 
 # 2) 起服务（默认 127.0.0.1:8081，首次启动自动建库、迁移、创建管理员）
@@ -269,7 +269,7 @@ backend-rust/
 ## 八、测试
 
 ```bash
-cargo test                 # 83 项：39 单元 + 44 集成（6 个测试文件）
+cargo test                 # 90 项：41 单元 + 49 集成（6 个测试文件）
 cargo build --release      # 产出 target/release/guangxue-auth.exe
 pwsh scripts/smoke.ps1     # 端到端：真实 HTTP + 真实 Cookie
 ```

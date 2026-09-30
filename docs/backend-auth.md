@@ -7,7 +7,7 @@
 
 - API 前缀 `/api`：`/health`、`/hello`、`/user/*`、`/data/*`。
 - 用户/数据相关 handler 目前多为 TODO 占位（返回固定 JSON）。⚠️ `/api/user/*` 与账号系统无关（真正的账号接口是 Rust 侧的 `/api/auth/me`），且**Go 侧目前没有任何鉴权中间件**，`/api/words` 的写接口是公开的。
-- 环境变量：`SERVER_HOST`（默认 `0.0.0.0`）、`SERVER_PORT`（默认 `8080`）、`APP_ENV`（默认 `development`）。
+- 环境变量：`SERVER_HOST`（默认 `0.0.0.0`）、`SERVER_PORT`（默认 `8080`）、`APP_ENV`（默认 `development`）、`DB_PATH`（默认 `guangxue.db`，相对进程工作目录）。
 - 端口与库的分工见 [`overview.md`](overview.md)。
 
 ## Rust 账号系统（`backend-rust/`）

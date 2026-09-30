@@ -467,6 +467,31 @@ pwsh scripts/clean-build-cache.ps1 -All
 > 仓库之外还有一处缓存：Go 构建缓存在 `%LOCALAPPDATA%\go-build`（本机约 230 MB），需要时用 `go clean -cache` 清理。
 > 删完缓存后首次 `cargo test` / `cargo build --release` 会重新完整编译，慢一次属正常。
 
+### 一键验证与数据库备份
+
+改完代码想确认「没弄坏」：
+
+```powershell
+# 一条命令跑完：Go 构建/vet/测试 + 账号服务测试 + 引擎测试 + wasm32 目标检查（全绿约 45 秒）
+pwsh scripts/verify.ps1
+
+# 只要其中一段
+pwsh scripts/verify.ps1 -Only go       # all | go | rust | engine
+pwsh scripts/verify.ps1 -IncludeSmoke  # 额外跑账号服务 smoke.ps1 的 24 项（需服务已启动）
+```
+
+备份数据库（**不要用「复制 `.db` 文件」的方式**：`auth.db` 带着 3.7 MB 未 checkpoint 的 WAL，直接拷可能得到空库）：
+
+```powershell
+# 对 guangxue.db 与 backend-rust/auth.db 执行 SQLite VACUUM INTO 快照 → backups/<时间戳>/
+pwsh scripts/backup.ps1
+
+# 只保留最近 5 份快照
+pwsh scripts/backup.ps1 -Keep 5
+```
+
+> ⚠️ 实测：磁盘上的 `backend-rust/auth.db` 只有 4 KB，而安全快照出来是 **124 KB** —— 那 97% 就在 WAL 里，只有 `VACUUM INTO` 才拿得到。
+
 ---
 
 ## 单词表导入（本地开发）

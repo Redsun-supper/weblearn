@@ -4,6 +4,9 @@
 *.db-wal
 *.db-shm
 
+# 数据库快照（scripts/backup.ps1 的输出：体积大、含本地数据，不入库）
+backups/
+
 # Go 编译产物
 backend-go/server
 backend-go/server.exe
