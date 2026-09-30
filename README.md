@@ -57,23 +57,21 @@
 
 ```
 e:\porject\4/
-├── frontend/                    # 前端静态文件（根目录即站点根）
-│   ├── index.html               # 主页面入口
-│   ├── main.css                 # 全站样式（导航栏、内容容器等）
-│   ├── main.js                  # 导航交互与 localStorage 缓存管理
-│   ├── image/                   # 图片资源
-│   │   └── avatar.png           # 头像图片
-│   └── pages/                   # 尚未建模块的学科占位页（其余 8 门，均为「敬请期待」）
-│       ├── chinese.html         # 语文
-│       ├── math.html            # 数学
-│       ├── physics.html         # 物理
-│       ├── chemistry.html       # 化学
-│       ├── biology.html         # 生物
-│       ├── history.html         # 历史
-│       ├── politics.html        # 政治
-│       └── geography.html       # 地理
-│
+├── index.html                   # 主页面入口（仓库根目录即站点根）
+├── main.css                     # 全站样式（导航栏、内容容器等）
+├── main.js                      # 导航交互与 localStorage 缓存管理
 ├── dev-server.js                # 本地开发服务器（静态文件 + /api 双上游代理，仅开发用）
+├── image/
+│   └── avatar.png               # 头像图片
+├── pages/                       # 尚未建模块的学科占位页（其余 8 门，均为「敬请期待」）
+│   ├── chinese.html             # 语文
+│   ├── math.html                # 数学
+│   ├── physics.html             # 物理
+│   ├── chemistry.html           # 化学
+│   ├── biology.html             # 生物
+│   ├── history.html             # 历史
+│   ├── politics.html            # 政治
+│   └── geography.html           # 地理
 │
 ├── account/                     # 个人中心（账号 / 设备 / 操作，独立入口；入口是左上角头像）
 │   ├── index.html               #   登录、注册、当前账号与登录中的设备
@@ -105,6 +103,22 @@ e:\porject\4/
 │           │   └── card_view.rs     # 卡片文本：多释义拆分（一个词性一块）与例句高亮切分
 │           └── README.md            # 引擎说明与构建命令
 │
+├── docs/                        # 项目文档：CLAUDE.md 的细节全在这里（**先读 docs/README.md**）
+│   ├── README.md                #   文档地图：什么时候读哪份
+│   ├── overview.md              #   组成部分、端口与数据库分工
+│   ├── review-engine.md         #   每日队列口径、抽卡、FSRS、wasm 方法一览
+│   ├── english-ui.md            #   复习 UI、起始页与过场、沉浸模式
+│   ├── frontend.md              #   导航 / 缓存 / 学科页路径 / 头像入口
+│   ├── admin-api.md             #   后台约定、/api/words*、/api/reviews/*
+│   ├── backend-auth.md          #   Go 与 Rust 两个服务、邀请码口径、验证方式
+│   ├── boundaries.md            #   硬性红线的完整说明与本机工具链（含验证/备份脚本）
+│   └── roadmap.md               #   **未来规划**：阶段表、进度记录、已定案决策与六项议题的成本 × 收益分析
+│
+├── scripts/                     # 本机 PowerShell 脚本（开发与运维）
+│   ├── verify.ps1               #   一键验证：Go 构建/vet/测试 + 账号服务 + 引擎 + wasm32 目标检查
+│   ├── backup.ps1               #   数据库安全快照（VACUUM INTO；底层是 backend-go/cmd/backup）
+│   └── clean-build-cache.ps1    #   清理 target/ 编译缓存（带白名单安全闸）
+│
 ├── backend-go/                  # Go后端服务
 │   ├── main.go                  # 程序入口
 │   ├── go.mod                   # Go模块定义
@@ -113,15 +127,20 @@ e:\porject\4/
 │   ├── database/
 │   │   └── database.go          # SQLite 连接与自动迁移
 │   ├── cmd/
-│   │   └── seed/
-│   │       └── main.go          # 词表导入命令（JSON → words 表）
+│   │   ├── seed/
+│   │   │   └── main.go          # 词表导入命令（JSON → words 表）
+│   │   ├── inspect/
+│   │   │   └── main.go          # 查看各词的记忆状态（排查用）
+│   │   └── backup/
+│   │       └── main.go          # 数据库快照命令（VACUUM INTO，被 scripts/backup.ps1 调用）
 │   ├── seed/
 │   │   └── words_english.json   # 英语种子词表（100 词）
 │   ├── routes/
 │   │   └── routes.go            # 路由定义
 │   ├── handlers/
 │   │   ├── handlers.go          # 请求处理器
-│   │   └── review_handlers.go   # 词汇复习（FSRS）处理器
+│   │   ├── review_handlers.go   # 词汇复习（FSRS）处理器
+│   │   └── *_test.go            # 关键路径测试（内存库 + httptest，见 docs/roadmap.md 阶段 1）
 │   ├── models/
 │   │   └── models.go            # 数据模型（含 Word/WordReview/ReviewLog）
 │   ├── utils/
@@ -134,7 +153,8 @@ e:\porject\4/
 │   ├── migrations/
 │   │   └── 0001_init.sql        # auth.db 表结构（编译期内嵌）
 │   ├── scripts/
-│   │   └── smoke.ps1            # 端到端冒烟脚本（真实 HTTP + 真实 Cookie）
+│   │   └── smoke.ps1            # 端到端冒烟脚本（真实 HTTP + 真实 Cookie，24 项）
+│   ├── tests/                   # 集成测试：auth_flow / email_code / invite / multi_device / security / admin
 │   ├── src/
 │   │   ├── main.rs              # HTTP 服务入口（默认 127.0.0.1:8081）
 │   │   ├── lib.rs               # AppState 装配与路由挂载
@@ -152,7 +172,11 @@ e:\porject\4/
 │   │   └── bin/                 # seed-admin / invite 命令行工具
 │   └── README.md                # 账号系统说明（接口、安全设计、环境变量、部署）
 │
-└── README.md                    # 项目总说明（本文件）
+├── CLAUDE.md                    # 项目规则（**保护文件：非特殊要求不得修改**）
+├── TODO.md                      # 已决定暂缓的问题与候选方案（**不是漏掉的 bug**）
+├── README.md                    # 项目总说明（本文件）
+├── pages.zip                    # 早期 pages/ 的存档（只读）
+└── 备份/                        # 历史整目录备份（只读；已写进 .gitignore，但早期文件仍在版本库里）
 ```
 
 ---
@@ -829,6 +853,8 @@ AUTH_ADMIN_PASSWORD='管理员密码' \
 
 ## 开发计划
 
+> 「下一步做什么、为什么是这个顺序」的分析与阶段表见 [`docs/roadmap.md`](docs/roadmap.md)；本节只记结果。
+
 - [x] 前端基础架构
 - [x] 学科导航功能
 - [x] localStorage缓存机制
@@ -841,7 +867,7 @@ AUTH_ADMIN_PASSWORD='管理员密码' \
 - [ ] 响应式优化
 - [x] 复习页面 UI（简单版：`modules/english/english.html` + WASM 引擎）
 - [x] 英语模块独立成 `modules/english/`（页面/样式/逻辑/引擎集中管理）
-- [x] 计算下沉 Rust：会话编排、日期换算、FSRS 调度、进度统计移入引擎（42 个单元测试）
+- [x] 计算下沉 Rust：会话编排、日期换算、FSRS 调度、进度统计移入引擎（现为 118 个单元测试）
 - [x] 通用后台骨架 `admin/`（布局 / 导航 / 路由 / 通用组件 + 登录鉴权预留位）
 - [x] 英语后台：词条增删改查 + 批量导入（粘贴词表 → Rust 解析 → 预览 → 分批导入）
 - [x] 词书 / 单元分组（`words.book` / `words.unit` + 列表筛选）

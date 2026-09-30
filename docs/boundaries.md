@@ -47,8 +47,9 @@
   所以 `backend-rust/` 用 `rusqlite` 的 `bundled` 特性（现场编译 sqlite3.c）可以正常 `cargo test` / `cargo build --release`。
   链接时的 `corrupt .drectve at end of def file` 是 mingw 的**无害告警**。
 - ✅ **宿主 `cargo test` 现在可以运行**（本文档此前记录的「缺 mingw `as`/MSVC SDK 无法链接」**已不再成立**）。
-  ⚠️ **两套测试的数字别混用**（2026-09 复测）：`backend-rust/` = **90 项**（41 单元 + 49 集成），
-  `modules/english/engine/` = **118 项**；此前文档里那个「118」是**引擎**的，不是账号服务的。
+  ⚠️ **三套测试的数字别混用**（2026-09 复测）：`backend-rust/` = **90 项**（41 单元 + 49 集成），
+  `modules/english/engine/` = **118 项**，`backend-go/` = **40 项**（handlers 36 + routes 4，阶段 1 补的关键路径基线）；
+  此前文档里那个「118」是**引擎**的，不是账号服务的。
 - 完整验证路径：`pwsh scripts/verify.ps1`（一键跑 Go 构建/vet/测试 + 上面两套测试 + wasm32 目标检查），
   或手工：`cargo test` → `cargo check --target wasm32-unknown-unknown` → `cargo build --target wasm32-unknown-unknown --release`
   → `wasm-bindgen` 生成 `pkg/` → 浏览器端到端。

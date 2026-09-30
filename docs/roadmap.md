@@ -1,6 +1,8 @@
-# 发展路线分析（roadmap）
+# 广学 · 未来规划（roadmap）
 
-> 用途：为「项目下一步往哪走」提供**有依据**的判断，而不是感觉。
+> **这份文件就是项目的「未来规划」**：要做什么、按什么顺序做、为什么是这个顺序。
+> 用法：先看第 0 节的**一页结论 + 阶段表** → 要落地细节时翻对应章节（第 2 节鉴权、第 3 节多用户化的具体做法）；
+> **第 8 节**记着已定案的决策与进度记录，做完一个阶段就回来更新它。
 > 2026-09 写成，依据是对代码的实地侦察（每条结论都带 `路径:行号`，便于核对）。
 > ⚠️ 侦察是**静态阅读**，没有启动服务实测；文中已标出不确定项。
 > 本文是活文档：决策落地后回来更新，**不要在 `CLAUDE.md` 里复述**（见其保护条款）。
@@ -13,7 +15,7 @@
 
 1. **账号服务里几乎没有数据**：`backend-rust/auth.db` 只有 4 KB（WAL 另占 3.7 MB）→ **现在做数据模型改造最便宜**，晚了要写迁移脚本。
 2. **业务侧完全没有身份概念**：`backend-go/routes/routes.go:10-53` 无任何中间件；`WordReview`/`ReviewLog`（`backend-go/models/models.go:134-167`）没有 user 维度；英语页从不问 `/api/auth/me`。
-3. **Go 侧 0 个测试**（`backend-go/` 全目录无 `_test.go`），而 681 行的 `backend-go/handlers/review_handlers.go` 正是改造要动的地方。
+3. **Go 侧 0 个测试**（`backend-go/` 全目录无 `_test.go`），而 681 行的 `backend-go/handlers/review_handlers.go` 正是改造要动的地方。（✅ **阶段 1 已解决**：补了 5 个测试文件 / 40 项测试，见第 6 节风险 2）
 4. **前端分发写死了英语**（`main.js:38` 的 `if (pageName !== ENGLISH_PAGE) return;`）——「框架已支持多学科」只对了一半。
 5. **备份方式不可靠**：现在靠整目录拷贝到 `备份3`/`备份4`，而 `auth.db` 有 3.7 MB 未 checkpoint 的 WAL → **直接拷 `.db` 可能备份出一个空库**。
 
@@ -21,8 +23,8 @@
 
 | 阶段 | 内容 | 预估 | 风险 |
 |------|------|------|------|
-| 0 | `scripts/verify.ps1`（一键验证）+ `scripts/backup.ps1`（安全快照）+ 文档口径修正 | 0.5–1 天 | 无（纯增益） |
-| 1 | Go 关键路径测试基线（submit 的到期计算、stats 口径） | 1–2 天 | 无 |
+| ✅ 0 | `scripts/verify.ps1`（一键验证）+ `scripts/backup.ps1`（安全快照）+ 文档口径修正 | 0.5–1 天 | 无（纯增益） |
+| ✅ 1 | Go 关键路径测试基线（submit 的到期计算、stats 口径） | 1–2 天 | 无 |
 | 2 | 服务端鉴权中间件 + 写接口门槛 + 删掉 Go 侧重复表与占位接口 | 1–2 天 | 中（配错密钥会全站 401） |
 | 3 | 多用户化（两张表加 user 维度、handlers 加过滤、配额迁服务端） | 2–3 天 | 中（动数据模型） |
 | 4 | 英语做深：统计/热力图 → 词书筛选 → 会话续上 | 按项估 | 低 |
@@ -126,8 +128,9 @@
    `auth.db` 只有 4 KB 而 `auth.db-wal` 有 3.7 MB——数据滞留在 WAL（未 checkpoint，或写服务当时在跑）。
    **整目录拷贝不是 SQLite 的安全备份方式**。已加 `scripts/backup.ps1`（→ `backend-go/cmd/backup`）：对两个库执行 `VACUUM INTO '<带时间戳的目标>'`。
    实测佐证：磁盘上 `auth.db` **4096 B** → 安全快照 **126976 B**（差约 97%）。
-2. **Go 零测试（未解决 → 阶段 1）**
-   `backend-go/` 无任何 `_test.go`，而 `review_handlers.go`（681 行）承载全部复习调度与落库。多用户化要改它 → **先补测试**。目标不必高：submit 的到期计算、`stats` 的今日口径、user 过滤。
+2. **Go 零测试 — ✅ 阶段 1 已解决**
+   原先 `backend-go/` 无任何 `_test.go`，而 `review_handlers.go`（681 行）承载全部复习调度与落库，多用户化要改它 → 先补测试。现已补 **40 项测试 / 5 个文件**（handlers 36 + routes 4，`go test ./...` 约 6 秒）：submit 的到期计算与落库、`stats` 今日口径（`today_new` = 当天 `stability_before = 0` 的日志数）、队列取数（new/due/queue/probes 的过滤与 limit/offset 边界）、`SetupRouter` 真实路由表（18 条 method+path）。
+   做法：内存 SQLite（`mode=memory&cache=shared`）+ 生产同款 `AutoMigrate` + `httptest` 走 HTTP 层；**未改任何生产代码**、不 mock 时钟（跨天靠构造历史数据）。⚠️ `user` 维度的过滤测试留到阶段 3（那时才有 `user_id`）。
 3. **无一键验证 — ✅ 阶段 0 已解决**
    原来没有 Makefile / npm scripts / CI；`scripts/` 只有 `clean-build-cache.ps1`（87 行，带白名单安全闸）；`backend-rust/scripts/smoke.ps1`（225 行 / 24 项）只管账号服务。
    已加 `scripts/verify.ps1`：Go 构建/vet/测试 + 账号服务 `cargo test` + 引擎 `cargo test` + `cargo check --target wasm32-unknown-unknown`，一条命令出 PASS/FAIL 表（实测 6 步全绿、45.3 秒），加 `-IncludeSmoke` 可带上账号服务 smoke。
@@ -167,6 +170,9 @@
   - `scripts/backup.ps1` + `backend-go/cmd/backup/main.go` 落地并实跑：走 SQLite `VACUUM INTO`，**未新增依赖**。
   - **备份风险的实证**：磁盘上 `backend-rust/auth.db` 只有 **4096 B**，安全快照出来是 **126976 B** ——照旧「复制 `.db` 文件」会丢掉约 **97%** 的数据（第 6 节风险 1 由此从推测变成实测）。
   - 文档口径修正：测试数统一为「账号服务 90 项 / 引擎 118 项，别混用」（`docs/boundaries.md`、`docs/backend-auth.md`、`backend-rust/README.md` 三处）；`DB_PATH` 补进 `docs/backend-auth.md`；wasm 构建三段命令与 wasm-bindgen 绝对路径补进 `docs/review-engine.md`。
-- **下一步 = 阶段 1**：`backend-go` 关键路径测试基线（`submit` 的到期计算、`stats` 今日口径、user 过滤）。
+- **阶段 1 已完成（2026-09）**
+  - `backend-go` 关键路径测试基线落地：`handlers/setup_test.go`（公用装置，内存库 + 生产 models + httptest）+ `review_submit_test.go`（14）+ `review_stats_test.go`（10）+ `review_queue_test.go`（12）+ `routes/routes_test.go`（4）= **40 项**，`go test ./...` 与 `go vet ./...` 全绿。
+  - 顺带查出的「宽松口径」已写成**护栏测试**（行为未改）：submit 不校验 `Content-Type`、`json.Decoder` 忽略尾随多余字符、数值字段 `null` → 0；`/api/reviews/queue` 的 `?now=` 只回显、不参与取数；「每日 5 新词 + 5 抽查」配额纯在客户端 localStorage，服务端不记账（阶段 3 一并迁到服务端）。
+- **下一步 = 阶段 2**：服务端鉴权中间件（第 2 节路径 (a)：Go 读同一个 `AUTH_JWT_SECRET` 自验 HS256 + `RequireUser`/`RequireAdmin` 两级门槛 + 删掉 Go 侧 `users`/`data_items` 与 `/api/user/*`、`/api/data/*` 占位接口）。⚠️ 红线 5：中间件补齐前不要把 `/admin/` 或站点挂到公网。
 
 **落地后请回来更新本文**：把已完成阶段移到上面的进度记录，把新增风险补进第 6 节。
