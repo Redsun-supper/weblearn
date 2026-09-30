@@ -21,6 +21,7 @@ modules/english/engine/pkg/
 # 本地密钥 / 环境变量（可能含 JWT 密钥与 SMTP 授权码，永不入库）
 .env
 backend-rust/.env
+backend-go/.env
 
 # 操作系统 / 编辑器
 .DS_Store

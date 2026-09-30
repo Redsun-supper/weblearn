@@ -116,6 +116,7 @@ e:\porject\4/
 │
 ├── scripts/                     # 本机 PowerShell 脚本（开发与运维）
 │   ├── verify.ps1               #   一键验证：Go 构建/vet/测试 + 账号服务 + 引擎 + wasm32 目标检查
+│   ├── verify-auth.ps1          #   跨服务鉴权联调：临时库起两个真服务，验 Cookie 本地验签全链路
 │   ├── backup.ps1               #   数据库安全快照（VACUUM INTO；底层是 backend-go/cmd/backup）
 │   └── clean-build-cache.ps1    #   清理 target/ 编译缓存（带白名单安全闸）
 │
@@ -503,6 +504,15 @@ pwsh scripts/verify.ps1
 pwsh scripts/verify.ps1 -Only go       # all | go | rust | engine
 pwsh scripts/verify.ps1 -IncludeSmoke  # 额外跑账号服务 smoke.ps1 的 24 项（需服务已启动）
 ```
+
+验证鉴权改动（**跨服务**：账号服务发 Cookie → Go 本地验签）：
+
+```powershell
+# 用临时库起两个真服务（默认 18081 账号服务 / 18080 Go），13 项检查全绿约 8 秒
+pwsh scripts/verify-auth.ps1
+```
+
+> 两侧的单元测试各自 mock 自己的密钥，密钥/算法/容差对不上时它们**全绿**，只有这个脚本能发现 —— 所以它验证的是「匿名 401 / 账号服务发的 Cookie 200 / 普通用户写词条 403 / 外站 Origin 403」这条完整链路。
 
 备份数据库（**不要用「复制 `.db` 文件」的方式**：`auth.db` 带着 3.7 MB 未 checkpoint 的 WAL，直接拷可能得到空库）：
 

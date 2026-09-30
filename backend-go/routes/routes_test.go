@@ -9,20 +9,30 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
+	"github.com/golang-jwt/jwt/v5"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 
+	"backend-go/config"
+	"backend-go/middleware"
 	"backend-go/models"
 )
 
 // 本文件覆盖 routes.SetupRouter 的真实装配结果（handlers 包的测试用的是等价的手写路由表，
-// 一旦有人在 routes.go 里漏注册或改错路径，那边是发现不了的）：
+// 一旦有人在 routes.go 里漏注册、改错路径、漏挂中间件，那边是发现不了的）：
 //   - /api/health 这条最简单的通路端到端能返回；
-//   - 所有对外承诺的「方法 + 路径」都真的挂在 gin 的路由表上；
-//   - 空库下 /api/word-options 返回的是 [] 而不是 null。
+//   - 所有对外承诺的「方法 + 路径」都真的挂在 gin 的路由表上，已删除的占位接口确实不在；
+//   - 空库下 /api/word-options 返回的是 [] 而不是 null；
+//   - 登录门槛（/api/reviews/* 要登录、词条写接口要管理员）与 CSRF 闸门真的接在路由上。
+
+const (
+	routesTestSecret = "test-only-jwt-secret-for-routes"
+	routesTestOrigin = "http://127.0.0.1:8899"
+)
 
 // testDBCounter 与 handlers 包同款：每个用例一个独立的内存库名，用例之间互不干扰
 var testDBCounter atomic.Int64
@@ -49,19 +59,63 @@ func setupRoutesTest(t *testing.T) *gin.Engine {
 	t.Cleanup(func() { _ = sqlDB.Close() })
 
 	if err := db.AutoMigrate(
-		&models.User{},
-		&models.DataItem{},
 		&models.Word{},
 		&models.WordReview{},
 		&models.ReviewLog{},
 	); err != nil {
 		t.Fatalf("迁移测试库失败: %v", err)
 	}
-	return SetupRouter(db)
+	return SetupRouter(db, testConfig())
+}
+
+// testConfig 只填与中间件相关的两项：验签密钥与 CSRF 白名单
+func testConfig() *config.Config {
+	return &config.Config{
+		Env:            "test",
+		JWTSecret:      routesTestSecret,
+		AllowedOrigins: []string{routesTestOrigin},
+	}
+}
+
+// signRoutesToken 签一张测试令牌（与账号服务同构：sub/sid/role/iat/exp/jti）
+func signRoutesToken(t *testing.T, role string) string {
+	t.Helper()
+	now := time.Now()
+	claims := &middleware.AccessClaims{
+		Sub:  1,
+		Sid:  2,
+		Role: role,
+		Iat:  now.Add(-time.Minute).Unix(),
+		Exp:  now.Add(time.Hour).Unix(),
+		Jti:  "routes-test",
+	}
+	token, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString([]byte(routesTestSecret))
+	if err != nil {
+		t.Fatalf("签发测试令牌失败: %v", err)
+	}
+	return token
+}
+
+// doRoutes 发一次请求；token 为空表示不带 Cookie，origin 为空表示不带 Origin
+func doRoutes(router *gin.Engine, method, path string, body []byte, token, origin, contentType string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(method, path, bytes.NewReader(body))
+	if token != "" {
+		req.AddCookie(&http.Cookie{Name: middleware.AccessCookieName, Value: token})
+	}
+	if origin != "" {
+		req.Header.Set("Origin", origin)
+	}
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
+	}
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	return rec
 }
 
 // TestRouterHealthEndpoint 走真实路由的 health 通路：状态码、字段名与取值都要对得上。
 // health 的响应体没有 code/data 包裹（与业务接口的结构不同），前端启动时会探这条接口，容易被改错。
+// 它是少数几个**不需要登录**的接口，所以这条用例同时钉住「探活不会被鉴权挡掉」。
 func TestRouterHealthEndpoint(t *testing.T) {
 	router := setupRoutesTest(t)
 
@@ -97,10 +151,6 @@ func TestRouterRegistersAllPaths(t *testing.T) {
 	want := []string{
 		"GET /api/health",
 		"GET /api/hello",
-		"GET /api/user/info",
-		"POST /api/user/update",
-		"GET /api/data/list",
-		"POST /api/data/submit",
 		"GET /api/word-options",
 		"GET /api/words",
 		"POST /api/words",
@@ -119,27 +169,42 @@ func TestRouterRegistersAllPaths(t *testing.T) {
 			t.Errorf("路由 %q 未注册——路由表被改动或漏注册了", route)
 		}
 	}
+
+	// 反向断言：已删除的占位接口不能复活（它们与账号服务的 users 表同名不同源，
+	// 一旦有人照着旧文档加回来，这里会立刻红）
+	gone := []string{
+		"GET /api/user/info",
+		"POST /api/user/update",
+		"GET /api/data/list",
+		"POST /api/data/submit",
+	}
+	for _, route := range gone {
+		if registered[route] {
+			t.Errorf("占位路由 %q 不该存在（已随 models.User / models.DataItem 一起删除）", route)
+		}
+	}
 }
 
 // TestRouterWordsDetailRoutesReachable 给「路由确实生效」补一条真请求的旁证：
 // /api/words/:id 命中处理器后，空库下应返回 404 + JSON（{"code":404,"message":"词条不存在"}），
 // 而不是 gin 默认的纯文本 404 页面。两者状态码相同，只能靠响应体格式区分。
+// DELETE 需要管理员令牌，所以要带着 Cookie 发——否则会先被中间件拦成 401。
 func TestRouterWordsDetailRoutesReachable(t *testing.T) {
 	router := setupRoutesTest(t)
+	admin := signRoutesToken(t, middleware.RoleAdmin)
 
 	cases := []struct {
 		method string
-		path   string
+		token  string
 	}{
-		{method: http.MethodGet, path: "/api/words/1"},
-		{method: http.MethodDelete, path: "/api/words/1"},
+		{method: http.MethodGet, token: ""},
+		{method: http.MethodDelete, token: admin},
 	}
 	for _, tc := range cases {
-		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
-			rec := httptest.NewRecorder()
-			router.ServeHTTP(rec, httptest.NewRequest(tc.method, tc.path, bytes.NewReader(nil)))
+		t.Run(tc.method+" /api/words/1", func(t *testing.T) {
+			rec := doRoutes(router, tc.method, "/api/words/1", nil, tc.token, routesTestOrigin, "")
 			if rec.Code != http.StatusNotFound {
-				t.Fatalf("空库下 %s %s 期望 404，实际 %d，响应体=%s", tc.method, tc.path, rec.Code, rec.Body.String())
+				t.Fatalf("空库下 %s /api/words/1 期望 404，实际 %d，响应体=%s", tc.method, rec.Code, rec.Body.String())
 			}
 			if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
 				t.Fatalf("404 应来自业务处理器（JSON），实际 Content-Type=%q，响应体=%s", ct, rec.Body.String())
@@ -172,5 +237,97 @@ func TestRouterWordOptionsNotEmptyList(t *testing.T) {
 	}
 	if envelope.Data.Books == nil || envelope.Data.Units == nil {
 		t.Fatalf("空库下 books / units 都必须是 []（不能是 null），实际=%s", rec.Body.String())
+	}
+}
+
+// TestRouterReviewsRequireLogin 复习接口（读 + 写）全部要登录：
+// 未登录 401 且响应体带 error=unauthenticated（前端据此跳登录页），带令牌则正常放行。
+func TestRouterReviewsRequireLogin(t *testing.T) {
+	router := setupRoutesTest(t)
+
+	readPaths := []string{
+		"/api/reviews/due",
+		"/api/reviews/new",
+		"/api/reviews/queue",
+		"/api/reviews/probes",
+		"/api/reviews/stats",
+	}
+	for _, path := range readPaths {
+		t.Run("未登录 GET "+path, func(t *testing.T) {
+			rec := doRoutes(router, http.MethodGet, path, nil, "", routesTestOrigin, "")
+			if rec.Code != http.StatusUnauthorized {
+				t.Fatalf("未登录访问 %s 期望 401，实际 %d，响应体=%s", path, rec.Code, rec.Body.String())
+			}
+			assertErrorField(t, rec, "unauthenticated")
+		})
+	}
+
+	t.Run("未登录 POST /api/reviews/submit", func(t *testing.T) {
+		rec := doRoutes(router, http.MethodPost, "/api/reviews/submit", []byte(`{"word_id":1,"rating":3}`),
+			"", routesTestOrigin, "application/json")
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("未登录提交复习期望 401，实际 %d，响应体=%s", rec.Code, rec.Body.String())
+		}
+		assertErrorField(t, rec, "unauthenticated")
+	})
+
+	t.Run("已登录 GET /api/reviews/stats", func(t *testing.T) {
+		rec := doRoutes(router, http.MethodGet, "/api/reviews/stats", nil,
+			signRoutesToken(t, "user"), routesTestOrigin, "")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("已登录访问统计期望 200，实际 %d，响应体=%s", rec.Code, rec.Body.String())
+		}
+	})
+}
+
+// TestRouterWordsWriteRequiresAdmin 词条写接口要管理员：
+// 普通用户 403（error=forbidden，说明「登录了但没权限」）、管理员放行（不返回 401/403）。
+func TestRouterWordsWriteRequiresAdmin(t *testing.T) {
+	router := setupRoutesTest(t)
+	body := []byte(`{"words":[{"word":"admin-probe"}]}`)
+
+	rec := doRoutes(router, http.MethodPost, "/api/words", body,
+		signRoutesToken(t, "user"), routesTestOrigin, "application/json")
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("普通用户写词条期望 403，实际 %d，响应体=%s", rec.Code, rec.Body.String())
+	}
+	assertErrorField(t, rec, "forbidden")
+
+	rec = doRoutes(router, http.MethodPost, "/api/words", body,
+		signRoutesToken(t, middleware.RoleAdmin), routesTestOrigin, "application/json")
+	if rec.Code == http.StatusUnauthorized || rec.Code == http.StatusForbidden {
+		t.Fatalf("管理员写词条不该被拦，实际 %d，响应体=%s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestRouterCSRFBlocksCrossSiteWrite 跨站写请求（Origin 不在白名单）要被 CSRF 闸门挡在业务处理器之前。
+// 用「删词条」这类真实写接口验证，而不是拿一个假路由：要证明闸门确实挂在 /api 上。
+func TestRouterCSRFBlocksCrossSiteWrite(t *testing.T) {
+	router := setupRoutesTest(t)
+	admin := signRoutesToken(t, middleware.RoleAdmin)
+
+	rec := doRoutes(router, http.MethodPost, "/api/reviews/submit", []byte(`{"word_id":1,"rating":3}`),
+		signRoutesToken(t, "user"), "http://evil.example.com", "application/json")
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("外站 Origin 提交复习期望 403，实际 %d，响应体=%s", rec.Code, rec.Body.String())
+	}
+	assertErrorField(t, rec, "forbidden")
+
+	rec = doRoutes(router, http.MethodPost, "/api/words", []byte(`{"words":[{"word":"csrf-probe"}]}`),
+		admin, "http://evil.example.com", "application/json")
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("外站 Origin 写词条期望 403，实际 %d，响应体=%s", rec.Code, rec.Body.String())
+	}
+}
+
+// assertErrorField 断言错误响应体里的 error 字段（前端按它分支：unauthenticated → 去登录）。
+func assertErrorField(t *testing.T, rec *httptest.ResponseRecorder, want string) {
+	t.Helper()
+	var body map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("错误响应不是合法 JSON: %v，原文=%s", err, rec.Body.String())
+	}
+	if body["error"] != want {
+		t.Fatalf("error 字段期望 %q，实际 %v（响应体=%s）", want, body["error"], rec.Body.String())
 	}
 }

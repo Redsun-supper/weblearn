@@ -35,9 +35,9 @@ func Init(dsn string) *gorm.DB {
 		log.Fatalf("打开数据库失败 (%s): %v", dsn, err)
 	}
 
+	// 只迁移本服务真正使用的表。原先还有 &models.User{} / &models.DataItem{}
+	// 两张与账号服务同名不同源的空表，已随占位接口一并删除（见 routes/routes.go 的说明）。
 	if err := db.AutoMigrate(
-		&models.User{},
-		&models.DataItem{},
 		&models.Word{},
 		&models.WordReview{},
 		&models.ReviewLog{},

@@ -5,9 +5,12 @@
 
 ## Go 主后端（`backend-go/`）
 
-- API 前缀 `/api`：`/health`、`/hello`、`/user/*`、`/data/*`。
-- 用户/数据相关 handler 目前多为 TODO 占位（返回固定 JSON）。⚠️ `/api/user/*` 与账号系统无关（真正的账号接口是 Rust 侧的 `/api/auth/me`），且**Go 侧目前没有任何鉴权中间件**，`/api/words` 的写接口是公开的。
-- 环境变量：`SERVER_HOST`（默认 `0.0.0.0`）、`SERVER_PORT`（默认 `8080`）、`APP_ENV`（默认 `development`）、`DB_PATH`（默认 `guangxue.db`，相对进程工作目录）。
+- API 前缀 `/api`：`/health`、`/hello`、`/words`（读公开、写要管理员）、`/word-options`、`/reviews/*`（**全部要登录**）。`/user/*`、`/data/*` 四条占位路由与 `users` / `data_items` 两张表已在阶段 2 删除——它们与 `auth.db` 同名不同源，留着必然被误用；真正的用户信息是 Rust 侧的 `/api/auth/me`。
+- 🔐 **Go 侧鉴权 = 共享密钥本地验签**（阶段 2 实现，`backend-go/middleware/auth.go`）：不查库、不回调 Rust，直接从 Cookie `gx_access` 取令牌，用与账号服务**同一把 `AUTH_JWT_SECRET`** 验 HS256。钉死的三件事必须与 Rust 对齐，否则会静默 401：① 只接受 `HS256`（`jwt.WithValidMethods`，防 `alg=none` / 算法降级）；② 过期容差 60 秒（对应 `backend-rust/src/core/token.rs` 的 `LEEWAY_SECONDS`）；③ 载荷字段名与类型照抄 `AccessClaims`（`sub`/`sid` 是 JSON 数字、`role` 取 `"user"`/`"admin"`）。
+- **两级门槛**：`middleware.RequireUser` 挂 `/api/reviews/*` 整组，`middleware.RequireAdmin` 挂 `/api/words` 的 `POST` / `PUT /:id` / `DELETE /:id`。失败响应与 Rust 逐字对齐：401 `{"code":401,"message":"请先登录","error":"unauthenticated"}`、403 `{"code":403,"message":"没有权限","error":"forbidden"}`——前端按 `error` 字段分支（401 → 去登录）。
+- **CSRF 闸门**（`middleware.CSRFGuard`，挂在 `/api` 整组）：写方法（非 `GET`/`HEAD`/`OPTIONS`）必须带白名单内的 `Origin`；没有 `Origin` 时才退回「`Content-Type` 必须 `application/json`」这条规则（跨站表单发不出 JSON）。白名单取 `AUTH_ALLOWED_ORIGINS`，默认与 Rust 相同：`http://127.0.0.1:8899,http://localhost:8899`。
+- 环境变量：`SERVER_HOST`（默认 `0.0.0.0`）、`SERVER_PORT`（默认 `8080`）、`APP_ENV`（默认 `development`）、`DB_PATH`（默认 `guangxue.db`，相对进程工作目录）、`AUTH_JWT_SECRET`（**无默认值**，空则所有需登录的接口一律 401 并在启动时打印告警）、`AUTH_ALLOWED_ORIGINS`。
+- **Go 自己读 `.env`**（`config.loadEnvFile`，约 30 行的最小 dotenv 子集，零依赖）：查找顺序 `$GX_ENV_FILE` → `./.env` → `./backend-go/.env`，取第一个存在的；**已存在的真实环境变量优先**，文件不覆盖它。模板是 `backend-go/.env.example`，本机真实文件 `backend-go/.env` 与 `backend-rust/.env` 里写**同一把** `AUTH_JWT_SECRET`（两个文件都已 gitignore）。改密钥要两边同时改，改完重启两个服务。
 - 端口与库的分工见 [`overview.md`](overview.md)。
 
 ## Rust 账号系统（`backend-rust/`）

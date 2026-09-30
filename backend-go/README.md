@@ -6,34 +6,49 @@
 > 本地 `dev-server.js` 与线上 Nginx 都按前缀把两者分流，详见
 > [`../backend-rust/README.md`](../backend-rust/README.md)。
 >
-> ⚠️ `/api/user/info`、`/api/user/update` 仍是**占位接口**（返回固定 JSON，不读写数据库），
-> 它们与账号系统无关，已被 `/api/auth/me` 取代；将来要么删除、要么改成校验会话后
-> 返回真实用户。目前**没有任何接口校验登录态**。
+> ⚠️ 本服务**已没有任何占位接口**：`/api/user/*`、`/api/data/*` 四条占位路由与 `users` /
+> `data_items` 两张表已在阶段 2 删除（它们与账号服务的 `auth.db` 同名不同源，留着必然被误用）。
+> 用户信息一律走账号服务的 `/api/auth/me`。
+>
+> 🔐 **鉴权**：Go 侧不查库、也不回调账号服务，而是用与账号服务**共享的 `AUTH_JWT_SECRET`**
+> 对浏览器带来的 `gx_access` Cookie 做本地 HS256 验签（详见下文「鉴权（阶段 2）」一节）。
+> 因此 `/api/reviews/*` 的**全部接口（读 + 写）都要登录**，词条的写接口要管理员，
+> 而 `GET /api/words`、`GET /api/words/:id`、`/api/word-options`、`/api/health`、
+> `/api/hello` 保持公开。
 
 ## 项目结构
 
 ```
 backend-go/
 ├── main.go              ← 程序入口
+├── .env.example         ← 本机环境变量模板（复制成 .env；AUTH_JWT_SECRET 须与账号服务一致）
 ├── go.mod               ← Go模块定义
-── go.sum               ← 依赖校验文件
-├── config/              ← 配置管理
+├── go.sum               ← 依赖校验文件
+├── config/              ← 配置管理（含最小 dotenv 解析：启动时读 .env）
 │   └── config.go
 ├── database/            ← SQLite 连接与自动迁移
 │   └── database.go
+├── middleware/          ← 鉴权与 CSRF 中间件（共享密钥本地验签）
+│   ├── auth.go
+│   └── auth_test.go
 ├── cmd/
+│   ├── backup/          ← 数据库安全快照（SQLite VACUUM INTO，见 ../scripts/backup.ps1）
+│   │   └── main.go
+│   ├── inspect/         ← 只读查看库里的数据（排查用）
+│   │   └── main.go
 │   └── seed/            ← 词表导入命令（JSON → words 表）
 │       └── main.go
 ├── seed/
 │   └── words_english.json  ← 英语种子词表（100 词）
-── routes/              ← 路由定义
+├── routes/              ← 路由定义（中间件在这里挂到分组上）
 │   └── routes.go
 ├── handlers/            ← 请求处理器
 │   ├── handlers.go
-│   └── review_handlers.go  ← 词汇复习（FSRS）处理器
+│   ├── review_handlers.go  ← 词汇复习（FSRS）处理器
+│   └── *_test.go        ← 关键路径测试（见 ../docs/boundaries.md 的测试口径）
 ├── models/              ← 数据模型
 │   └── models.go
-── utils/               ← 工具函数
+└── utils/               ← 工具函数
     └── utils.go
 ```
 
@@ -63,26 +78,35 @@ go build -o server main.go
 
 ## API接口
 
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| GET | /api/health | 健康检查 |
-| GET | /api/hello | 欢迎信息 |
-| GET | /api/user/info | 获取用户信息 |
-| POST | /api/user/update | 更新用户信息 |
-| GET | /api/data/list | 获取数据列表 |
-| POST | /api/data/submit | 提交数据 |
-| GET | /api/words | 词条列表（limit/offset/subject/book/unit/search） |
-| POST | /api/words | 批量添加词条（已存在的跳过） |
-| GET | /api/words/:id | 获取单个词条 |
-| PUT | /api/words/:id | 更新词条内容（全量；改名冲突返回 409） |
-| DELETE | /api/words/:id | 删除词条（连带删除其复习状态与日志） |
-| GET | /api/word-options | 词条中已使用的词书 / 单元列表（后台筛选下拉用） |
-| GET | /api/reviews/due | 到期复习卡列表（limit/now） |
-| GET | /api/reviews/new | 尚未加入复习的新词 |
-| GET | /api/reviews/queue | 复习队列：**所有已学词**按 `due_at` 升序（**含未到期**），分页带 `total` |
-| GET | /api/reviews/probes | 每日抽查候选：已学词按 `due_at` **倒序**（越轮不到复习的越靠前） |
-| POST | /api/reviews/submit | 提交复习结果（FSRS 状态持久化） |
-| GET | /api/reviews/stats | 复习统计 |
+| 方法 | 路径 | 权限 | 说明 |
+|------|------|------|------|
+| GET | /api/health | 公开 | 健康检查 |
+| GET | /api/hello | 公开 | 欢迎信息 |
+| GET | /api/words | 公开 | 词条列表（limit/offset/subject/book/unit/search） |
+| POST | /api/words | **管理员** | 批量添加词条（已存在的跳过） |
+| GET | /api/words/:id | 公开 | 获取单个词条 |
+| PUT | /api/words/:id | **管理员** | 更新词条内容（全量；改名冲突返回 409） |
+| DELETE | /api/words/:id | **管理员** | 删除词条（连带删除其复习状态与日志） |
+| GET | /api/word-options | 公开 | 词条中已使用的词书 / 单元列表（后台筛选下拉用） |
+| GET | /api/reviews/due | **需登录** | 到期复习卡列表（limit/now） |
+| GET | /api/reviews/new | **需登录** | 尚未加入复习的新词 |
+| GET | /api/reviews/queue | **需登录** | 复习队列：**所有已学词**按 `due_at` 升序（**含未到期**），分页带 `total` |
+| GET | /api/reviews/probes | **需登录** | 每日抽查候选：已学词按 `due_at` **倒序**（越轮不到复习的越靠前） |
+| POST | /api/reviews/submit | **需登录** | 提交复习结果（FSRS 状态持久化） |
+| GET | /api/reviews/stats | **需登录** | 复习统计 |
+
+**鉴权失败的口径**（与账号服务逐字一致，前端按 `error` 字段分支，不看 `message`）：
+
+| 情况 | 状态码 | 响应体 |
+|------|--------|--------|
+| 没带 Cookie / 令牌过期 / 签名不对 | 401 | `{"code":401,"message":"请先登录","error":"unauthenticated"}` |
+| 登录了但不是管理员 | 403 | `{"code":403,"message":"没有权限","error":"forbidden"}` |
+| 写请求的 `Origin` 不在白名单 | 403 | 同上（CSRF 闸门在处理器之前拦下） |
+
+⚠️ **写接口（非 GET/HEAD/OPTIONS）都要过 CSRF 闸门**：浏览器发起时 `Origin` 必须在
+`AUTH_ALLOWED_ORIGINS` 里。用 `curl` 手工试接口不带 `Origin`，此时按「非浏览器」处理——
+`Content-Type` 必须是 `application/json`，否则会被 403 挡掉（`-d` 默认发的表单类型就会踩这一条，
+记得加 `-H "Content-Type: application/json"`）。
 
 ### 复习队列接口说明（供学生端调度使用）
 
@@ -204,6 +228,15 @@ curl -X POST http://localhost:8080/api/words -H "Content-Type: application/json"
 | SERVER_PORT | 服务器端口 | 8080 |
 | APP_ENV | 运行环境 | development |
 | DB_PATH | SQLite 数据库文件路径 | guangxue.db |
+| AUTH_JWT_SECRET | 与账号服务（`backend-rust`）**逐字相同**的 JWT 密钥，用于本地验签 `gx_access` | **无默认值** |
+| AUTH_ALLOWED_ORIGINS | CSRF 闸门的 Origin 白名单，逗号分隔 | `http://127.0.0.1:8899,http://localhost:8899` |
+
+⚠️ `AUTH_JWT_SECRET` 为空时**不报错**，但所有 `/api/reviews/*` 与词条写接口都会返回 401，启动日志里有一行 `⚠️ AUTH_JWT_SECRET 未配置` 提醒。
+改密钥要**同时改两份 `.env`（本目录与 `../backend-rust/`）并重启两个服务**，否则一侧签的 Cookie 另一侧不认。
+
+本服务启动时会自己读 `.env`（零依赖实现，见 `config/config.go`），查找顺序：
+`$GX_ENV_FILE` 指定的文件 → `./.env` → `./backend-go/.env`，找到第一个存在的就用；**真实环境变量优先，不会被文件覆盖**。
+模板见 `.env.example`。
 
 ## Nginx反向代理配置
 

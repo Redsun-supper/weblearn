@@ -8,7 +8,7 @@
 - **入口**：`admin/index.html`（本地 `/admin/`）。与学生站**完全独立**：不走 `main.js`、不使用学科页的 localStorage 缓存。
 - **约定**：学科后台放 `modules/<学科>/admin/`，导出 `mount(container, ctx)`（可选 `unmount()`），再到 `admin/admin.js` 的 `SUBJECT_ADMINS` 登记一行；框架用动态 `import()` 按需加载。通用能力通过 `ctx` 注入：`api` / `toast` / `confirm` / `el` / `escapeHtml` / `setTitle`。
 - **登录门禁已接入界面层**：`admin.js` 的 `checkAuth()` 已改为**异步**（调 `GET /api/auth/me`），`role=admin` 才渲染后台，否则只显示 `#adminAuthGate` 里的登录表单；顶栏 `#adminUser` 显示当前账号 + 退出登录。⚠️ 改这块要注意：`DOMContentLoaded` 里必须等 `checkAuth().then(...)` 再 `renderNav/route`。
-- ⚠️ **服务端鉴权仍未补**：Go 侧 `/api/words` 写接口任何人都能直接调（`curl -X PUT /api/words/1` 就能改数据），**在补中间件之前不要把 `/admin/` 或站点部署到公网**（页面上常驻提示条写的就是这件事）。下一期用同一 `AUTH_JWT_SECRET` 验签 + 查 `auth.db` 会话。
+- ✅ **服务端鉴权已补上（阶段 2）**：`/api/words` 的写接口（`POST` / `PUT /:id` / `DELETE /:id`）现在要**管理员**，`/api/reviews/*` 整组要**登录**，写请求还要过 CSRF 闸门（`Origin` 白名单）。做法是用与账号服务共享的 `AUTH_JWT_SECRET` 对 `gx_access` Cookie 做本地 HS256 验签（`backend-go/middleware/auth.go`，不查库、不回调）。前端的 401 处理：`admin.js` 的 `apiFetch` 提示后跳 `../account/?next=...`，`english.js` 提示后跳 `account/?next=...`。（历史口径：这两条曾长期是「任何人都能 `curl` 改数据，补中间件前别上公网」；现在服务端拦得住，但**会话撤销与多用户化仍未做**，公网部署照旧要走 [`roadmap.md`](roadmap.md) 的阶段 3。）
 
 ## 英语后台（`modules/english/admin/english-admin.js`）
 
@@ -17,6 +17,7 @@
 ## 词条接口
 
 `GET/POST /api/words`、`GET/PUT/DELETE /api/words/:id`、`GET /api/word-options`。
+**权限**：读接口（`GET /api/words`、`GET /api/words/:id`、`GET /api/word-options`）公开；写接口（`POST /api/words`、`PUT /api/words/:id`、`DELETE /api/words/:id`）**要管理员**（`role=admin`），不带 Cookie 是 401 `unauthenticated`、普通用户是 403 `forbidden`。
 
 - `PUT` 是全量更新；改名撞车返回 409。
 - `DELETE` **会连带删除该词的 `word_reviews` 与 `review_logs`**（日志留着会让 stats 虚高）。改错别字用 `PUT`，别删了重建。

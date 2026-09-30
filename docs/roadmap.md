@@ -15,7 +15,7 @@
 
 1. **账号服务里几乎没有数据**：`backend-rust/auth.db` 只有 4 KB（WAL 另占 3.7 MB）→ **现在做数据模型改造最便宜**，晚了要写迁移脚本。
 2. **业务侧完全没有身份概念**：`backend-go/routes/routes.go:10-53` 无任何中间件；`WordReview`/`ReviewLog`（`backend-go/models/models.go:134-167`）没有 user 维度；英语页从不问 `/api/auth/me`。
-3. **Go 侧 0 个测试**（`backend-go/` 全目录无 `_test.go`），而 681 行的 `backend-go/handlers/review_handlers.go` 正是改造要动的地方。（✅ **阶段 1 已解决**：补了 5 个测试文件 / 40 项测试，见第 6 节风险 2）
+3. **Go 侧 0 个测试**（`backend-go/` 全目录无 `_test.go`），而 681 行的 `backend-go/handlers/review_handlers.go` 正是改造要动的地方。（✅ **阶段 1 已解决**：补了 5 个测试文件 / 40 项测试；阶段 2 又补了 middleware 与路由回归，共 53 项，见第 6 节风险 2）
 4. **前端分发写死了英语**（`main.js:38` 的 `if (pageName !== ENGLISH_PAGE) return;`）——「框架已支持多学科」只对了一半。
 5. **备份方式不可靠**：现在靠整目录拷贝到 `备份3`/`备份4`，而 `auth.db` 有 3.7 MB 未 checkpoint 的 WAL → **直接拷 `.db` 可能备份出一个空库**。
 
@@ -173,6 +173,16 @@
 - **阶段 1 已完成（2026-09）**
   - `backend-go` 关键路径测试基线落地：`handlers/setup_test.go`（公用装置，内存库 + 生产 models + httptest）+ `review_submit_test.go`（14）+ `review_stats_test.go`（10）+ `review_queue_test.go`（12）+ `routes/routes_test.go`（4）= **40 项**，`go test ./...` 与 `go vet ./...` 全绿。
   - 顺带查出的「宽松口径」已写成**护栏测试**（行为未改）：submit 不校验 `Content-Type`、`json.Decoder` 忽略尾随多余字符、数值字段 `null` → 0；`/api/reviews/queue` 的 `?now=` 只回显、不参与取数；「每日 5 新词 + 5 抽查」配额纯在客户端 localStorage，服务端不记账（阶段 3 一并迁到服务端）。
-- **下一步 = 阶段 2**：服务端鉴权中间件（第 2 节路径 (a)：Go 读同一个 `AUTH_JWT_SECRET` 自验 HS256 + `RequireUser`/`RequireAdmin` 两级门槛 + 删掉 Go 侧 `users`/`data_items` 与 `/api/user/*`、`/api/data/*` 占位接口）。⚠️ 红线 5：中间件补齐前不要把 `/admin/` 或站点挂到公网。
+- **阶段 2 已完成（2026-09）**
+  - 服务端鉴权落地（第 2 节路径 (a)：共享密钥本地验签）：
+    - `backend-go/middleware/auth.go`：Go 读**同一把** `AUTH_JWT_SECRET` 自验 HS256（`jwt.WithValidMethods` 只放 HS256、`WithExpirationRequired`、`WithLeeway(60s)` 与账号服务对齐），两级门槛 `RequireUser` / `RequireAdmin`（`role == "admin"`），外加 `CSRFGuard`（Origin 白名单，无 Origin 时要求 `Content-Type: application/json`）。
+    - `routes.SetupRouter(db, cfg)` 改签名：`/api/reviews/*` 全部要登录、`/api/words` 的写接口要管理员、其余公开。
+    - 删掉 Go 侧 `users` / `data_items` 两张表与 `/api/user/*`、`/api/data/*` 四条占位路由（与账号服务同名不同源，留着必被误用）；`models.User` / `DataItem` 与四个占位处理器一并移除。
+    - 失败口径与账号服务逐字对齐：401 `{"code":401,"message":"请先登录","error":"unauthenticated"}`、403 `{"code":403,"message":"没有权限","error":"forbidden"}`。
+  - 配置：`backend-go/config/config.go` 新增零依赖 dotenv 读取（`$GX_ENV_FILE` → `./.env` → `./backend-go/.env`，真实环境变量优先）＋ `backend-go/.env.example`；本机 `backend-go/.env` 与 `backend-rust/.env` 写入同一把 64 位随机密钥（**改密钥要同时改两份并重启两个服务**）。
+  - 前端最小处理（未动任何动画）：`modules/english/english.js` 的 `fetchText`/`fetchJson`/submit 与 `admin/admin.js` 的 `apiFetch` 遇到 401 → 提示后跳 `account/?next=<当前页>`，403 只报错不跳。
+  - 测试与验证：`backend-go` 从 40 项涨到 **53 项**（handlers 36 + middleware 10 + routes 7，新增鉴权/CSRF/路由回归）；`pwsh scripts/verify.ps1` 6 步全 PASS（5.7 秒）。
+  - **新增 `scripts/verify-auth.ps1`（跨服务联调）**：用临时库起两个真服务（18080/18081，不碰真实库），实跑 13 项检查全 PASS、用时 7.9 秒 —— 账号服务发的 `gx_access` 在 Go 侧 200 通过、匿名 401 `unauthenticated`、普通用户写词条 403 `forbidden`、外站 Origin 403。**这是「共享密钥」这条设计唯一的端到端证据**（两侧单元测试各自 mock 密钥，发现不了不一致）。
+- **下一步 = 阶段 3**：多用户化（第 3 节：词库共享、进度私有 —— `word_reviews` 唯一索引 `WordID` → `(UserID, WordID)`、`review_logs` 加 `user_id`、handlers 全量 `WHERE user_id = ?`、每日配额从 localStorage 迁到服务端）。⚠️ 红线 5 仍未解除：**登录已可用，但会话撤销与多用户隔离没做，`/admin/` 与站点仍不要挂公网**。
 
 **落地后请回来更新本文**：把已完成阶段移到上面的进度记录，把新增风险补进第 6 节。

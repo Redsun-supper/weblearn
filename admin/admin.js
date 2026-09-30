@@ -373,6 +373,10 @@ function createContext(entry) {
 // 请求助手：自动处理 JSON、把后端的 message 变成 Error、非 2xx 直接抛错；
 // 响应不是 JSON（例如 nginx 的 502 页面）时 data 保持 null。
 // 注意：后端约定响应体形如 {code, message, data}，code===200 表示业务成功。
+//
+// 401 = 没登录（后端的 error 字段固定为 unauthenticated），这时留在后台页没有意义：
+// 提示一句并整页跳到登录页，登录后能回到后台。403 = 登录了但不是管理员，
+// 属于权限问题，只抛错不跳转（用 toast 提示即可，跳登录页会让人以为没登录）。
 function apiFetch(path, options) {
     var opts = options || {};
     var init = { method: opts.method || 'GET', headers: {} };
@@ -382,6 +386,12 @@ function apiFetch(path, options) {
     }
 
     return fetch(path, init).then(function (res) {
+        if (res.status === 401) {
+            toast('登录状态已失效，正在前往登录页…', 'error');
+            setTimeout(function () {
+                location.href = '../account/?next=' + encodeURIComponent(location.pathname + location.search);
+            }, 800);
+        }
         return res.text().then(function (text) {
             var data = null;
             try {

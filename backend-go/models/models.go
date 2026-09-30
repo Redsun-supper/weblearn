@@ -8,32 +8,10 @@ import (
 	"time"
 )
 
-// User 用户数据模型（用于数据库操作与 API 响应）
-type User struct {
-	ID       uint   `json:"id" gorm:"primaryKey"`
-	Username string `json:"username" gorm:"uniqueIndex;size:50"`
-	Email    string `json:"email" gorm:"uniqueIndex;size:100"`
-	Password string `json:"-" gorm:"size:255"`
-}
-
-// TableName 指定数据库表名
-func (User) TableName() string {
-	return "users"
-}
-
-// DataItem 数据项模型
-type DataItem struct {
-	ID        uint   `json:"id" gorm:"primaryKey"`
-	Title     string `json:"title" gorm:"size:200"`
-	Content   string `json:"content" gorm:"type:text"`
-	CreatedAt string `json:"created_at"`
-	UpdatedAt string `json:"updated_at"`
-}
-
-// TableName 指定数据库表名
-func (DataItem) TableName() string {
-	return "data_items"
-}
+// 这里原先还有 User / DataItem 两个模型（表 users / data_items）：
+// 它们是早期占位代码留下的空表，与账号服务 auth.db 里的 users 表同名不同源，
+// 留着必被误用，已随 /api/user/*、/api/data/* 占位接口一起删除。
+// 用户与本机会话数据只存在于账号服务，本服务不再自己存一份。
 
 // WordSense 一条释义：一个词性一块（名词一块、动词一块），可以带自己的例句与中文翻译
 type WordSense struct {

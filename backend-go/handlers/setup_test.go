@@ -14,10 +14,19 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
+	"github.com/golang-jwt/jwt/v5"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 
+	"backend-go/middleware"
 	"backend-go/models"
+)
+
+// 本包测试用的固定密钥与来源：与生产同款的 middleware 包吃这两个值。
+// 用固定值而不是随机值，是为了让「签名不对」「角色不对」这类用例一眼能看懂。
+const (
+	testJWTSecret = "test-only-jwt-secret-for-handlers"
+	testOrigin    = "http://127.0.0.1:8899"
 )
 
 // 本文件是 handlers 包测试的公共装置：内存库 + 生产路由 + 造数与请求小工具。
@@ -55,8 +64,6 @@ func setupTestRouter(t *testing.T) (*gin.Engine, *gorm.DB) {
 	// 表结构走生产同一套 AutoMigrate。故意逐表列出而不是 db.AutoMigrate(&models.User{}, ...)，
 	// 是为了让「某张表没建上」在测试里直接暴露，而不是拖到查询时报 no such table。
 	if err := db.AutoMigrate(
-		&models.User{},
-		&models.DataItem{},
 		&models.Word{},
 		&models.WordReview{},
 		&models.ReviewLog{},
@@ -80,32 +87,34 @@ func setupTestRouter(t *testing.T) (*gin.Engine, *gorm.DB) {
 	return router, db
 }
 
-// newTestRouter 只挂生产路由，不挂 gin.Default() 的 Logger 中间件
+// newTestRouter 只挂生产路由与生产中间件，不挂 gin.Default() 的 Logger 中间件
 // （Default 会把每个请求的日志打到 stdout，淹没测试输出）。
 func newTestRouter(t *testing.T, db *gorm.DB) *gin.Engine {
 	t.Helper()
 
-	// 完全复刻 routes.SetupRouter 的路径与处理器绑定。
+	// 完全复刻 routes.SetupRouter 的路径、处理器绑定与中间件（CSRF 闸门 + 登录校验）。
 	// 这里没有直接调用 routes.SetupRouter：它用的是 gin.Default()，会把每个请求的
 	// 访问日志与启动横幅打到测试输出里。因此本文件维护了一份路由表的副本——
-	// 它是**测试专用的有意副本**：路由表变动时这里要同步，否则用例会因为 404 变红，
-	// 从而逼着人把它改回去（比「悄悄测不到」安全）。
+	// 它是**测试专用的有意副本**：路由表或中间件变动时这里要同步，否则用例会因为
+	// 404 / 401 / 403 变红，从而逼着人把它改回去（比「悄悄测不到」安全）。
+	// 反过来，routes 包的测试会调真实的 SetupRouter，两边互为补丁。
 	router := gin.New()
 	router.Use(gin.Recovery())
 
 	api := router.Group("/api")
+	api.Use(middleware.CSRFGuard([]string{testOrigin}))
 	rv := NewReviewHandler(db)
 	api.GET("/health", HealthCheck)
 	api.GET("/hello", Hello)
 	words := api.Group("/words")
 	{
 		words.GET("", rv.ListWords)
-		words.POST("", rv.AddWords)
+		words.POST("", middleware.RequireAdmin(testJWTSecret), rv.AddWords)
 		words.GET("/:id", rv.GetWord)
-		words.PUT("/:id", rv.UpdateWord)
-		words.DELETE("/:id", rv.DeleteWord)
+		words.PUT("/:id", middleware.RequireAdmin(testJWTSecret), rv.UpdateWord)
+		words.DELETE("/:id", middleware.RequireAdmin(testJWTSecret), rv.DeleteWord)
 	}
-	reviews := api.Group("/reviews")
+	reviews := api.Group("/reviews", middleware.RequireUser(testJWTSecret))
 	{
 		reviews.GET("/due", rv.DueReviews)
 		reviews.GET("/new", rv.NewWords)
@@ -181,6 +190,30 @@ func seedLog(t *testing.T, db *gorm.DB, wordID uint, rating uint8, stabilityBefo
 	}
 }
 
+// ---------- 鉴权小工具 ----------
+
+// testAccessToken 签一张用 testJWTSecret 签名的访问令牌，结构与账号服务的 AccessClaims 保持同构
+// （sub/sid 是 JSON 数字、role 取 "user"/"admin"、exp 带一小时有效期、jti 固定便于排查）。
+// 用固定结构而不是随机值，是为了让「签名不对」「角色不对」这类用例一眼能看懂差别在哪。
+func testAccessToken(t *testing.T, role string) string {
+	t.Helper()
+
+	now := time.Now()
+	claims := &middleware.AccessClaims{
+		Sub:  1,
+		Sid:  2,
+		Role: role,
+		Iat:  now.Add(-time.Minute).Unix(),
+		Exp:  now.Add(time.Hour).Unix(),
+		Jti:  "handlers-test",
+	}
+	token, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString([]byte(testJWTSecret))
+	if err != nil {
+		t.Fatalf("签发测试令牌失败: %v", err)
+	}
+	return token
+}
+
 // ---------- 请求与断言小工具 ----------
 
 // doJSON 发一个 JSON 请求（body 为 nil 时无请求体），返回响应。
@@ -190,13 +223,16 @@ type jsonResponse struct {
 	Body   []byte
 }
 
-func doJSON(t *testing.T, router *gin.Engine, method, path string, body []byte) jsonResponse {
-	t.Helper()
-	return doJSONWithHeader(t, router, method, path, body, "application/json")
+// testRequest 描述一次请求的身份与头部；零值 = 匿名且不带 Origin（专门用来测中间件拦截）。
+type testRequest struct {
+	Role        string // 空串表示不带 Cookie（匿名）；否则用该角色签一张令牌
+	Origin      string // 空串表示不带 Origin
+	ContentType string
 }
 
-// doJSONWithHeader 指定 Content-Type；传空串表示不带该头（用于测请求体格式错误的兜底）
-func doJSONWithHeader(t *testing.T, router *gin.Engine, method, path string, body []byte, contentType string) jsonResponse {
+// doRequest 是本文件唯一的发请求实现，其余小工具都是它的薄封装。
+// 走 HTTP 层、走真实路由，因此中间件（CSRF 闸门、登录校验）与处理器都会被真实触发。
+func doRequest(t *testing.T, router *gin.Engine, method, path string, body []byte, opts testRequest) jsonResponse {
 	t.Helper()
 
 	var reader *bytes.Reader
@@ -206,12 +242,62 @@ func doJSONWithHeader(t *testing.T, router *gin.Engine, method, path string, bod
 		reader = bytes.NewReader(body)
 	}
 	req := httptest.NewRequest(method, path, reader)
-	if contentType != "" {
-		req.Header.Set("Content-Type", contentType)
+	if opts.Role != "" {
+		req.AddCookie(&http.Cookie{Name: middleware.AccessCookieName, Value: testAccessToken(t, opts.Role)})
+	}
+	if opts.Origin != "" {
+		req.Header.Set("Origin", opts.Origin)
+	}
+	if opts.ContentType != "" {
+		req.Header.Set("Content-Type", opts.ContentType)
 	}
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 	return jsonResponse{Status: rec.Code, Body: rec.Body.Bytes()}
+}
+
+// doJSON 默认以**管理员**身份、带本站 Origin 发 JSON 请求。
+// 阶段 2 之后复习接口要登录、词条写接口要管理员，默认这一档能让绝大多数用例
+// 专注在业务口径上；需要验证拦截行为时用 doJSONAnonymous / doJSONAs。
+func doJSON(t *testing.T, router *gin.Engine, method, path string, body []byte) jsonResponse {
+	t.Helper()
+	return doRequest(t, router, method, path, body, testRequest{
+		Role:        middleware.RoleAdmin,
+		Origin:      testOrigin,
+		ContentType: "application/json",
+	})
+}
+
+// doJSONAs 以指定角色发 JSON 请求（middleware.RoleAdmin / "user"）。
+// 用来区分「没登录」（401）与「登录了但没权限」（403）两种失败。
+func doJSONAs(t *testing.T, router *gin.Engine, method, path string, body []byte, role string) jsonResponse {
+	t.Helper()
+	return doRequest(t, router, method, path, body, testRequest{
+		Role:        role,
+		Origin:      testOrigin,
+		ContentType: "application/json",
+	})
+}
+
+// doJSONAnonymous 不带 Cookie、但带本站 Origin 的 JSON 请求。
+// 带上 Origin 是为了让请求先过 CSRF 闸门，这样 401 才能确定来自登录校验而不是 CSRF。
+func doJSONAnonymous(t *testing.T, router *gin.Engine, method, path string, body []byte) jsonResponse {
+	t.Helper()
+	return doRequest(t, router, method, path, body, testRequest{
+		Origin:      testOrigin,
+		ContentType: "application/json",
+	})
+}
+
+// doJSONWithHeader 指定 Content-Type；传空串表示不带该头（用于测请求体格式错误的兜底）。
+// 身份仍是管理员 + 本站 Origin，所以这类用例验证的是处理器的宽松口径，而不是中间件。
+func doJSONWithHeader(t *testing.T, router *gin.Engine, method, path string, body []byte, contentType string) jsonResponse {
+	t.Helper()
+	return doRequest(t, router, method, path, body, testRequest{
+		Role:        middleware.RoleAdmin,
+		Origin:      testOrigin,
+		ContentType: contentType,
+	})
 }
 
 // jsonBody 把请求结构体编码成 JSON（编码失败直接判失败，避免悄悄发出空体）

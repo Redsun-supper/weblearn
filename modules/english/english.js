@@ -539,22 +539,42 @@ function loadEngine() {
     });
 }
 
+// 复习接口在阶段 2 之后全部要登录：Cookie 缺失 / 过期时后端统一回 401。
+// 这里做「401 → 去登录页」的最小处理：只跳转并提示一句，不改任何动画。
+// 用一次性的标记位避免并发请求各跳一次（首屏会同时发 4 个请求）。
+var authRedirecting = false;
+function redirectToLogin() {
+    if (authRedirecting) return;
+    authRedirecting = true;
+    setStatus('登录状态已失效，正在前往登录页…');
+    // next 用当前页地址，登录后 account/account.js 的 nextUrl() 会把用户送回来；
+    // 它只接受站内相对路径，所以这里传 pathname + search（不带协议与域名）。
+    var next = location.pathname + location.search;
+    location.href = 'account/?next=' + encodeURIComponent(next);
+}
+
+// 统一的响应检查：401 说明没登录（或登录已过期），引到登录页；其余非 2xx 交给调用方按原逻辑报错。
+function ensureOk(res, url) {
+    if (res.status === 401) {
+        redirectToLogin();
+        throw new Error(url + ' 需要登录：HTTP 401');
+    }
+    if (!res.ok) {
+        throw new Error(url + ' 请求失败：HTTP ' + res.status);
+    }
+    return res;
+}
+
 // 取回响应原文（不做 JSON 解析，交给引擎处理）
 function fetchText(url) {
     return fetch(url).then(function(res) {
-        if (!res.ok) {
-            throw new Error(url + ' 请求失败：HTTP ' + res.status);
-        }
-        return res.text();
+        return ensureOk(res, url).text();
     });
 }
 
 function fetchJson(url) {
     return fetch(url).then(function(res) {
-        if (!res.ok) {
-            throw new Error(url + ' 请求失败：HTTP ' + res.status);
-        }
-        return res.json();
+        return ensureOk(res, url).json();
     });
 }
 
@@ -1168,8 +1188,14 @@ function handleReviewRating(rating) {
         headers: { 'Content-Type': 'application/json' },
         body: payload // 引擎返回的 JSON 即请求体，无需在前端重新拼装
     }).then(function(res) {
+        if (res.status === 401) {
+            // Cookie 在复习中途失效（过期 / 被清掉）：提示并去登录，别无提示地停在原地
+            redirectToLogin();
+            return null;
+        }
         return res.json();
     }).then(function(data) {
+        if (!data) return;
         if (data && data.code === 200) {
             loadReviewStats();
         } else {

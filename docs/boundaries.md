@@ -48,7 +48,8 @@
   链接时的 `corrupt .drectve at end of def file` 是 mingw 的**无害告警**。
 - ✅ **宿主 `cargo test` 现在可以运行**（本文档此前记录的「缺 mingw `as`/MSVC SDK 无法链接」**已不再成立**）。
   ⚠️ **三套测试的数字别混用**（2026-09 复测）：`backend-rust/` = **90 项**（41 单元 + 49 集成），
-  `modules/english/engine/` = **118 项**，`backend-go/` = **40 项**（handlers 36 + routes 4，阶段 1 补的关键路径基线）；
+  `modules/english/engine/` = **118 项**，`backend-go/` = **53 项**（handlers 36 + middleware 10 + routes 7；
+  阶段 1 补关键路径基线，阶段 2 补鉴权 / CSRF / 路由回归）；
   此前文档里那个「118」是**引擎**的，不是账号服务的。
 - 完整验证路径：`pwsh scripts/verify.ps1`（一键跑 Go 构建/vet/测试 + 上面两套测试 + wasm32 目标检查），
   或手工：`cargo test` → `cargo check --target wasm32-unknown-unknown` → `cargo build --target wasm32-unknown-unknown --release`
@@ -56,6 +57,10 @@
 - **数据库备份**：`pwsh scripts/backup.ps1`（→ `backend-go/cmd/backup/main.go`）对 `guangxue.db` 与 `backend-rust/auth.db` 执行 SQLite
   `VACUUM INTO` 快照，产物落在 `backups/<时间戳>/`（已 gitignore），`-Keep N` 只保留最近 N 份（只删输出目录下形如 `20260930-225615` 的子目录）。
   ⚠️ **别用「复制 `.db` 文件」当备份**：实测磁盘上 `auth.db` 只有 4 KB、安全快照是 124 KB —— WAL 里那部分直接拷贝会丢（约 97%）。
+- **跨服务鉴权联调**：`pwsh scripts/verify-auth.ps1` 用**临时库**起两个真服务（默认 18081 账号服务 / 18080 Go，不碰真实库、不影响开发端口），
+  端到端验证「账号服务发 Cookie → Go 本地验签」：匿名 `/api/reviews/stats` → 401 `unauthenticated`、账号服务发的 `gx_access` → 200、
+  普通用户写词条 → 403 `forbidden`、外站 Origin 写请求 → 403（CSRF 闸门）。实测 13 项全 PASS、约 8 秒。
+  ⚠️ **别删这个脚本**：两侧的单元测试各自 mock 自己的密钥，密钥/算法/容差对不上时它们全绿，只有这里能发现。
 - ⚠️ 但 `JsValue` 在非 wasm32 目标上未实现（调用即 `panic: function not implemented on non-wasm32 targets`，
   无法 unwinding 会直接 abort）：**纯计算层不要碰 `JsValue`**，把它留在 wasm 导出方法的边界上。
 
