@@ -27,7 +27,10 @@ backend-go/
 ├── config/              ← 配置管理（含最小 dotenv 解析：启动时读 .env）
 │   └── config.go
 ├── database/            ← SQLite 连接与自动迁移
-│   └── database.go
+│   ├── database.go      ← Open / Migrate / Init（Init 里先做 P0-1 启动自检）
+│   └── user_isolation.go ← P0-1：旧索引检测、旧数据清理、旧索引删除
+├── snapshot/            ← SQLite 安全快照（VACUUM INTO），backup 与 migrate 共用
+│   └── snapshot.go
 ├── middleware/          ← 鉴权与 CSRF 中间件（共享密钥本地验签）
 │   ├── auth.go
 │   └── auth_test.go
@@ -35,6 +38,8 @@ backend-go/
 │   ├── backup/          ← 数据库安全快照（SQLite VACUUM INTO，见 ../scripts/backup.ps1）
 │   │   └── main.go
 │   ├── inspect/         ← 只读查看库里的数据（排查用）
+│   │   └── main.go
+│   ├── migrate/         ← P0-1 迁移：进度按人隔离（默认 dry-run，-apply 先自动快照）
 │   │   └── main.go
 │   └── seed/            ← 词表导入命令（JSON → words 表）
 │       └── main.go
@@ -196,10 +201,28 @@ go run ./cmd/seed -file seed/my_words.json -db guangxue.db
 ## 数据库（SQLite）
 
 - 使用 [GORM](https://gorm.io) + [glebarez/sqlite](https://github.com/glebarez/sqlite)（纯 Go，无需 CGO）。
-- 首次启动自动建表：`words`（词条）、`word_reviews`（每词 FSRS 记忆状态）、`review_logs`（复习日志）。
+- 首次启动自动建表：`words`（词条，**全站共享**）、`word_reviews`（**每个用户对每个词**一行 FSRS 记忆状态）、
+  `review_logs`（复习日志，带 `user_id`）。一句话：**词库共享、进度私有**。
 - `AutoMigrate` 只新增缺失的表与**列**，不动已有数据：给 `words` 加 `example_translation` / `senses` 时，
   老库里的行会被补上 NULL（读出来即「没有翻译 / 没有多释义」），无需手工迁移。
 - 数据文件路径由环境变量 `DB_PATH` 控制，默认 `guangxue.db`。
+
+### 迁移：进度按人隔离（P0-1，2026-10）
+
+P0-1 之前 `word_reviews` 上是 `UNIQUE(word_id)`（**一个单词全站只有一行进度**，第二个用户一复习就会覆盖
+第一个人的）。现在唯一键是 `(user_id, word_id)`。⚠️ **GORM 的 `AutoMigrate` 只补新索引、不删旧索引**，
+所以老库必须跑一次迁移：
+
+```bash
+go run ./cmd/migrate            # 默认 dry-run：只报告要做什么，不改动
+go run ./cmd/migrate -apply     # 执行：先自动快照到 ../backups/<时间戳>/，再迁移
+```
+
+它会清掉 `user_id = 0` 的历史行（P0-1 决策：旧数据不归属给任何人）、删掉旧索引、补上新索引。
+**服务启动时会自检**：如果库还是旧结构，会打印上面这两条命令并**拒绝启动**（避免「跑起来了但第二个用户一复习就炸」）。
+
+> 为什么不做成启动时自动迁移：迁移是你主动执行的、能看到输出，也方便先看 dry-run；
+> 自检负责兜底，别让它变成「忘了跑」的运行时炸弹。
 
 ### 词条示例
 

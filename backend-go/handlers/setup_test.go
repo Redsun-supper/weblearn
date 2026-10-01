@@ -27,6 +27,12 @@ import (
 const (
 	testJWTSecret = "test-only-jwt-secret-for-handlers"
 	testOrigin    = "http://127.0.0.1:8899"
+
+	// testUserID 是装置默认的「当前登录用户」；testOtherUserID 用来验证「各人的进度互不可见」。
+	// 值本身任意（Go 侧只把它当账号服务 auth.db 的 users.id 用），但必须 > 0：0 是 P0-1 迁移前
+	// 历史数据的占位值，middleware.CurrentUserID 会直接把它判成「未登录」。
+	testUserID      = 1
+	testOtherUserID = 2
 )
 
 // 本文件是 handlers 包测试的公共装置：内存库 + 生产路由 + 造数与请求小工具。
@@ -149,10 +155,18 @@ func seedWordWith(t *testing.T, db *gorm.DB, w models.Word) uint {
 }
 
 // seedReview 直接插一条 FSRS 记忆状态（绕过 HTTP，用于构造「已学 / 到期 / 未到期」的初始局面）。
+// 归属 testUserID（装置默认的当前登录用户）；要造别人的进度用 seedReviewFor。
 // dueAt 传 nil 表示 due_at 为空——生产里不会出现（提交时必写），用来测各接口对脏数据的过滤。
 func seedReview(t *testing.T, db *gorm.DB, wordID uint, stability, difficulty float64, dueAt *time.Time, reps, lapses uint) {
 	t.Helper()
+	seedReviewFor(t, db, testUserID, wordID, stability, difficulty, dueAt, reps, lapses)
+}
+
+// seedReviewFor 是指定归属用户的版本：P0-1 之后，同一个词每个用户各有一行进度。
+func seedReviewFor(t *testing.T, db *gorm.DB, userID, wordID uint, stability, difficulty float64, dueAt *time.Time, reps, lapses uint) {
+	t.Helper()
 	row := models.WordReview{
+		UserID:           userID,
 		WordID:           wordID,
 		Stability:        stability,
 		Difficulty:       difficulty,
@@ -165,17 +179,24 @@ func seedReview(t *testing.T, db *gorm.DB, wordID uint, stability, difficulty fl
 		row.LastReviewAt = dueAt
 	}
 	if err := db.Create(&row).Error; err != nil {
-		t.Fatalf("造复习状态 word_id=%d 失败: %v", wordID, err)
+		t.Fatalf("造复习状态 user_id=%d word_id=%d 失败: %v", userID, wordID, err)
 	}
 }
 
-// seedLog 直接插一条复习日志。
+// seedLog 直接插一条复习日志（归属 testUserID；要造别人的日志用 seedLogFor）。
 // reviewedAt 由调用方指定成「今天 / 昨天 / …」的自然日时间点——跨天口径就靠这个构造，
 // 不去 mock 系统时钟：被测代码（ReviewStats）本来就用 time.Now() 算今日零点，
 // 我们只把「历史数据」摆到它该在的位置，这样测的是真实的时间比较逻辑。
 func seedLog(t *testing.T, db *gorm.DB, wordID uint, rating uint8, stabilityBefore, stabilityAfter, intervalDays float64, reviewedAt time.Time, isProbe bool) {
 	t.Helper()
+	seedLogFor(t, db, testUserID, wordID, rating, stabilityBefore, stabilityAfter, intervalDays, reviewedAt, isProbe)
+}
+
+// seedLogFor 是指定归属用户的复习日志。
+func seedLogFor(t *testing.T, db *gorm.DB, userID, wordID uint, rating uint8, stabilityBefore, stabilityAfter, intervalDays float64, reviewedAt time.Time, isProbe bool) {
+	t.Helper()
 	row := models.ReviewLog{
+		UserID:          userID,
 		WordID:          wordID,
 		Rating:          rating,
 		StabilityBefore: stabilityBefore,
@@ -186,22 +207,29 @@ func seedLog(t *testing.T, db *gorm.DB, wordID uint, rating uint8, stabilityBefo
 		IsProbe:         isProbe,
 	}
 	if err := db.Create(&row).Error; err != nil {
-		t.Fatalf("造复习日志 word_id=%d 失败: %v", wordID, err)
+		t.Fatalf("造复习日志 user_id=%d word_id=%d 失败: %v", userID, wordID, err)
 	}
 }
 
 // ---------- 鉴权小工具 ----------
 
-// testAccessToken 签一张用 testJWTSecret 签名的访问令牌，结构与账号服务的 AccessClaims 保持同构
+// testAccessToken 签一张 testUserID 的令牌（绝大多数用例用它）
+func testAccessToken(t *testing.T, role string) string {
+	t.Helper()
+	return testAccessTokenFor(t, testUserID, role)
+}
+
+// testAccessTokenFor 签一张用 testJWTSecret 签名的访问令牌，结构与账号服务的 AccessClaims 保持同构
 // （sub/sid 是 JSON 数字、role 取 "user"/"admin"、exp 带一小时有效期、jti 固定便于排查）。
 // 用固定结构而不是随机值，是为了让「签名不对」「角色不对」这类用例一眼能看懂差别在哪。
-func testAccessToken(t *testing.T, role string) string {
+// userID 就是令牌里的 sub：Go 侧一切「这是谁」的判断都只认它（请求体里没有 user_id 字段）。
+func testAccessTokenFor(t *testing.T, userID int64, role string) string {
 	t.Helper()
 
 	now := time.Now()
 	claims := &middleware.AccessClaims{
-		Sub:  1,
-		Sid:  2,
+		Sub:  userID,
+		Sid:  userID*10 + 1, // 会话 id 与用户绑一下，排查时一眼能对上
 		Role: role,
 		Iat:  now.Add(-time.Minute).Unix(),
 		Exp:  now.Add(time.Hour).Unix(),
@@ -225,6 +253,7 @@ type jsonResponse struct {
 
 // testRequest 描述一次请求的身份与头部；零值 = 匿名且不带 Origin（专门用来测中间件拦截）。
 type testRequest struct {
+	UserID      int64  // 令牌里的 sub（0 = 用 testUserID）；只在 Role 非空时有意义
 	Role        string // 空串表示不带 Cookie（匿名）；否则用该角色签一张令牌
 	Origin      string // 空串表示不带 Origin
 	ContentType string
@@ -243,7 +272,14 @@ func doRequest(t *testing.T, router *gin.Engine, method, path string, body []byt
 	}
 	req := httptest.NewRequest(method, path, reader)
 	if opts.Role != "" {
-		req.AddCookie(&http.Cookie{Name: middleware.AccessCookieName, Value: testAccessToken(t, opts.Role)})
+		uid := opts.UserID
+		if uid == 0 {
+			uid = testUserID
+		}
+		req.AddCookie(&http.Cookie{
+			Name:  middleware.AccessCookieName,
+			Value: testAccessTokenFor(t, uid, opts.Role),
+		})
 	}
 	if opts.Origin != "" {
 		req.Header.Set("Origin", opts.Origin)
@@ -284,6 +320,18 @@ func doJSONAs(t *testing.T, router *gin.Engine, method, path string, body []byte
 func doJSONAnonymous(t *testing.T, router *gin.Engine, method, path string, body []byte) jsonResponse {
 	t.Helper()
 	return doRequest(t, router, method, path, body, testRequest{
+		Origin:      testOrigin,
+		ContentType: "application/json",
+	})
+}
+
+// doJSONAsUser 以指定用户（令牌里的 sub）+ 指定角色发 JSON 请求。
+// 「进度按人隔离」的用例靠它：同一个词、同一个接口，只换 sub，就该看到另一份数据。
+func doJSONAsUser(t *testing.T, router *gin.Engine, method, path string, body []byte, userID int64, role string) jsonResponse {
+	t.Helper()
+	return doRequest(t, router, method, path, body, testRequest{
+		UserID:      userID,
+		Role:        role,
 		Origin:      testOrigin,
 		ContentType: "application/json",
 	})
@@ -535,6 +583,37 @@ func countRows(t *testing.T, db *gorm.DB, model interface{}) int64 {
 	var n int64
 	if err := db.Model(model).Count(&n).Error; err != nil {
 		t.Fatalf("统计行数失败: %v", err)
+	}
+	return n
+}
+
+// reviewRowOfUser 按 (user_id, word_id) 取记忆状态行。
+// P0-1 之后同一个词每个用户各有一行，所以核对落库必须带上用户，不能用只按 word_id 的版本。
+func reviewRowOfUser(t *testing.T, db *gorm.DB, userID, wordID uint) models.WordReview {
+	t.Helper()
+	var row models.WordReview
+	if err := db.Where("user_id = ? AND word_id = ?", userID, wordID).First(&row).Error; err != nil {
+		t.Fatalf("读取 user_id=%d word_id=%d 的记忆状态失败: %v", userID, wordID, err)
+	}
+	return row
+}
+
+// logsOfUser 按 (user_id, word_id) 取复习日志（按 id 升序，即提交先后顺序）
+func logsOfUser(t *testing.T, db *gorm.DB, userID, wordID uint) []models.ReviewLog {
+	t.Helper()
+	var rows []models.ReviewLog
+	if err := db.Where("user_id = ? AND word_id = ?", userID, wordID).Order("id ASC").Find(&rows).Error; err != nil {
+		t.Fatalf("读取 user_id=%d word_id=%d 的复习日志失败: %v", userID, wordID, err)
+	}
+	return rows
+}
+
+// countReviewsOfUser 统计某个用户在 word_reviews 里的行数（核对「各人各一行」）
+func countReviewsOfUser(t *testing.T, db *gorm.DB, userID uint) int64 {
+	t.Helper()
+	var n int64
+	if err := db.Model(&models.WordReview{}).Where("user_id = ?", userID).Count(&n).Error; err != nil {
+		t.Fatalf("统计 user_id=%d 的进度行数失败: %v", userID, err)
 	}
 	return n
 }

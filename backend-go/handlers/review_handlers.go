@@ -11,6 +11,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
+	"backend-go/middleware"
 	"backend-go/models"
 )
 
@@ -22,6 +23,21 @@ type ReviewHandler struct {
 // NewReviewHandler 创建处理器实例
 func NewReviewHandler(db *gorm.DB) *ReviewHandler {
 	return &ReviewHandler{db: db}
+}
+
+// currentUser 取本次请求的用户 id；取不到就按未登录回 401 并返回 false。
+//
+// 正常路径上 RequireUser 中间件已经拦掉未登录请求，这里是**兜底**：
+// 万一以后有人把某个复习接口挂到没鉴权的路由组上，宁可 401，也不能让 user_id = 0
+// 的记录进库——那种行对任何用户都不可见，等于静默丢数据（词库共享、进度私有，
+// 没有「公共进度」这种东西，见 models.WordReview 的注释）。
+func currentUser(c *gin.Context) (uint, bool) {
+	id, ok := middleware.CurrentUserID(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"code": 401, "message": "请先登录", "error": "unauthenticated"})
+		return 0, false
+	}
+	return id, true
 }
 
 // ---------- 请求/响应结构 ----------
@@ -62,7 +78,7 @@ type addWordsRequest struct {
 // stability / difficulty / interval_days 都是引擎算好的新状态，后端只负责落库，不重算。
 type submitReviewRequest struct {
 	WordID        uint    `json:"word_id"`
-	Rating        uint8   `json:"rating"`        // 1=Again 2=Hard 3=Good 4=Easy
+	Rating        uint8   `json:"rating"` // 1=Again 2=Hard 3=Good 4=Easy
 	Stability     float64 `json:"stability"`
 	Difficulty    float64 `json:"difficulty"`
 	IntervalDays  float64 `json:"interval_days"` // 引擎算出的下次间隔（天）
@@ -303,6 +319,9 @@ func (h *ReviewHandler) DeleteWord(c *gin.Context) {
 		return
 	}
 
+	// ⚠️ 删词条是**跨用户**操作：词条本身是共享的，删掉它就等于删掉所有人对这个词的进度。
+	// 计数与删除都故意不按 user_id 过滤（后台要看到「这一下删了多少人的多少条记录」）。
+	// 「软删除 / 只下架内容、保留进度」的方案本期不考虑（见 docs/launch-plan.md 的 P0-1 决策表）。
 	var reviewCount int64
 	h.db.Model(&models.WordReview{}).Where("word_id = ?", id).Count(&reviewCount)
 	var logCount int64
@@ -415,12 +434,18 @@ func (h *ReviewHandler) DueReviews(c *gin.Context) {
 	if limit <= 0 || limit > 200 {
 		limit = 20
 	}
+	userID, ok := currentUser(c)
+	if !ok {
+		return
+	}
+
 	now := time.Now()
 	if nowMs, err := strconv.ParseInt(c.Query("now"), 10, 64); err == nil && nowMs > 0 {
 		now = time.UnixMilli(nowMs)
 	}
 
 	var cards []dueCard
+	// ⚠️ 必须按 user_id 过滤：词库共享，但每个人的到期时间各不相同
 	err := h.db.Model(&models.Word{}).
 		Select(`
 			words.id AS word_id, words.word, words.phonetic, words.meaning, words.example,
@@ -429,6 +454,7 @@ func (h *ReviewHandler) DueReviews(c *gin.Context) {
 			word_reviews.last_review_at, word_reviews.reps
 		`).
 		Joins("JOIN word_reviews ON word_reviews.word_id = words.id").
+		Where("word_reviews.user_id = ?", userID).
 		Where("word_reviews.due_at IS NOT NULL AND word_reviews.due_at <= ?", now).
 		Order("word_reviews.due_at ASC").
 		Limit(limit).
@@ -446,14 +472,22 @@ func (h *ReviewHandler) DueReviews(c *gin.Context) {
 // NewWords 获取尚未加入复习的新单词（供前端随机器随机抽取今日新词）
 // GET /api/reviews/new?limit=20
 func (h *ReviewHandler) NewWords(c *gin.Context) {
+	userID, ok := currentUser(c)
+	if !ok {
+		return
+	}
+
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
 	if limit <= 0 || limit > 200 {
 		limit = 20
 	}
 
 	var words []models.Word
+	// ⚠️ user_id 必须写在 **join 条件里**，不能写成 WHERE：
+	// LEFT JOIN 之后，当前用户没学过的词那一侧全是 NULL；把 user_id 放进 WHERE 会把这些 NULL 行
+	// 直接过滤掉，`word_reviews.id IS NULL` 就永远不成立——新词列表会直接变空。
 	err := h.db.Model(&models.Word{}).
-		Joins("LEFT JOIN word_reviews ON word_reviews.word_id = words.id").
+		Joins("LEFT JOIN word_reviews ON word_reviews.word_id = words.id AND word_reviews.user_id = ?", userID).
 		Where("word_reviews.id IS NULL").
 		Order("words.id ASC").
 		Limit(limit).
@@ -465,11 +499,11 @@ func (h *ReviewHandler) NewWords(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"code": 200, "message": "获取成功", "data": gin.H{"items": words}})
 }
 
-// learnedQuery 构造「已学词 + 记忆状态」的查询，供复习队列与抽查候选共用。
+// learnedQuery 构造「当前用户已学词 + 记忆状态」的查询，供复习队列与抽查候选共用。
 //
-// 只取已经加入复习的词（有 word_reviews 行，due_at 非空），字段与到期卡一致
+// 只取当前用户已经加入复习的词（有该用户的 word_reviews 行、due_at 非空），字段与到期卡一致
 // （复用 dueCard 结构，客户端引擎的解析代码不用改）。
-func (h *ReviewHandler) learnedQuery(order string) *gorm.DB {
+func (h *ReviewHandler) learnedQuery(userID uint, order string) *gorm.DB {
 	return h.db.Model(&models.Word{}).
 		Select(`
 			words.id AS word_id, words.word, words.phonetic, words.meaning, words.example,
@@ -478,6 +512,7 @@ func (h *ReviewHandler) learnedQuery(order string) *gorm.DB {
 			word_reviews.last_review_at, word_reviews.reps
 		`).
 		Joins("JOIN word_reviews ON word_reviews.word_id = words.id").
+		Where("word_reviews.user_id = ?", userID).
 		Where("word_reviews.due_at IS NOT NULL").
 		Order(order)
 }
@@ -491,6 +526,11 @@ func (h *ReviewHandler) learnedQuery(order string) *gorm.DB {
 //
 // 分页：`total` 是已学词总数，客户端翻到底就说明整库过了一遍。
 func (h *ReviewHandler) QueueReviews(c *gin.Context) {
+	userID, ok := currentUser(c)
+	if !ok {
+		return
+	}
+
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "100"))
 	if limit <= 0 || limit > 500 {
 		limit = 100
@@ -506,13 +546,16 @@ func (h *ReviewHandler) QueueReviews(c *gin.Context) {
 	}
 
 	var total int64
-	if err := h.db.Model(&models.WordReview{}).Where("due_at IS NOT NULL").Count(&total).Error; err != nil {
+	// 总数必须与下面的分页结果同一口径（都只统计当前用户），否则前端按 total 翻页会算错
+	if err := h.db.Model(&models.WordReview{}).
+		Where("user_id = ? AND due_at IS NOT NULL", userID).
+		Count(&total).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "统计失败:" + err.Error()})
 		return
 	}
 
 	var cards []dueCard
-	if err := h.learnedQuery("word_reviews.due_at ASC").Limit(limit).Offset(offset).Scan(&cards).Error; err != nil {
+	if err := h.learnedQuery(userID, "word_reviews.due_at ASC").Limit(limit).Offset(offset).Scan(&cards).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "查询失败:" + err.Error()})
 		return
 	}
@@ -533,13 +576,18 @@ func (h *ReviewHandler) QueueReviews(c *gin.Context) {
 // 而间隔已经拉到几十天的词永远不出现」。
 // 多给候选的原因：客户端还会按 localStorage 里的「最近抽查过的词」过滤，多取几条让它有得挑。
 func (h *ReviewHandler) ProbeCandidates(c *gin.Context) {
+	userID, ok := currentUser(c)
+	if !ok {
+		return
+	}
+
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
 	if limit <= 0 || limit > 200 {
 		limit = 20
 	}
 
 	var cards []dueCard
-	if err := h.learnedQuery("word_reviews.due_at DESC").Limit(limit).Scan(&cards).Error; err != nil {
+	if err := h.learnedQuery(userID, "word_reviews.due_at DESC").Limit(limit).Scan(&cards).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "查询失败:" + err.Error()})
 		return
 	}
@@ -552,6 +600,11 @@ func (h *ReviewHandler) ProbeCandidates(c *gin.Context) {
 // 请求体：{ word_id, rating(1-4), stability, difficulty, interval_days, desired_retention? }
 // 逻辑：更新/创建 word_reviews（due_at = now + max(interval_days*86400, 600) 秒），并记一条 review_logs
 func (h *ReviewHandler) SubmitReview(c *gin.Context) {
+	userID, ok := currentUser(c)
+	if !ok {
+		return
+	}
+
 	var req submitReviewRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "请求体格式错误: " + err.Error()})
@@ -592,7 +645,8 @@ func (h *ReviewHandler) SubmitReview(c *gin.Context) {
 	}
 
 	var review models.WordReview
-	err := h.db.Where("word_id = ?", req.WordID).First(&review).Error
+	// ⚠️ 只找**当前用户**对这一行的进度：词库共享，同一个人一行
+	err := h.db.Where("user_id = ? AND word_id = ?", userID, req.WordID).First(&review).Error
 	isNew := errors.Is(err, gorm.ErrRecordNotFound)
 	if err != nil && !isNew {
 		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "查询失败:" + err.Error()})
@@ -603,7 +657,7 @@ func (h *ReviewHandler) SubmitReview(c *gin.Context) {
 	// 否则抽查卡（引擎按新卡重算）会被 stats 统计成「今日新学」
 	stabilityBefore := review.Stability
 	if isNew {
-		review = models.WordReview{WordID: req.WordID}
+		review = models.WordReview{UserID: userID, WordID: req.WordID}
 	}
 
 	review.Stability = req.Stability
@@ -627,6 +681,7 @@ func (h *ReviewHandler) SubmitReview(c *gin.Context) {
 			return saveErr
 		}
 		log := models.ReviewLog{
+			UserID:          userID,
 			WordID:          req.WordID,
 			Rating:          req.Rating,
 			StabilityBefore: stabilityBefore,
@@ -654,50 +709,57 @@ func (h *ReviewHandler) SubmitReview(c *gin.Context) {
 // GET /api/reviews/stats
 // 返回：词库总览（总词数/未学/到期/已学）+ 今日进度（今日已复习）+ 习惯指标（连续天数、记忆保持率）
 func (h *ReviewHandler) ReviewStats(c *gin.Context) {
+	userID, ok := currentUser(c)
+	if !ok {
+		return
+	}
+
 	now := time.Now()
 	// 今日零点（服务器本地时区），用于统计「今日已复习」
 	startOfToday := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 
+	// 词库共享：总词数看全库；「还没学的词」要扣掉**当前用户**已经学过的那部分
 	var totalWords int64
 	h.db.Model(&models.Word{}).Count(&totalWords)
 
 	var newWords int64
 	h.db.Model(&models.Word{}).
-		Joins("LEFT JOIN word_reviews ON word_reviews.word_id = words.id").
+		Joins("LEFT JOIN word_reviews ON word_reviews.word_id = words.id AND word_reviews.user_id = ?", userID).
 		Where("word_reviews.id IS NULL").
 		Count(&newWords)
 
+	// 以下每一项都是**个人**数据（到期数、已学词数、今日进度、连续天数、保持率），全部按 user_id 收口
 	var dueCount int64
 	h.db.Model(&models.WordReview{}).
-		Where("due_at IS NOT NULL AND due_at <= ?", now).
+		Where("user_id = ? AND due_at IS NOT NULL AND due_at <= ?", userID, now).
 		Count(&dueCount)
 
 	var reviewedCount int64
-	h.db.Model(&models.WordReview{}).Count(&reviewedCount)
+	h.db.Model(&models.WordReview{}).Where("user_id = ?", userID).Count(&reviewedCount)
 
 	// ---- 复习日志统计（今日进度 / 连续天数 / 记忆保持率）----
 	var totalReviews int64
-	h.db.Model(&models.ReviewLog{}).Count(&totalReviews)
+	h.db.Model(&models.ReviewLog{}).Where("user_id = ?", userID).Count(&totalReviews)
 
 	var todayReviewed int64
 	h.db.Model(&models.ReviewLog{}).
-		Where("reviewed_at >= ?", startOfToday).
+		Where("user_id = ? AND reviewed_at >= ?", userID, startOfToday).
 		Count(&todayReviewed)
 
 	// 今日新学 / 今日复习：首次复习的日志里 stability_before 为 0（当时还是新卡），
 	// 之后的复习都带上前一次的稳定度。据此把今日的复习拆成两类，供界面顶部展示。
 	var todayNew int64
 	h.db.Model(&models.ReviewLog{}).
-		Where("reviewed_at >= ? AND stability_before = 0", startOfToday).
+		Where("user_id = ? AND reviewed_at >= ? AND stability_before = 0", userID, startOfToday).
 		Count(&todayNew)
 
 	var todayReview int64
 	h.db.Model(&models.ReviewLog{}).
-		Where("reviewed_at >= ? AND stability_before > 0", startOfToday).
+		Where("user_id = ? AND reviewed_at >= ? AND stability_before > 0", userID, startOfToday).
 		Count(&todayReview)
 
 	var againTotal int64
-	h.db.Model(&models.ReviewLog{}).Where("rating = ?", 1).Count(&againTotal)
+	h.db.Model(&models.ReviewLog{}).Where("user_id = ? AND rating = ?", userID, 1).Count(&againTotal)
 
 	// 记忆保持率 = 非「忘记」评分所占比例（0~1，保留三位小数）
 	retentionRate := 0.0
@@ -714,20 +776,20 @@ func (h *ReviewHandler) ReviewStats(c *gin.Context) {
 		"today_reviewed": todayReviewed,
 		"today_new":      todayNew,
 		"today_review":   todayReview,
-		"streak_days":    h.calcStreakDays(startOfToday),
+		"streak_days":    h.calcStreakDays(userID, startOfToday),
 		"retention_rate": retentionRate,
 	}})
 }
 
-// calcStreakDays 计算连续复习天数
+// calcStreakDays 计算**某个用户**的连续复习天数
 // 说明：以「本地自然日」为单位向前累计连续有复习记录的天数；
 // 若今天还没有复习记录，则从昨天起算（这样当天刚开始时不会立刻显示断签）。
 // 为避免依赖 SQLite 的日期函数与时区差异，这里只取回原始时间点，在 Go 侧换算自然日。
-func (h *ReviewHandler) calcStreakDays(startOfToday time.Time) int {
+func (h *ReviewHandler) calcStreakDays(userID uint, startOfToday time.Time) int {
 	// 最多回溯 400 天，足够覆盖任意真实连续记录
 	var reviewedAt []time.Time
 	if err := h.db.Model(&models.ReviewLog{}).
-		Where("reviewed_at >= ?", startOfToday.AddDate(0, 0, -400)).
+		Where("user_id = ? AND reviewed_at >= ?", userID, startOfToday.AddDate(0, 0, -400)).
 		Pluck("reviewed_at", &reviewedAt).Error; err != nil {
 		return 0
 	}

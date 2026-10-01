@@ -69,12 +69,14 @@ func main() {
 
 	fmt.Println("\n===== 记忆状态 word_reviews =====")
 	var reviews []models.WordReview
-	db.Model(&models.WordReview{}).Order("word_id ASC").Find(&reviews)
+	// 进度是「按人一行」的（P0-1）：同一个词会有多行，所以先按 user_id 再按 word_id 排，
+	// 打印时也带上 user_id，否则排查「某个用户为什么没有进度」时看不出是谁的行。
+	db.Model(&models.WordReview{}).Order("user_id ASC, word_id ASC").Find(&reviews)
 	for _, r := range reviews {
 		var w models.Word
 		db.First(&w, r.WordID)
-		fmt.Printf("  word=%q stability=%.4f difficulty=%.4f reps=%d lapses=%d due_at=%v\n",
-			w.Word, r.Stability, r.Difficulty, r.Reps, r.Lapses, r.DueAt)
+		fmt.Printf("  user_id=%d word=%q stability=%.4f difficulty=%.4f reps=%d lapses=%d due_at=%v\n",
+			r.UserID, w.Word, r.Stability, r.Difficulty, r.Reps, r.Lapses, r.DueAt)
 	}
 
 	fmt.Println("\n===== 复习日志 review_logs =====")
@@ -85,8 +87,8 @@ func main() {
 		if l.IsProbe {
 			flag = "  [抽查]"
 		}
-		fmt.Printf("  word_id=%d rating=%d %.4f→%.4f interval=%.4f天 at=%s%s\n",
-			l.WordID, l.Rating, l.StabilityBefore, l.StabilityAfter, l.IntervalDays,
+		fmt.Printf("  user_id=%d word_id=%d rating=%d %.4f→%.4f interval=%.4f天 at=%s%s\n",
+			l.UserID, l.WordID, l.Rating, l.StabilityBefore, l.StabilityAfter, l.IntervalDays,
 			l.ReviewedAt.Format("2006-01-02 15:04:05"), flag)
 	}
 }

@@ -47,9 +47,9 @@
   所以 `backend-rust/` 用 `rusqlite` 的 `bundled` 特性（现场编译 sqlite3.c）可以正常 `cargo test` / `cargo build --release`。
   链接时的 `corrupt .drectve at end of def file` 是 mingw 的**无害告警**。
 - ✅ **宿主 `cargo test` 现在可以运行**（本文档此前记录的「缺 mingw `as`/MSVC SDK 无法链接」**已不再成立**）。
-  ⚠️ **三套测试的数字别混用**（2026-09 复测）：`backend-rust/` = **90 项**（41 单元 + 49 集成），
-  `modules/english/engine/` = **118 项**，`backend-go/` = **53 项**（handlers 36 + middleware 10 + routes 7；
-  阶段 1 补关键路径基线，阶段 2 补鉴权 / CSRF / 路由回归）；
+  ⚠️ **三套测试的数字别混用**（2026-10 复测）：`backend-rust/` = **90 项**（41 单元 + 49 集成），
+  `modules/english/engine/` = **118 项**，`backend-go/` = **61 项**（handlers 43 + middleware 10 + routes 7 + database 1；
+  阶段 1 补关键路径基线，阶段 2 补鉴权 / CSRF / 路由回归，P0-1 补进度按人隔离与迁移回归）；
   此前文档里那个「118」是**引擎**的，不是账号服务的。
 - 完整验证路径：`pwsh scripts/verify.ps1`（一键跑 Go 构建/vet/测试 + 上面两套测试 + wasm32 目标检查），
   或手工：`cargo test` → `cargo check --target wasm32-unknown-unknown` → `cargo build --target wasm32-unknown-unknown --release`
@@ -59,15 +59,22 @@
   ⚠️ **别用「复制 `.db` 文件」当备份**：实测磁盘上 `auth.db` 只有 4 KB、安全快照是 124 KB —— WAL 里那部分直接拷贝会丢（约 97%）。
 - **跨服务鉴权联调**：`pwsh scripts/verify-auth.ps1` 用**临时库**起两个真服务（默认 18081 账号服务 / 18080 Go，不碰真实库、不影响开发端口），
   端到端验证「账号服务发 Cookie → Go 本地验签」：匿名 `/api/reviews/stats` → 401 `unauthenticated`、账号服务发的 `gx_access` → 200、
-  普通用户写词条 → 403 `forbidden`、外站 Origin 写请求 → 403（CSRF 闸门）。实测 13 项全 PASS、约 8 秒。
+  普通用户写词条 → 403 `forbidden`、外站 Origin 写请求 → 403（CSRF 闸门），以及 **P0-1 的进度隔离**
+  （管理员与普通用户复习同一个词后，各自统计里都只有自己那 1 条）。实测 18 项全 PASS、约 6 秒。
   ⚠️ **别删这个脚本**：两侧的单元测试各自 mock 自己的密钥，密钥/算法/容差对不上时它们全绿，只有这里能发现。
+- **P0-1 迁移**：`go run ./cmd/migrate`（默认 dry-run，只报告不改）→ `go run ./cmd/migrate -apply`（**先自动快照**再改）。
+  它删掉旧的 `UNIQUE(word_id)` 索引、清掉 `user_id = 0` 的历史行、补上 `(user_id, word_id)` 唯一索引；
+  服务启动时会自检，旧结构会**拒绝启动**并提示这条命令。为什么必须显式做：**GORM 的 AutoMigrate 只补新索引、不删旧索引**
+  （见 [`launch-plan.md`](launch-plan.md) 的 P0-1）。
 - ⚠️ 但 `JsValue` 在非 wasm32 目标上未实现（调用即 `panic: function not implemented on non-wasm32 targets`，
   无法 unwinding 会直接 abort）：**纯计算层不要碰 `JsValue`**，把它留在 wasm 导出方法的边界上。
 
-## 7. `word_reviews` 行是懒创建
+## 7. `word_reviews` 行是懒创建，且**按人一行**
 
-单词由 `POST /api/words` 写入 `words` 表；首次提交复习时才创建对应 `word_reviews` 行。
-`/api/reviews/new` = 无复习行的词。
+单词由 `POST /api/words` 写入 `words` 表；某个用户首次提交复习时才为**他**创建 `word_reviews` 行。
+`/api/reviews/new` = 当前用户**没有复习行**的词（别人学过不算）。
+唯一键是 `(user_id, word_id)`；`user_id` 只来自 `gx_access` 令牌的 `sub`，**请求体里没有这个字段**
+（前端无法替别人写进度）。P0-1 之前那些 `user_id = 0` 的历史行不对任何用户可见，迁移时会被清掉。
 
 ## 相关文档
 

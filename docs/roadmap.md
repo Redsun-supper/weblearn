@@ -81,9 +81,9 @@
 **核心判断：词库共享，进度私有。**
 
 - `words` 表**保持全局**（admin 维护）→ 内容产能压力不变，不用给每个人导词。
-- `word_reviews` 加 `user_id`，唯一索引从 `WordID` 改为 `(UserID, WordID)`（现为 `models/models.go:136` 的 `uniqueIndex`）。这是**语义变更**：从「这张卡在全站的状态」→「我的卡的状态」。
-- `review_logs` 加 `user_id`（便于按人统计 / 导出 / 将来的参数优化）。
-- handlers 全量加 `WHERE user_id = ?`：`queue` / `new` / `probes` / `due` / `submit` / `stats`（`backend-go/handlers/review_handlers.go`）。
+- ✅ **已完成（P0-1，2026-10）** `word_reviews` 加 `user_id`，唯一索引从 `WordID` 改为 `(UserID, WordID)`。这是**语义变更**：从「这张卡在全站的状态」→「我的卡的状态」。
+- ✅ **已完成（P0-1）** `review_logs` 加 `user_id`（便于按人统计 / 导出 / 将来的参数优化）。
+- ✅ **已完成（P0-1）** handlers 全量加 `WHERE user_id = ?`：`queue` / `new` / `probes` / `due` / `submit` / `stats`（`backend-go/handlers/review_handlers.go`）。
 - **每日配额从 localStorage 迁到服务端**，而且**不需要新建表**：
   - 今日新学 = 该用户当天 `stability_before = 0` 的日志数（现口径 `review_handlers.go:690-692`）；
   - 今日抽查 = 当天 `is_probe = 1` 的日志数。
@@ -130,7 +130,7 @@
    实测佐证：磁盘上 `auth.db` **4096 B** → 安全快照 **126976 B**（差约 97%）。
 2. **Go 零测试 — ✅ 阶段 1 已解决**
    原先 `backend-go/` 无任何 `_test.go`，而 `review_handlers.go`（681 行）承载全部复习调度与落库，多用户化要改它 → 先补测试。现已补 **40 项测试 / 5 个文件**（handlers 36 + routes 4，`go test ./...` 约 6 秒）：submit 的到期计算与落库、`stats` 今日口径（`today_new` = 当天 `stability_before = 0` 的日志数）、队列取数（new/due/queue/probes 的过滤与 limit/offset 边界）、`SetupRouter` 真实路由表（18 条 method+path）。
-   做法：内存 SQLite（`mode=memory&cache=shared`）+ 生产同款 `AutoMigrate` + `httptest` 走 HTTP 层；**未改任何生产代码**、不 mock 时钟（跨天靠构造历史数据）。⚠️ `user` 维度的过滤测试留到阶段 3（那时才有 `user_id`）。
+   做法：内存 SQLite（`mode=memory&cache=shared`）+ 生产同款 `AutoMigrate` + `httptest` 走 HTTP 层；**未改任何生产代码**、不 mock 时钟（跨天靠构造历史数据）。✅ `user` 维度的过滤测试已在 P0-1 补上（`handlers/review_isolation_test.go`，7 项：两用户同词各行、stats / new / due / queue / probes 互不可见、删词条清所有人、旧索引必须不存在）。
 3. **无一键验证 — ✅ 阶段 0 已解决**
    原来没有 Makefile / npm scripts / CI；`scripts/` 只有 `clean-build-cache.ps1`（87 行，带白名单安全闸）；`backend-rust/scripts/smoke.ps1`（225 行 / 24 项）只管账号服务。
    已加 `scripts/verify.ps1`：Go 构建/vet/测试 + 账号服务 `cargo test` + 引擎 `cargo test` + `cargo check --target wasm32-unknown-unknown`，一条命令出 PASS/FAIL 表（实测 6 步全绿、45.3 秒），加 `-IncludeSmoke` 可带上账号服务 smoke。
@@ -186,6 +186,8 @@
 - **上线计划单独成文（2026-10，见 [`launch-plan.md`](launch-plan.md)）**：用户确定「最近要上线、只上英语模块、暂时邀请制」，于是把「上线」拆成一份可执行的计划：P0 五件事 = 进度按人隔离 / 强制邀请码 / 真发邮件 / 公网部署 / 三级角色；管理面板（邀请码、用户、审计、看板）排 P1。
   - 对本文的影响：**第 3 节的「进度按人隔离」被提为上线前置**（计划里的 P0-1），其余（每日配额服务端化）仍在计划内但排后（P2）。
   - 顺带查清两条上线必改项：`backend-rust/src/service.rs:367` **带邀请码注册会直接变管理员**（要改成按码的等级赋值）；Rust 侧 SMTP 发信**已经实现**，只差 `AUTH_MAIL_MODE=smtp` 与 `AUTH_SMTP_*` 配置。
-- **下一步 = 阶段 3**：多用户化（第 3 节：词库共享、进度私有 —— `word_reviews` 唯一索引 `WordID` → `(UserID, WordID)`、`review_logs` 加 `user_id`、handlers 全量 `WHERE user_id = ?`、每日配额从 localStorage 迁到服务端）。⚠️ 红线 5 仍未解除：**登录已可用，但会话撤销与多用户隔离没做，`/admin/` 与站点仍不要挂公网**。（其中「进度按人隔离」已在上线计划里升为 P0-1，见上一条。）
+- **阶段 3 已完成一半（2026-10）**：**进度按人隔离**（上线计划里的 P0-1）已落地 —— `word_reviews` 唯一键改为 `(user_id, word_id)`、`review_logs` 加 `user_id`、handlers 16 处查询按 user 收口、新增 `cmd/migrate` 迁移工具（默认 dry-run，`-apply` 先自动快照）与启动自检（旧结构拒绝启动）；`backend-go` 测试 53 → **61 项**，`verify-auth.ps1` 13 → **18 项**（两用户复习同一个词后各自 `total_reviews=1`）。
+  **剩下的是「每日配额从 localStorage 迁到服务端」**（上线计划里排在 P2；口径已定：今日新学 = 当天 `stability_before = 0` 的日志数、今日抽查 = 当天 `is_probe` 数）。
+  ⚠️ 红线 5 只解除一半：**多用户隔离做了，但会话撤销仍未做**（登出 / 踢端之后，那张 access 令牌在有效期内仍能通过验签，见 `backend-go/middleware/auth.go` 的包注释），`/admin/` 与站点仍不要挂公网。
 
 **落地后请回来更新本文**：把已完成阶段移到上面的进度记录，把新增风险补进第 6 节。

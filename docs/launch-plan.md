@@ -16,7 +16,7 @@
 
 | # | 要做的事 | 为什么必须做 | 预估工作量 |
 |---|---------|------------|-----------|
-| P0-1 | **复习进度按人隔离** | 现在 `word_reviews` 的唯一索引是 `WordID`，**两个用户共用一份进度会互相覆盖**——这是数据正确性问题，不是体验问题 | 1~2 天（含测试） |
+| P0-1 | **复习进度按人隔离** ✅ 已完成（2026-10） | 现在 `word_reviews` 的唯一索引是 `WordID`，**两个用户共用一份进度会互相覆盖**——这是数据正确性问题，不是体验问题 | 1~2 天（含测试） |
 | P0-2 | **强制邀请码注册** | 你选的「暂时邀请制」；现在不填邀请码也能注册 | 半天 |
 | P0-3 | **打通真发邮件** | 现在 `AUTH_MAIL_MODE=log`，验证码只打进日志，**真实用户收不到码就注册不了** | 半天（SMTP 代码已写好，只差配置） |
 | P0-4 | **公网部署** | HTTPS、Cookie Secure、Nginx 分流、生产环境开关、每日备份 | 1 天 |
@@ -56,7 +56,10 @@
 
 ### P0-1 复习进度按人隔离
 
-**现状**（这是全项目最危险的一处）：
+> **✅ 已完成（2026-10）**：实现清单与实测结果见文末 [附录 C](#附录-c进度记录)；
+> `backend-go/handlers/review_isolation_test.go` 7 项、`scripts/verify-auth.ps1` 18 项全 PASS。
+
+**现状（P0-1 之前，留档以免重复踩）**：
 
 | 位置 | 现状 | 问题 |
 |---|---|---|
@@ -66,34 +69,43 @@
 
 结果：**第 2 个人一开始用，两个人的进度就会互相覆盖**——A 把词标成「已掌握」，B 那边也跟着变；B 再复习一次，A 的到期时间又被改掉。这不是「体验差」，是数据被写坏。
 
-**改造方案**：
+**改造方案（已定案，2026-10）**：
 
-```sql
--- 1) 复习记录：加 user_id，唯一键从 (WordID) 改成 (UserID, WordID)
-ALTER TABLE word_reviews ADD COLUMN user_id INTEGER NOT NULL DEFAULT 0;
-DROP INDEX IF EXISTS idx_word_reviews_word_id;          -- GORM 自动建的那个
-CREATE UNIQUE INDEX idx_word_reviews_user_word ON word_reviews(user_id, word_id);
-CREATE INDEX idx_word_reviews_due ON word_reviews(user_id, due_at);
+目标结构（索引名由 GORM 标签固定，实测旧库现状见下）：
 
--- 2) 复习日志：加 user_id
-ALTER TABLE review_logs ADD COLUMN user_id INTEGER NOT NULL DEFAULT 0;
-CREATE INDEX idx_review_logs_user_time ON review_logs(user_id, reviewed_at);
+```
+word_reviews: 加 user_id 列 + UNIQUE(user_id, word_id) idx_word_reviews_user_word
+                            + INDEX(user_id, due_at)    idx_word_reviews_user_due
+review_logs:  加 user_id 列 + INDEX(user_id, reviewed_at) idx_review_logs_user_time
+删除：idx_word_reviews_word_id（旧的 UNIQUE(word_id)，就是它挡住第二个用户）
+      idx_word_reviews_due_at （已被复合索引取代，留着只会让每次写入多维护一个索引）
 ```
 
-> ⚠️ SQLite 的 `ALTER TABLE` 不能改列类型、不能加带约束的复合唯一键，所以要么用「建新表 → 拷数据 → 换名」的标准流程，要么**直接 DROP 三张业务表让 GORM `AutoMigrate` 重建**（我们选了清空数据，这条路更简单，推荐）。
+> 实测证据（`backend-go/guangxue.db`）：`idx_word_reviews_word_id` 确实是 `CREATE UNIQUE INDEX ... ON word_reviews(word_id)`；
+> 现有数据 100 条进度 / 241 条日志 / 100 个词条。
 
-**代码侧**：
+| 决策点 | 定案 |
+|---|---|
+| 身份来源 | **只从 `gx_access` Cookie**（`middleware.CurrentUserID`）；**请求体不加 `user_id`**，前端无法替别人写进度 |
+| 旧数据（100 条进度 / 241 条日志） | **清理**：迁移时删掉 `user_id = 0` 的历史行，不归属给任何人 |
+| 词库 | **共享**，`Word` 表不加 `user_id`；`total_words` 统计保持全局 |
+| 删词条语义 | **保持**「连带删掉所有人对该词的进度」；「软删除 / 只下架内容不动进度」**暂不考虑**（记在此处，避免以后重复讨论） |
+| 浏览器 localStorage 配额 | P0-1 **不动**（今日 5 新词、抽查冷却仍按浏览器存），随 P2 配额服务端化一并解决 |
+| 迁移怎么触发 | **显式命令**：`go run ./cmd/migrate`（默认只报告，dry-run），`go run ./cmd/migrate -apply` 先自动快照再执行；**启动时只做自检**——发现旧结构就直接拒绝启动并提示该跑哪条命令（避免「忘了跑」变成第二个用户复习时炸 UNIQUE 约束） |
 
-- 所有 handler 从 gin Context 取 `middleware.CtxUserID`（**阶段 2 已经把它注入好了**，这正是那次改造的价值），查询全部加 `WHERE user_id = ?`；
-- `Word` 表**不加 `user_id`**——词库是**共享**的（roadmap 第 3 节的核心判断：**词库共享、进度私有**）；
-- `WordReview`/`ReviewLog` 的 `UserID` 字段加 `gorm:"uniqueIndex:idx_word_reviews_user_word"` 这类显式索引标签。
+**代码侧**（改动全在 Go 侧，前端与 WASM 引擎一行不用改）：
+
+- `backend-go/models/models.go:112-145`：`WordReview` / `ReviewLog` 加 `UserID`（`not null;default:0` + 索引标签；SQLite 的 `ADD COLUMN` 加 `NOT NULL` 列必须带默认值）；
+- `backend-go/handlers/review_handlers.go`：7 个函数、16 处查询/赋值按 user 收口 —— `DueReviews:424-435`、`NewWords:455-460`（**join 条件里就要带 user_id**）、`learnedQuery:472-483`、`QueueReviews:509` 计数、`SubmitReview:595/606/629`、`ReviewStats:665-700` 九条统计、`calcStreakDays:729`；`DeleteWord:307-318` 保持全用户级联；
+- `backend-go/middleware/auth.go`：新增 `CurrentUserID(c) (uint, bool)`；handlers 侧加一个兜底助手（取不到 id 就 401，**绝不写 `user_id = 0`**）；
+- `backend-go/database/database.go`：启动自检（只读检查，不改结构）；
+- 新增 `backend-go/cmd/migrate`。
 
 **验收标准**：
 
-1. 新增测试：两个用户各自复习同一个词，`word_reviews` 里出现**两行**、`due_at` 互不影响；
-2. 新增测试：A 用户的 `/api/reviews/stats` 不含 B 用户的数据；
-3. `pwsh scripts/verify.ps1` 全绿；
-4. `scripts/verify-auth.ps1` 加两条用例：管理员与普通用户各自复习后，互相看不到对方的 `reviewed_words`。
+1. 新增 `backend-go/handlers/review_isolation_test.go`：两用户复习同一个词 → `word_reviews` **两行**、`due_at` 互不影响；A 的 stats 不含 B；B 的 `/reviews/new` 仍把该词当新词；A 的 `/reviews/queue` 不含 B 的词；删词条后两人的行都没了；
+2. `pwsh scripts/verify.ps1` 全绿；
+3. `scripts/verify-auth.ps1` 加两用户隔离检查：两人各 submit 同一个词后，各自的 `reviewed_words` 都是 **1**（而不是 2）。
 
 ---
 
@@ -518,3 +530,44 @@ DB_PATH=/var/lib/guangxue/guangxue.db
 - [`admin-api.md`](admin-api.md) —— 词条与复习接口、后台约定
 - [`boundaries.md`](boundaries.md) —— 硬性边界、测试数字、备份与验证脚本
 - [`frontend.md`](frontend.md) —— 前端结构与 ES5 约定
+
+---
+
+## 附录 C：进度记录
+
+### ✅ P0-1 复习进度按人隔离（已完成，2026-10）
+
+**模型**（`backend-go/models/models.go`）
+
+- `WordReview.UserID` + `UNIQUE(user_id, word_id)`（`idx_word_reviews_user_word`）、`(user_id, due_at)`（`idx_word_reviews_user_due`）；
+- `ReviewLog.UserID` + `(user_id, reviewed_at)`（`idx_review_logs_user_time`）；`Word` 表**不动**（词库共享）。
+
+**代码**
+
+- `middleware.CurrentUserID(c) (uint, bool)`：只从 `gx_access` 令牌的 `sub` 取用户，`id <= 0` 一律当未登录；
+- `handlers.currentUser(c)` 兜底：取不到就 401，**绝不写 `user_id = 0`**（那种行对谁都不再可见）；
+- `review_handlers.go` 7 个函数、16 处查询按 user 收口：`DueReviews`、`NewWords`（**user 条件写在 join 里**，否则新词列表会变空）、`learnedQuery`（队列 / 抽查共用）、`QueueReviews` 的计数、`SubmitReview` 的读取与两处写入、`ReviewStats` 九条统计、`calcStreakDays`；
+- `DeleteWord` **保持全用户级联**（删词条 = 删掉所有人对该词的进度），并在注释里写明这是决策而非疏忽；
+- 请求体里**没有** `user_id` 字段——身份只能来自 Cookie，前端无法替别人写进度。
+
+**迁移**（用户选定「显式迁移」而不是启动自愈）
+
+- 新增 `backend-go/cmd/migrate`：默认 dry-run 只报告；`-apply` 时**先 `VACUUM INTO` 快照**（`backups/<时间戳>/`）再执行；
+- 迁移内容：清掉 `user_id = 0` 的历史行 → 删掉旧的 `UNIQUE(word_id)` 索引与已被取代的 `idx_word_reviews_due_at` → 复验；
+- `database.Init` 加了**启动自检**：旧结构直接拒绝启动并打印该跑哪条命令（把「忘了跑迁移」从运行时数据事故变成启动期报错）；
+- 快照逻辑从 `cmd/backup` 抽成 `backend-go/snapshot` 包，两个命令共用。
+
+**实测**
+
+- `backend-go` 测试 53 → **61 项**：新增 `handlers/review_isolation_test.go` 7 项（含一条「旧唯一索引必须不存在」的结构断言）
+  与 `database/user_isolation_test.go` 1 项（**在手工造的旧结构上**跑完整迁移：补列 → 清孤儿行 → 删旧索引 → 复合唯一键生效 → 幂等 → 启动自检放行）；
+- `pwsh scripts/verify.ps1`：6 步 0 失败、9.5 秒；
+- `pwsh scripts/verify-auth.ps1`：13 → **18 项全 PASS**、5.6 秒（管理员与普通用户复习同一个词后，各自 `total_reviews=1`——改造前这里会是 2）；
+- 开发库实迁记录（2026-10-01）：快照 `backups/20261001-123656/guangxue.db`（132 KB，integrity ok）→ 清掉 100 行进度 / 241 行日志、删掉两条旧索引；
+  迁移后库结构为 `UNIQUE(user_id, word_id)` + `(user_id, due_at)` + `(user_id, reviewed_at)`，实测 6 条索引、`words` 仍 100 条；
+- 自检实测：拿**迁移前**的快照副本启动新二进制 → 打印提示并 **exit 1**（不带着旧结构上线）。
+
+**遗留（已记录，不在 P0-1 范围内）**
+
+- 浏览器 localStorage 的每日配额与抽查冷却仍按浏览器存 → 随 **P2** 配额服务端化一起处理；
+- `/admin/` 里「某个词被复习过多少次」仍是全站口径 → **P1** 做管理面板时再分人。

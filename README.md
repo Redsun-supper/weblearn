@@ -126,12 +126,19 @@ e:\porject\4/
 │   ├── config/
 │   │   └── config.go            # 配置管理
 │   ├── database/
-│   │   └── database.go          # SQLite 连接与自动迁移
+│   │   ├── database.go          # SQLite 连接、自动迁移、启动自检
+│   │   └── user_isolation.go    # P0-1：旧索引检测 / 旧数据清理 / 旧索引删除
+│   ├── snapshot/
+│   │   └── snapshot.go          # SQLite 安全快照（VACUUM INTO），backup 与 migrate 共用
+│   ├── middleware/
+│   │   └── auth.go              # 共享密钥本地验签（RequireUser / RequireAdmin / CSRFGuard / CurrentUserID）
 │   ├── cmd/
 │   │   ├── seed/
 │   │   │   └── main.go          # 词表导入命令（JSON → words 表）
 │   │   ├── inspect/
 │   │   │   └── main.go          # 查看各词的记忆状态（排查用）
+│   │   ├── migrate/
+│   │   │   └── main.go          # P0-1 迁移：进度按人隔离（默认 dry-run，-apply 先自动快照）
 │   │   └── backup/
 │   │       └── main.go          # 数据库快照命令（VACUUM INTO，被 scripts/backup.ps1 调用）
 │   ├── seed/
@@ -737,8 +744,10 @@ go run ./cmd/seed -file my_words.json -db guangxue.db
 三处都只做**界面层**的门禁：真正的权限必须由服务端判定。服务端侧已经补齐（阶段 2）：Rust 账号服务的 `/api/auth/admin/*` 要
 `role=admin`，Go 侧的 `/api/words` 写接口走 `RequireAdmin`、`/api/reviews/*` 走 `RequireUser`，两边共享同一把
 `AUTH_JWT_SECRET` 本地验签（见 [`backend-go/README.md`](backend-go/README.md)）。
-⚠️ 但**多用户隔离还没做**——`word_reviews` 仍按单词全局唯一，第二个用户会覆盖第一个人的进度，
-上线前必须先做这件事，见 [`docs/launch-plan.md`](docs/launch-plan.md) 的 P0-1。
+✅ 复习进度已**按人隔离**（P0-1，2026-10）：`word_reviews` 的唯一键是 `(user_id, word_id)`，
+`review_logs` 也带 `user_id`，而词库（`words`）仍然共享——**词库共享、进度私有**。
+P0-1 之前的老库要先跑一次 `go run ./cmd/migrate -apply`（服务启动时会自检并在需要时提示这条命令）。
+仍未做的是浏览器 localStorage 里的每日配额，见 [`docs/launch-plan.md`](docs/launch-plan.md) 的 P2。
 
 ### 邮件
 
@@ -911,7 +920,8 @@ AUTH_ADMIN_PASSWORD='管理员密码' \
 - [x] 后台登录门禁（`admin/` 只放行 `role=admin`）与站点左上角头像入口（点头像扩散过场进个人中心，含登录态圆点）
 - [ ] 权限等级系统（RBAC）—— 三级角色（超级管理员 / 管理员 / 用户）与按等级发码的完整方案见 [`docs/launch-plan.md`](docs/launch-plan.md) 的 P0-5
 - [x] 词条写接口鉴权（Go 侧用同一 JWT 密钥本地验签：`/api/reviews/*` 需登录、`/api/words` 写接口需管理员）
-- [ ] 用户与复习数据绑定（`word_reviews.user_id`）、每日配额从 localStorage 迁到服务端 —— **上线前置，见 `docs/launch-plan.md` P0-1**
+- [x] 用户与复习数据绑定（`word_reviews` / `review_logs` 加 `user_id`，唯一键 `(user_id, word_id)`；老库跑一次 `go run ./cmd/migrate -apply`）
+- [ ] 每日配额从 localStorage 迁到服务端（见 `docs/launch-plan.md` 的 P2）
 - [ ] 改密 / 找回密码 / 多方式登录（`user_identities` 表已预留）
 - [ ] 复习页面 UI（进阶：完整词义卡交互、统计曲线图表等）
 - [ ] FSRS 参数优化（基于 review_logs 的 compute_parameters）

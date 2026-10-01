@@ -156,7 +156,9 @@ pwsh scripts/smoke.ps1 -BaseUrl http://127.0.0.1:8899
 ## 四、数据库（`auth.db`）
 
 独立于 Go 的 `guangxue.db`，由本服务独占（避免两套 ORM 抢 schema）。
-`users.id` 是软引用，将来 `word_reviews.user_id` 可以指向它。
+`users.id` 是**跨服务的软引用**：Go 侧 `word_reviews.user_id` / `review_logs.user_id` 指的就是它
+（值来自访问令牌的 `sub`，见 [`../docs/backend-auth.md`](../docs/backend-auth.md) 的「Go 主后端」一节）。
+⚠️ 两边不共享事务、也不做外键约束：删账号不会自动清掉那个人的复习进度。
 
 | 表 | 用途 |
 |----|------|
@@ -316,8 +318,9 @@ location /api/auth/ {
       站点左上角头像入口（点头像从头像位置扩散盖满全屏再跳个人中心；已登录亮状态点）
 - [ ] **权限等级**：`role`/`status` 已预留，RBAC、权限点、用户管理界面尚未实现
       （前端门禁目前只判断 `role === 'admin'`）
-- [ ] **保护既有接口**：`/api/words` 写接口的鉴权（Go 侧用同一 `AUTH_JWT_SECRET` 验签 + 查 `auth.db` 会话）
-- [ ] **用户与复习数据绑定**：`word_reviews.user_id`、每日配额从 localStorage 迁到服务端
+- [x] **保护既有接口**：`/api/words` 写接口的鉴权（Go 侧用同一 `AUTH_JWT_SECRET` 本地验签，`RequireAdmin` / `RequireUser`）
+- [x] **用户与复习数据绑定**：`word_reviews` / `review_logs` 带 `user_id`（P0-1，2026-10；老库跑 `go run ./cmd/migrate -apply`）
+- [ ] 每日配额从 localStorage 迁到服务端（上线计划里的 P2）
 - [ ] 改密 / 找回密码 / 强制改密 / 删除账号
 - [ ] 多方式登录：`user_identities` 已就位，加一个 provider 即可（手机号、GitHub OAuth…）
 - [ ] 跨实例限流（Redis）与多实例部署

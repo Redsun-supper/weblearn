@@ -179,6 +179,23 @@ func setAuthContext(c *gin.Context, claims *AccessClaims) {
 	c.Set(CtxRole, claims.Role)
 }
 
+// CurrentUserID 取本次请求的登录用户 id（账号服务 auth.db 里的 users.id）。
+//
+// ⚠️ 只在挂了 RequireUser / RequireAdmin 的路由上调用：没挂时返回 (0, false)，
+// 调用方必须按「未登录」处理（回 401），**绝不能**把 0 当成一个真实用户——user_id = 0
+// 是 P0-1 迁移前历史数据的占位值，一旦当成某个用户写进库，那些行对谁都不再可见。
+func CurrentUserID(c *gin.Context) (uint, bool) {
+	v, ok := c.Get(CtxUserID)
+	if !ok {
+		return 0, false
+	}
+	id, ok := v.(int64)
+	if !ok || id <= 0 {
+		return 0, false
+	}
+	return uint(id), true
+}
+
 // 错误响应体沿用统一信封 {code, message, error}，与账号服务 backend-rust/src/error.rs:100-110 对齐：
 // 前端按 error 字段（unauthenticated / forbidden）做分支即可，不要去匹配中文文案。
 func abortUnauthorized(c *gin.Context) {

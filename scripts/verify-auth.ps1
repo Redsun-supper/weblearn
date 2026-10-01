@@ -15,7 +15,9 @@
     3. 用管理员登录拿到的真 Cookie 打 Go：复习接口应 200、词条写接口应放行；
     4. 再注册一个普通用户，用它的真 Cookie 打 Go：复习接口 200、词条写接口应 403；
     5. 不带 Cookie 打复习接口应 401 `unauthenticated`；
-      带外站 Origin 的写请求应 403 `forbidden`（CSRF 闸门）。
+      带外站 Origin 的写请求应 403 `forbidden`（CSRF 闸门）；
+    6. P0-1 隔离：管理员与普通用户复习**同一个词**之后，各自的统计里都只有自己那 1 条记录
+       （改造前两人共用一行，谁的记录都会被算到对方头上）。
 
   全程不碰真实的 `auth.db` / `guangxue.db`，也不影响 8080/8081 上可能在跑的开发服务。
 
@@ -241,7 +243,41 @@ try {
         ($r.StatusCode -eq 403 -and (Get-ErrorCode $r) -eq 'forbidden') `
         "HTTP $($r.StatusCode) error=$(Get-ErrorCode $r)"
 
-    # 6) CSRF：写请求带外站 Origin 必须被挡在处理器之前
+    # 6) P0-1：进度按人隔离 —— 管理员与普通用户复习**同一个词**，各自只该看到自己那一条。
+    #    改造前 word_reviews 的唯一键是 word_id（一个词全局一行），两人共用一行、
+    #    统计还会把对方的记录算进来（total_reviews 会是 2）——下面的断言正盯着这一点。
+    $wordID = 0
+    try {
+        $wordsResp = Invoke-WebRequest -Uri "$apiBase/api/words?limit=1" -SkipHttpErrorCheck
+        $wordID = [int](($wordsResp.Content | ConvertFrom-Json).data.items[0].id)
+    } catch { }
+    Add-Check 'Go：临时库里有词条可用于隔离检查' ($wordID -gt 0) "word_id=$wordID"
+
+    $submitAsAdmin = Invoke-WebRequest -Uri "$apiBase/api/reviews/submit" -Method POST -WebSession $adminSession `
+        -ContentType 'application/json' -Headers @{ Origin = $allowedOrigin } -SkipHttpErrorCheck `
+        -Body (@{ word_id = $wordID; rating = 3; stability = 5; difficulty = 5; interval_days = 5; desired_retention = 0.9 } | ConvertTo-Json)
+    Add-Check 'Go：管理员提交一次复习 → 200' ($submitAsAdmin.StatusCode -eq 200) "HTTP $($submitAsAdmin.StatusCode)"
+
+    $submitAsUser = Invoke-WebRequest -Uri "$apiBase/api/reviews/submit" -Method POST -WebSession $userSession `
+        -ContentType 'application/json' -Headers @{ Origin = $allowedOrigin } -SkipHttpErrorCheck `
+        -Body (@{ word_id = $wordID; rating = 1; stability = 1; difficulty = 8; interval_days = 0; desired_retention = 0.9 } | ConvertTo-Json)
+    Add-Check 'Go：普通用户提交同一个词 → 200（不撞 UNIQUE 约束）' ($submitAsUser.StatusCode -eq 200) "HTTP $($submitAsUser.StatusCode)"
+
+    foreach ($pair in @(
+            @{ Session = $adminSession; Who = '管理员' },
+            @{ Session = $userSession; Who = '普通用户' })) {
+        $stats = $null
+        try {
+            $statsResp = Invoke-WebRequest -Uri "$apiBase/api/reviews/stats" -WebSession $pair.Session -SkipHttpErrorCheck
+            $stats = ($statsResp.Content | ConvertFrom-Json).data
+        } catch { }
+        $isolated = $null -ne $stats -and [int]$stats.total_reviews -eq 1 -and
+                    [int]$stats.today_new -eq 1 -and [int]$stats.reviewed_words -eq 1
+        Add-Check "Go：$($pair.Who)只看到自己的 1 条复习记录（P0-1 进度隔离）" $isolated `
+            "total_reviews=$($stats.total_reviews) today_new=$($stats.today_new) reviewed_words=$($stats.reviewed_words)"
+    }
+
+    # 7) CSRF：写请求带外站 Origin 必须被挡在处理器之前
     $r = Invoke-WebRequest -Uri "$apiBase/api/reviews/submit" -Method POST -WebSession $adminSession `
         -ContentType 'application/json' -Headers @{ Origin = 'http://evil.example.com' } -SkipHttpErrorCheck `
         -Body '{"word_id":1,"rating":3}'

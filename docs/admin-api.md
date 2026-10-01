@@ -20,7 +20,7 @@
 **权限**：读接口（`GET /api/words`、`GET /api/words/:id`、`GET /api/word-options`）公开；写接口（`POST /api/words`、`PUT /api/words/:id`、`DELETE /api/words/:id`）**要管理员**（`role=admin`），不带 Cookie 是 401 `unauthenticated`、普通用户是 403 `forbidden`。
 
 - `PUT` 是全量更新；改名撞车返回 409。
-- `DELETE` **会连带删除该词的 `word_reviews` 与 `review_logs`**（日志留着会让 stats 虚高）。改错别字用 `PUT`，别删了重建。
+- `DELETE` **会连带删除该词的 `word_reviews` 与 `review_logs`**（日志留着会让 stats 虚高）。⚠️ 词条是共享的、进度是私有的，所以这一下删掉的是**所有人**对该词的进度（P0-1 决策：不做软删除）。改错别字用 `PUT`，别删了重建。
 - `POST /api/words` 查重**大小写不敏感**。
 - `word-options` 刻意不在 `/api/words/options`，避免与 `/api/words/:id` 通配路由冲突。
 - 词条带 `example_translation`（词条级例句翻译）与 `senses`（多释义数组）两个字段；两者都可空。`/api/reviews/due` 的 `dueCard` 里 `senses` 用 `models.WordSenses` 直接扫列，GORM 认 `sql.Scanner`，不需要额外 join。
