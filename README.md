@@ -734,8 +734,11 @@ go run ./cmd/seed -file my_words.json -db guangxue.db
 | `admin/`（后台） | 打开先 `checkAuth()` 问服务端：`role=admin` 才渲染后台，否则只显示登录表单（普通账号会明确提示「不是管理员」）。顶栏显示当前账号与「退出登录」 |
 | 站点左上角**头像** | 个人中心的入口（原来是右上角的「登录 / 注册」文字链接）：点击后以头像为圆心扩散一层遮罩盖满全屏，再跳到 `account/?from=avatar`。已登录时头像右下角亮一个绿点、`title` 显示昵称；未登录时是「登录 / 注册 · 个人中心」。⚠️ 它在 `.rectangle` 里，**沉浸模式下会随导航栏一起隐藏**（复习页默认沉浸） |
 
-三处都只做**界面层**的门禁：真正的权限必须由服务端判定。目前 Rust 账号服务的 `/api/auth/admin/*` 有 `role=admin` 准入，
-但 Go 侧的 `/api/words` 写接口**还没有鉴权中间件**，直接调接口仍能改数据 —— 补齐之前不要部署到公网。
+三处都只做**界面层**的门禁：真正的权限必须由服务端判定。服务端侧已经补齐（阶段 2）：Rust 账号服务的 `/api/auth/admin/*` 要
+`role=admin`，Go 侧的 `/api/words` 写接口走 `RequireAdmin`、`/api/reviews/*` 走 `RequireUser`，两边共享同一把
+`AUTH_JWT_SECRET` 本地验签（见 [`backend-go/README.md`](backend-go/README.md)）。
+⚠️ 但**多用户隔离还没做**——`word_reviews` 仍按单词全局唯一，第二个用户会覆盖第一个人的进度，
+上线前必须先做这件事，见 [`docs/launch-plan.md`](docs/launch-plan.md) 的 P0-1。
 
 ### 邮件
 
@@ -881,7 +884,7 @@ AUTH_ADMIN_PASSWORD='管理员密码' \
 - [x] 通用后台骨架 `admin/`（布局 / 导航 / 路由 / 通用组件 + 登录鉴权预留位）
 - [x] 英语后台：词条增删改查 + 批量导入（粘贴词表 → Rust 解析 → 预览 → 分批导入）
 - [x] 词书 / 单元分组（`words.book` / `words.unit` + 列表筛选）
-- [ ] 登录鉴权（前端 `checkAuth()` + 后端鉴权中间件，需两端一起做）
+- [x] 登录鉴权（前端 `checkAuth()` 门禁 + 后端鉴权中间件：`/api/reviews/*` 需登录、词条写接口需管理员）
 - [ ] 按词书 / 单元限定复习范围（目前复习队列不看分组）
 - [x] 主动回忆流程（先回想 → 显示答案 → 评分，避免「看着答案打分」污染 FSRS 状态）
 - [x] 单词 / 例句发音（Web Speech API）与键盘快捷键（空格、Q/W/E/R 或 1~4、P、L）
@@ -906,9 +909,9 @@ AUTH_ADMIN_PASSWORD='管理员密码' \
 - [x] 账号系统与 Go 后端按前缀分流（`/api/auth/*` → 8081），本地 `dev-server.js` 与线上 Nginx 同形态
 - [x] 个人中心页面 `account/`（身份卡 / 账号信息 / 登录中的设备 / 可用操作，本地开发自动回填验证码，全部组件带入场动效）
 - [x] 后台登录门禁（`admin/` 只放行 `role=admin`）与站点左上角头像入口（点头像扩散过场进个人中心，含登录态圆点）
-- [ ] 权限等级系统（RBAC）—— 目前只预留 `users.role` / `users.status` 字段，前端门禁只认 `admin`
-- [ ] 词条写接口鉴权（Go 侧用同一 JWT 密钥验签 + 查 `auth.db`）
-- [ ] 用户与复习数据绑定（`word_reviews.user_id`）、每日配额从 localStorage 迁到服务端
+- [ ] 权限等级系统（RBAC）—— 三级角色（超级管理员 / 管理员 / 用户）与按等级发码的完整方案见 [`docs/launch-plan.md`](docs/launch-plan.md) 的 P0-5
+- [x] 词条写接口鉴权（Go 侧用同一 JWT 密钥本地验签：`/api/reviews/*` 需登录、`/api/words` 写接口需管理员）
+- [ ] 用户与复习数据绑定（`word_reviews.user_id`）、每日配额从 localStorage 迁到服务端 —— **上线前置，见 `docs/launch-plan.md` P0-1**
 - [ ] 改密 / 找回密码 / 多方式登录（`user_identities` 表已预留）
 - [ ] 复习页面 UI（进阶：完整词义卡交互、统计曲线图表等）
 - [ ] FSRS 参数优化（基于 review_logs 的 compute_parameters）

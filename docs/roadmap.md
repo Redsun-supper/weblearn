@@ -183,6 +183,9 @@
   - 前端最小处理（未动任何动画）：`modules/english/english.js` 的 `fetchText`/`fetchJson`/submit 与 `admin/admin.js` 的 `apiFetch` 遇到 401 → 提示后跳 `account/?next=<当前页>`，403 只报错不跳。
   - 测试与验证：`backend-go` 从 40 项涨到 **53 项**（handlers 36 + middleware 10 + routes 7，新增鉴权/CSRF/路由回归）；`pwsh scripts/verify.ps1` 6 步全 PASS（5.7 秒）。
   - **新增 `scripts/verify-auth.ps1`（跨服务联调）**：用临时库起两个真服务（18080/18081，不碰真实库），实跑 13 项检查全 PASS、用时 7.9 秒 —— 账号服务发的 `gx_access` 在 Go 侧 200 通过、匿名 401 `unauthenticated`、普通用户写词条 403 `forbidden`、外站 Origin 403。**这是「共享密钥」这条设计唯一的端到端证据**（两侧单元测试各自 mock 密钥，发现不了不一致）。
-- **下一步 = 阶段 3**：多用户化（第 3 节：词库共享、进度私有 —— `word_reviews` 唯一索引 `WordID` → `(UserID, WordID)`、`review_logs` 加 `user_id`、handlers 全量 `WHERE user_id = ?`、每日配额从 localStorage 迁到服务端）。⚠️ 红线 5 仍未解除：**登录已可用，但会话撤销与多用户隔离没做，`/admin/` 与站点仍不要挂公网**。
+- **上线计划单独成文（2026-10，见 [`launch-plan.md`](launch-plan.md)）**：用户确定「最近要上线、只上英语模块、暂时邀请制」，于是把「上线」拆成一份可执行的计划：P0 五件事 = 进度按人隔离 / 强制邀请码 / 真发邮件 / 公网部署 / 三级角色；管理面板（邀请码、用户、审计、看板）排 P1。
+  - 对本文的影响：**第 3 节的「进度按人隔离」被提为上线前置**（计划里的 P0-1），其余（每日配额服务端化）仍在计划内但排后（P2）。
+  - 顺带查清两条上线必改项：`backend-rust/src/service.rs:367` **带邀请码注册会直接变管理员**（要改成按码的等级赋值）；Rust 侧 SMTP 发信**已经实现**，只差 `AUTH_MAIL_MODE=smtp` 与 `AUTH_SMTP_*` 配置。
+- **下一步 = 阶段 3**：多用户化（第 3 节：词库共享、进度私有 —— `word_reviews` 唯一索引 `WordID` → `(UserID, WordID)`、`review_logs` 加 `user_id`、handlers 全量 `WHERE user_id = ?`、每日配额从 localStorage 迁到服务端）。⚠️ 红线 5 仍未解除：**登录已可用，但会话撤销与多用户隔离没做，`/admin/` 与站点仍不要挂公网**。（其中「进度按人隔离」已在上线计划里升为 P0-1，见上一条。）
 
 **落地后请回来更新本文**：把已完成阶段移到上面的进度记录，把新增风险补进第 6 节。
