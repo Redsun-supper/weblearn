@@ -56,8 +56,10 @@
   所以 `backend-rust/` 用 `rusqlite` 的 `bundled` 特性（现场编译 sqlite3.c）可以正常 `cargo test` / `cargo build --release`。
   链接时的 `corrupt .drectve at end of def file` 是 mingw 的**无害告警**。
 - ✅ **宿主 `cargo test` 现在可以运行**（本文档此前记录的「缺 mingw `as`/MSVC SDK 无法链接」**已不再成立**）。
-  ⚠️ **三套测试的数字别混用**（2026-10-02 复测）：`backend-rust/` = **90 项**（41 单元 + 49 集成），
-  `modules/english/engine/` = **120 项**（118 + 单一循环池新增的置顶卡重置与 365 天封顶两条），
+  ⚠️ **三套测试的数字别混用**（2026-10-02 复测）：`backend-rust/` = **99 项**（41 单元 + 58 集成；
+  集成里 P0-2 的强制邀请码新增 9 项），
+  `modules/english/engine/` = **122 项**（118 + 单一循环池新增的置顶卡重置、365 天封顶、
+  真实 `daily` 键名解析、置顶卡不被随机窗口埋掉等），
   `backend-go/` = **61 项**（handlers 43 + middleware 10 + routes 7 + database 1；
   阶段 1 补关键路径基线，阶段 2 补鉴权 / CSRF / 路由回归，P0-1 补进度按人隔离与迁移回归）；
   此前文档里那个「118」是**引擎**的，不是账号服务的。

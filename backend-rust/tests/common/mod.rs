@@ -88,6 +88,23 @@ impl TestApp {
         created.codes[0].code.clone()
     }
 
+    /// 某个邮箱在 `email_codes` 表里有多少条记录（**含已消费**）。
+    ///
+    /// P0-2 的验收用它当直接证据：强制邀请制下没带有效邀请码时，
+    /// 发码接口必须**一条都不写库**。只查「未消费的条数」不算数 ——
+    /// 「写了一条又立刻标记为已消费」也会让那种断言通过，而那不是我们要的行为。
+    pub async fn email_code_rows(&self, email: &str) -> i64 {
+        let email = email.to_string();
+        // 注意路径是 `service.store`：`AppState` 自己不持有 store（它挂在服务上）。
+        // 这里直接让错误类型就是 `StoreError`（泛型 E 必须有 `From<StoreError>`）。
+        self.state
+            .service
+            .store
+            .read(move |conn| guangxue_auth::store::sql::count_email_codes(conn, &email, "register"))
+            .await
+            .expect("查 email_codes 行数")
+    }
+
     /// 确保管理员存在
     pub async fn seed_admin(&self, email: &str, password: &str) {
         self.state.service.seed_admin(email, password).await.expect("建管理员");

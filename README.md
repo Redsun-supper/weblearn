@@ -873,6 +873,7 @@ AUTH_ADMIN_PASSWORD='管理员密码' \
 | `AUTH_ALLOWED_ORIGINS` | CSRF 来源白名单 | `http://127.0.0.1:8899,http://localhost:8899` |
 | `AUTH_MAIL_MODE` | `log` 只打日志 / `smtp` 真发信 | `log` |
 | `AUTH_SMTP_*` | SMTP 主机/端口/账号/授权码/发件人/加密方式 | — |
+| `AUTH_REQUIRE_INVITE` | **强制邀请码注册**：`true` 时没有有效邀请码**连验证码都发不出来**（也不写库），注册同样必须带码。**生产必须显式写 `true`** | `false` |
 | `AUTH_ADMIN_EMAIL` / `AUTH_ADMIN_PASSWORD` | 初始管理员 | `2262997289@qq.com` / 开发默认密码 |
 | `AUTH_SEED_ADMIN` | 启动时确保管理员存在（幂等） | 随 `APP_ENV` |
 | `AUTH_ARGON2_M_COST` / `_T_COST` / `_P_COST` | 密码哈希参数 | `19456` / `2` / `1` |

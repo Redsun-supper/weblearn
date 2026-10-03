@@ -105,6 +105,7 @@ $apiBase = "http://127.0.0.1:$ApiPort"
 
 $authProc = $null
 $goProc = $null
+$inviteProc = $null
 $started = Get-Date
 
 Write-Host ''
@@ -284,6 +285,56 @@ try {
     Add-Check 'Go：外站 Origin 的写请求 → 403 forbidden（CSRF 闸门）' `
         ($r.StatusCode -eq 403 -and (Get-ErrorCode $r) -eq 'forbidden') `
         "HTTP $($r.StatusCode) error=$(Get-ErrorCode $r)"
+
+    # 8) P0-2：强制邀请码注册。
+    #    上面的流程用的是「开放注册」（AUTH_REQUIRE_INVITE 没开），这里**另起一个实例**
+    #    把开关打开 —— 因为它只认「环境变量 → 配置」这一条链路，而 Rust 集成测试是直接
+    #    改 `cfg.require_invite` 字段的，恰好测不到「环境变量有没有接上」。
+    #
+    #    ⚠️ 别把开关直接加在上面那个实例上：第 5) 段要注册普通用户，强制邀请码会让它 400。
+    $invitePort = $AuthPort + 1
+    $inviteBase = "http://127.0.0.1:$invitePort"
+    $strictEmail = 'strict-no-invite@example.com'
+
+    $env:AUTH_PORT = "$invitePort"
+    $env:AUTH_DB_PATH = Join-Path $work 'invite-auth.db'
+    $env:AUTH_REQUIRE_INVITE = 'true'
+    Write-Host '启动账号服务（强制邀请码实例）…' -ForegroundColor Cyan
+    $inviteProc = Start-Process -FilePath $authBinary -WorkingDirectory (Join-Path $root 'backend-rust') `
+        -RedirectStandardOutput (Join-Path $work 'auth-invite.out.log') `
+        -RedirectStandardError (Join-Path $work 'auth-invite.err.log') -PassThru
+    Remove-Item env:AUTH_REQUIRE_INVITE -ErrorAction SilentlyContinue
+
+    Add-Check '账号服务（强制邀请码实例）健康检查 200' `
+        (Wait-Healthy -Url "$inviteBase/api/auth/health" -Seconds 45 -Label '强制邀请码实例') $inviteBase
+
+    # 关键验收：不带邀请码发码 → 400 invalid_invite
+    $strictNoInvite = Invoke-WebRequest -Uri "$inviteBase/api/auth/email-code" -Method POST `
+        -ContentType 'application/json' -Headers @{ Origin = $allowedOrigin } -SkipHttpErrorCheck `
+        -Body (@{ email = $strictEmail } | ConvertTo-Json)
+    Add-Check 'P0-2：不带邀请码发码 → 400 invalid_invite' `
+        ($strictNoInvite.StatusCode -eq 400 -and (Get-ErrorCode $strictNoInvite) -eq 'invalid_invite') `
+        "HTTP $($strictNoInvite.StatusCode) error=$(Get-ErrorCode $strictNoInvite)"
+
+    # 直接查库：这次拒绝**一条 email_codes 都不能留**（「先发码后校验」等于没拦）
+    $strictRows = -1
+    try {
+        $rowCheck = Invoke-WebRequest -Uri "$inviteBase/api/auth/dev/codes?email=$([uri]::EscapeDataString($strictEmail))" `
+            -SkipHttpErrorCheck
+        $body = $rowCheck.Content | ConvertFrom-Json
+        # 开发接口查不到就是「没写过」；查得到说明码已经落库了
+        if ($null -ne $body.data -and $null -ne $body.data.code) { $strictRows = 1 } else { $strictRows = 0 }
+    } catch { }
+    Add-Check 'P0-2：被拒的发码请求没有留下任何验证码（没写库）' ($strictRows -eq 0) `
+        "库里该邮箱的验证码条数=$strictRows"
+
+    # 同一个实例上，没码注册也必须被拦（两道门都要有）
+    $strictRegister = Invoke-WebRequest -Uri "$inviteBase/api/auth/register" -Method POST `
+        -ContentType 'application/json' -Headers @{ Origin = $allowedOrigin } -SkipHttpErrorCheck `
+        -Body (@{ email = $strictEmail; email_code = '000000'; password = $userPassword } | ConvertTo-Json)
+    Add-Check 'P0-2：不带邀请码注册 → 被拒（不是 invalid_code 也要是 400）' `
+        ($strictRegister.StatusCode -eq 400) `
+        "HTTP $($strictRegister.StatusCode) error=$(Get-ErrorCode $strictRegister)"
 }
 catch {
     Write-Host ''
@@ -291,7 +342,7 @@ catch {
     $script:checks += [pscustomobject]@{ Name = '联调执行完成'; Ok = $false; Detail = $_.Exception.Message }
 }
 finally {
-    foreach ($proc in @($goProc, $authProc)) {
+    foreach ($proc in @($goProc, $authProc, $inviteProc)) {
         if ($proc -and -not $proc.HasExited) {
             try { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue } catch { }
         }
@@ -299,7 +350,8 @@ finally {
     # 清掉本脚本设置的环境变量，避免污染同一个 PowerShell 会话里的后续命令
     foreach ($name in 'AUTH_DB_PATH', 'AUTH_HOST', 'AUTH_PORT', 'APP_ENV', 'AUTH_JWT_SECRET',
         'AUTH_ALLOWED_ORIGINS', 'AUTH_MAIL_MODE', 'AUTH_DEV_ENDPOINTS', 'AUTH_SEED_ADMIN',
-        'AUTH_ADMIN_EMAIL', 'AUTH_ADMIN_PASSWORD', 'DB_PATH', 'SERVER_HOST', 'SERVER_PORT') {
+        'AUTH_ADMIN_EMAIL', 'AUTH_ADMIN_PASSWORD', 'AUTH_REQUIRE_INVITE',
+        'DB_PATH', 'SERVER_HOST', 'SERVER_PORT') {
         Remove-Item "env:$name" -ErrorAction SilentlyContinue
     }
 }

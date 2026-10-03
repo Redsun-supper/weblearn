@@ -106,6 +106,15 @@ pub struct Config {
     pub mail: MailConfig,
     /// 是否注册「仅开发」的调试接口（生产环境路由根本不注册）
     pub dev_endpoints: bool,
+    /// 是否**强制邀请码注册**（P0-2）
+    ///
+    /// 打开时「邀请制」才真正成立：没有有效邀请码，`email-code` 直接拒绝、
+    /// **一个验证码都不会写库、也不会发信**（这一步很关键 —— 先发码后校验等于没拦）。
+    /// 默认 false（本地开发保持开放注册方便），生产用 `AUTH_REQUIRE_INVITE=true` 打开。
+    ///
+    /// 为什么不写死：用户已确认「未来删档重来后会改成不强制、填了才带权限」，
+    /// 那时把这个开关关掉即可，注册流程代码不用再改一遍。
+    pub require_invite: bool,
     pub admin_email: String,
     pub admin_password: Option<String>,
     pub seed_admin: bool,
@@ -142,6 +151,9 @@ impl Config {
             ],
             mail: MailConfig { mode: MailMode::Log, smtp: None },
             dev_endpoints: true,
+            // 开发默认**不**强制邀请码：本地调试要能随手注册账号。
+            // 生产由 `AUTH_REQUIRE_INVITE=true` 打开（见 docs/launch-plan.md 的 P0-2）。
+            require_invite: false,
             admin_email: DEFAULT_ADMIN_EMAIL.to_string(),
             admin_password: Some(DEFAULT_ADMIN_PASSWORD.to_string()),
             seed_admin: true,
@@ -262,6 +274,11 @@ impl Config {
         if cfg.is_production() && cfg.dev_endpoints {
             return Err("生产环境不允许开启 AUTH_DEV_ENDPOINTS（调试接口会泄露验证码）".to_string());
         }
+
+        // P0-2：强制邀请码注册。默认 false（本地开发方便），生产用 AUTH_REQUIRE_INVITE=true 打开。
+        // ⚠️ 刻意**不**做成「生产默认 true」：默认值必须是显式的，
+        // 否则「忘了配」与「故意关掉」在配置里长得一模一样。
+        cfg.require_invite = env_parse_bool("AUTH_REQUIRE_INVITE", cfg.require_invite)?;
 
         // 管理员
         cfg.admin_email = env_str("AUTH_ADMIN_EMAIL", &cfg.admin_email);

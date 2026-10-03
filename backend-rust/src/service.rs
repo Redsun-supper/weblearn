@@ -194,12 +194,23 @@ impl AuthService {
 
     /// 发送注册验证码。
     ///
-    /// 邀请码是**可选**的：不填就是开放注册（邮箱验证码是唯一门槛），
-    /// 填了就逐个校验，让用户在这一步就拿到「码不对」的反馈，而不是等到注册才失败。
+    /// 邀请码的两种模式（由 `cfg.require_invite` 决定，见 P0-2）：
+    /// - **强制模式**（生产）：邀请码**必填**，必须存在且状态可用；
+    /// - **可选模式**（本地开发默认）：不填就是开放注册，填了就逐个校验，
+    ///   让用户在这一步就拿到「码不对」的反馈，而不是等到注册才失败。
+    ///
+    /// ⚠️ 无论哪种模式，邀请码校验都**排在写 `email_codes` 之前**：
+    /// 「先发码后校验」等于没拦（码已经落库、按现有流程还能被用掉）。
+    /// `email_code_step_does_not_touch_db_when_invite_is_missing` 直接查库锁住这一点。
     pub async fn request_email_code(&self, email_raw: &str, invite_code_raw: &str, ip: &str) -> Result<CodeSent> {
         let email = validate::normalize_email(email_raw)
             .ok_or_else(|| AuthError::InvalidParams("邮箱格式不正确".into()))?;
         let codes = invite::split_codes(invite_code_raw);
+        if self.cfg.require_invite && codes.is_empty() {
+            // 强制邀请制：没填码连验证码都不发。用 invalid_invite 而不是新错误码，
+            // 让前端沿用同一套「邀请码无效」提示（文案由前端决定要不要更具体）。
+            return Err(AuthError::InvalidInvite);
+        }
         for code in &codes {
             if !invite::is_plausible(code) {
                 return Err(AuthError::InvalidInvite);
@@ -282,9 +293,13 @@ impl AuthService {
         if !email_code::is_well_formed(&input.email_code) {
             return Err(AuthError::InvalidParams("验证码应为 6 位数字".into()));
         }
-        // 邀请码**可选**：不填 = 普通用户（开放注册）；填了就逐个校验，
-        // 注册成功后把账号升级成管理员（将来还可以按 `-` 前缀区分成积分 / 礼物等用途）。
+        // 邀请码：强制模式下必填（否则整个邀请制是假的），可选模式下留空 = 普通用户。
+        // 填了（或必须填时）就逐个校验，注册成功后按码上的等级赋角色
+        // （等级列 `grant_role` 随 P0-5 一起加，当前带码注册仍是「升级为管理员」）。
         let codes = invite::split_codes(&input.invite_code);
+        if self.cfg.require_invite && codes.is_empty() {
+            return Err(AuthError::InvalidInvite);
+        }
         for code in &codes {
             if !invite::is_plausible(code) {
                 return Err(AuthError::InvalidInvite);

@@ -453,6 +453,20 @@ pub fn find_active_email_code(conn: &Connection, email: &str, purpose: &str) -> 
     Ok(conn.query_row(&sql, params![email, purpose], email_code_from_row).optional()?)
 }
 
+/// 某个邮箱收过多少条验证码（**含已消费**）。
+///
+/// 给「强制邀请码」的验收用：没带有效邀请码时，这一步必须**一条都不写库**。
+/// 只数「未消费」的还不够 —— 那种断言在「写了一条又立刻标记为已消费」时也会通过，
+/// 而 P0-2 要的恰恰是「连写都没写」。
+pub fn count_email_codes(conn: &Connection, email: &str, purpose: &str) -> R<i64> {
+    let n = conn.query_row(
+        "SELECT count(*) FROM email_codes WHERE email = ?1 AND purpose = ?2",
+        params![email, purpose],
+        |row| row.get::<_, i64>(0),
+    )?;
+    Ok(n)
+}
+
 pub fn bump_email_code_attempts(conn: &Connection, id: i64) -> R<()> {
     conn.execute("UPDATE email_codes SET attempts = attempts + 1 WHERE id = ?1", params![id])?;
     Ok(())

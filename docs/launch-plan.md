@@ -17,7 +17,7 @@
 | # | 要做的事 | 为什么必须做 | 预估工作量 |
 |---|---------|------------|-----------|
 | P0-1 | **复习进度按人隔离** ✅ 已完成（2026-10） | 现在 `word_reviews` 的唯一索引是 `WordID`，**两个用户共用一份进度会互相覆盖**——这是数据正确性问题，不是体验问题 | 1~2 天（含测试） |
-| P0-2 | **强制邀请码注册** | 你选的「暂时邀请制」；现在不填邀请码也能注册 | 半天 |
+| P0-2 | **强制邀请码注册** ✅ 服务端已完成（2026-10） | 你选的「暂时邀请制」；现在不填邀请码也能注册 | 半天 |
 | P0-3 | **打通真发邮件** | 现在 `AUTH_MAIL_MODE=log`，验证码只打进日志，**真实用户收不到码就注册不了** | 半天（SMTP 代码已写好，只差配置） |
 | P0-4 | **公网部署** | HTTPS、Cookie Secure、Nginx 分流、生产环境开关、每日备份 | 1 天 |
 | P0-5 | **三级角色（超管/管理员/用户）** | 你要的「超管发带等级的码」；现在只有 `user`/`admin`，且**带邀请码注册会直接变管理员**（`backend-rust/src/service.rs:367`） | 1~2 天 |
@@ -57,7 +57,8 @@
 ### P0-1 复习进度按人隔离
 
 > **✅ 已完成（2026-10）**：实现清单与实测结果见文末 [附录 C](#附录-c进度记录)；
-> `backend-go/handlers/review_isolation_test.go` 7 项、`scripts/verify-auth.ps1` 18 项全 PASS。
+> `backend-go/handlers/review_isolation_test.go` 7 项、`scripts/verify-auth.ps1` **22 项**全 PASS
+> （P0-1 时是 18 项，P0-2 又加了 4 项）。
 
 **现状（P0-1 之前，留档以免重复踩）**：
 
@@ -111,6 +112,14 @@ review_logs:  加 user_id 列 + INDEX(user_id, reviewed_at) idx_review_logs_user
 
 ### P0-2 强制邀请码注册
 
+> **✅ 服务端已完成（2026-10）**：开关、发码前的强校验、两道门的测试与端到端检查都做完，
+> 详见文末 [附录 C](#-p0-2-强制邀请码注册已完成2026-10)。
+> **刻意没做的两件事**（都不是遗漏）：
+> ① 前端邀请码框**没**改成必填（你选的「先不动前端」——服务端才是唯一安全边界）；
+> ② 「按 `grant_role` 赋角色」仍留在 **P0-5**（那一列由 P0-5 的 `0002_launch.sql` 引入）。
+> 也就是说：**现在把 `AUTH_REQUIRE_INVITE=true` 打上去，邀请制就已经生效**，
+> 只是「带码注册即管理员」这个老行为要等 P0-5 才会被分级角色取代。
+
 **现状**：`backend-rust/src/core/invite.rs:8-10` 明确写着「邀请码**不再是注册门槛**」，`POST /api/auth/email-code` 不带 `invite_code` 也能发码（`service.rs:199` 起），注册时邀请码是可选的（`service.rs:285`）。
 
 **改造**：
@@ -119,7 +128,13 @@ review_logs:  加 user_id 列 + INDEX(user_id, reviewed_at) idx_review_logs_user
 - 开关打开时：
   - `POST /api/auth/email-code`：`invite_code` **必填**，校验不通过直接不下发验证码（错误沿用现有的 `invalid_invite` / `invite_expired` / `invite_exhausted`）；
   - `POST /api/auth/register`：`invite_code` **必填**，注册成功时按邀请码上的 `grant_role` 赋角色（见 P0-5）。
+    > ⚠️ **实际只做了「必填」**：`grant_role` 那一列随 P0-5 的 `0002_launch.sql` 一起加，
+    > 现在带码注册仍然走老逻辑（`service.rs` 的 `let role = if redeemed.is_empty() { "user" } else { "admin" }`）。
+    > 不要以为 P0-2 做完就有三级角色了 —— 那是 P0-5。
 - 前端 `account/account.js`：邀请码输入框改成**必填**（`regInvite`），文案改成「没有邀请码？暂时无法注册」；`:657-658` 那条「不要把空格规范化」的注释仍然有效，别动。
+  > ⚠️ **实际未做**（2026-10 用户选择「先不动前端」）：输入框保持可选。原因是**服务端才是安全边界**——
+  > 强制模式下不填码根本发不出验证码、注册也会被 400 挡住，前端标不标必填不影响安全性，
+  > 只影响「用户提不提前知道要填码」。这条等 P1 管理面板一起改文案与表单。
 - **为什么用开关而不是写死**：你说过未来会「删档重来，注册不强制邀请码，填了才带权限」——那时把开关关掉即可，代码不用再改一遍。
 
 **验收标准**：
@@ -571,3 +586,42 @@ DB_PATH=/var/lib/guangxue/guangxue.db
 
 - 浏览器 localStorage 的每日配额与抽查冷却仍按浏览器存 → 随 **P2** 配额服务端化一起处理；
 - `/admin/` 里「某个词被复习过多少次」仍是全站口径 → **P1** 做管理面板时再分人。
+
+---
+
+### ✅ P0-2 强制邀请码注册（服务端已完成，2026-10）
+
+**开关**
+
+- `backend-rust/src/config.rs` 新增 `require_invite: bool`，环境变量 **`AUTH_REQUIRE_INVITE`**（`env_parse_bool`，与 `AUTH_DEV_ENDPOINTS` 同一套）。
+- 默认值 **`false`**（本地开发随手注册），**生产必须在 `.env` 里显式写 `true`**。
+  刻意**不**做成「生产自动 true」：那样「忘了配」与「故意关掉」在配置里长得一模一样。
+  `backend-rust/.env.example` 里已加这一段并写明这一点。
+- 为什么用开关而不是写死：你说过未来会「删档重来、不强制邀请码、填了才带权限」，届时关掉开关即可，注册流程代码不用再改一遍。
+
+**代码（两处，顺序是关键）**
+
+- `service.rs::request_email_code`：邮箱格式 → `split_codes` → **`if self.cfg.require_invite && codes.is_empty() { return Err(AuthError::InvalidInvite) }`** → 逐个 `is_plausible` → 限流 → 查库 → 写 `email_codes`。
+- `service.rs::register`：同一条判断加在 `split_codes` 之后、`is_plausible` 之前（**两道门都要有**——只拦发码那一步的话，拿着有效码换来的验证码仍能不带码注册）。
+- ⚠️ **邀请码校验必须排在写 `email_codes` 之前**：「先发码后校验」等于没拦 —— 码已经落库，按现有流程还能被用掉。这条是本次改动的核心，测试直接查库锁住它。
+
+**测试（9 项，全在 `backend-rust/tests/require_invite.rs`）**
+
+`spawn_strict()` = `spawn_with(|cfg| cfg.require_invite = true)`，覆盖：没带码 400 + 0 行；空串/纯空白等价于没带；查不到的码 0 行；过期码 `invite_expired` 0 行；用尽码 `invite_exhausted` 0 行；停用码 `invalid_invite` 0 行；有效码正常写 1 行且额度被核销；**注册这一步自己也拦**；开关关掉时开放注册仍可用（反向对照）。
+
+- 为了能断言「**一条都没写库**」，新增 `store/sql.rs::count_email_codes(conn, email, purpose)`（数**含已消费**的全部行）
+  与测试脚手架 `TestApp::email_code_rows(email)`。只数「未消费」不够 —— 「写了一条又立刻标记已消费」也会让那种断言通过。
+
+**实测**
+
+- `cargo test --test require_invite`：**9 项全过**；账号服务合计 **90 → 99 项**、0 失败。
+- `scripts/verify-auth.ps1`：18 → **22 项全 PASS**（11.5 秒）。新增的 4 项是**另起一个实例**（18082，`AUTH_REQUIRE_INVITE=true` + 独立临时库）跑的：
+  不带码发码 → 400 `invalid_invite`、被拒后库里**没有留下验证码**、不带码注册 → 400 `invalid_invite`。
+  > 为什么要另起实例：这个开关只认「环境变量 → 配置」这一条链路，而 Rust 集成测试是直接改 `cfg.require_invite` 字段的，
+  > 恰好**测不到「环境变量有没有真的接上」**；同时主实例必须保持开放注册（第 5) 段要注册普通用户）。
+
+**刻意没做（不是遗漏）**
+
+1. **前端邀请码框没改成必填**：你选的「先不动前端」。服务端是唯一安全边界，界面只影响用户是否提前知道要填码 → 跟 P1 一起改。
+2. **按 `grant_role` 赋角色留在 P0-5**：那一列由 P0-5 的 `0002_launch.sql` 引入。现在带码注册仍是「升级为管理员」（老行为）。
+   **所以做完 P0-2 并不等于有了三级角色**，别把这两件事混起来。
