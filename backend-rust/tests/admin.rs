@@ -4,6 +4,7 @@ mod common;
 
 use axum::http::StatusCode;
 use common::*;
+use guangxue_auth::models::ROLE_SUPER_ADMIN;
 use serde_json::json;
 
 const ADMIN_EMAIL: &str = "2262997289@qq.com";
@@ -16,7 +17,9 @@ async fn login_as_admin(app: &TestApp) -> Client {
         .post("/api/auth/login", json!({"email": ADMIN_EMAIL, "password": ADMIN_PASSWORD, "device_label": "管理台"}))
         .await;
     res.assert_status(StatusCode::OK);
-    assert_eq!(res.field("/data/user/role").unwrap(), "admin");
+    // ⚠️ P0-5 起**启动期种子账号是超管**（否则全新部署没有人能发码 / 调权限）；
+    // 邀请码管理接口的准入也随之上移到超管，所以这个 helper 建的就是超管。
+    assert_eq!(res.field("/data/user/role").unwrap(), ROLE_SUPER_ADMIN);
     client
 }
 
@@ -26,15 +29,15 @@ async fn seeded_admin_can_login_with_the_given_password() {
     let mut client = login_as_admin(&app).await;
     let me = client.me().await;
     assert_eq!(me.field("/data/user/email").unwrap(), ADMIN_EMAIL);
-    assert_eq!(me.field("/data/user/role").unwrap(), "admin");
+    assert_eq!(me.field("/data/user/role").unwrap(), ROLE_SUPER_ADMIN, "P0-5 起启动期种子账号是超管");
 }
 
 #[tokio::test]
 async fn seeding_is_idempotent_and_never_overwrites_password() {
     let app = spawn().await;
-    let created = app.state.service.seed_admin(ADMIN_EMAIL, ADMIN_PASSWORD).await.unwrap();
+    let created = app.state.service.seed_admin(ADMIN_EMAIL, ADMIN_PASSWORD, ROLE_SUPER_ADMIN).await.unwrap();
     assert!(created, "第一次应当创建");
-    let again = app.state.service.seed_admin(ADMIN_EMAIL, "Different123").await.unwrap();
+    let again = app.state.service.seed_admin(ADMIN_EMAIL, "Different123", ROLE_SUPER_ADMIN).await.unwrap();
     assert!(!again, "第二次应当跳过");
 
     // 原密码仍然可用，说明没被覆盖

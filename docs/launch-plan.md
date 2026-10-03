@@ -20,7 +20,7 @@
 | P0-2 | **强制邀请码注册** ✅ 服务端已完成（2026-10） | 你选的「暂时邀请制」；现在不填邀请码也能注册 | 半天 |
 | P0-3 | **打通真发邮件** | 现在 `AUTH_MAIL_MODE=log`，验证码只打进日志，**真实用户收不到码就注册不了** | 半天（SMTP 代码已写好，只差配置） |
 | P0-4 | **公网部署** | HTTPS、Cookie Secure、Nginx 分流、生产环境开关、每日备份 | 1 天 |
-| P0-5 | **三级角色（超管/管理员/用户）** | 你要的「超管发带等级的码」；现在只有 `user`/`admin`，且**带邀请码注册会直接变管理员**（`backend-rust/src/service.rs:367`） | 1~2 天 |
+| P0-5 | **三级角色（超管/管理员/用户）** ✅ 已完成（2026-10） | 你要的「超管发带等级的码」；改造前只有 `user`/`admin`，且**带邀请码注册会直接变管理员** | 1~2 天 |
 | P1 | 管理面板四个模块（邀请码/用户/审计/看板） | 现在邀请码只能跑 CLI，`/admin/` 里没有任何界面 | 2~3 天 |
 | P2 | 每日配额服务端化、限流调参、监控 | 配额现在在浏览器 localStorage 里，多设备会翻倍；不影响数据正确性 | 1 天 |
 
@@ -208,21 +208,31 @@ AUTH_SMTP_TLS=implicit      # 465 用 implicit；587 用 starttls；25 用 none
 
 ### P0-5 三级角色与邀请码分级
 
-**现状**：只有 `user` / `admin` 两种字符串；`users.role` 是 TEXT 字段（`migrations/0001_init.sql:17`，注释里写了「预留：user / admin / ...」），所以**加角色不需要改表结构**。
+> **✅ 已完成（2026-10）**：13 条决策、代码清单与实测结果见文末 [附录 C](#-p0-5-三级角色与邀请码分级已完成2026-10)。
+> 一句话结果：**角色字符串 `user` / `admin` / `super_admin` 在 Rust、Go、前端三处同名同义**，
+> 注册时的角色**只由邀请码上的 `grant_role` 决定**（默认 `user`），
+> 那条「带码注册即管理员」的权限漏洞已经堵上。
+>
+> ⚠️ **邀请码管理面板（发码 / 复制 / 导出 / 邀请链接 / 邮件发放）仍在 P1**。
+> P0-5 交付的是「能力」：CLI 与 HTTP 接口都能发码、带等级、带批次，
+> 界面那一层等 P1 的四个面板一起做。**你现在发码用 CLI**（见附录 C 的命令示例）。
+
+**现状（改造前，留档以免重复踩）**：只有 `user` / `admin` 两种字符串；`users.role` 是 TEXT 字段（`migrations/0001_init.sql:17`，注释里写了「预留：user / admin / ...」），所以**加角色不需要改表结构**。
 
 **要改的地方**（⚠️ **角色字符串是跨服务契约**，Rust 与 Go 两边都要改，漏一边就会出现「后台能进、接口 403」这类灵异现象）：
 
-| 位置 | 现在 | 改成 |
+| 位置 | 改造前 | 现在（已完成） |
 |---|---|---|
-| `backend-rust/src/http/extract.rs`（`role == "admin"` 的判定） | 只认 `admin` | 认 `admin` **和** `super_admin` |
-| 新增 `RequireSuperAdmin` 等价物 | 无 | 只有 `super_admin` 能过（发码、改他人角色、封禁） |
-| `backend-go/middleware/auth.go` | `RoleAdmin = "admin"` | 加 `RoleSuperAdmin`；`RequireAdmin` 放行两者，新增 `RequireSuperAdmin` |
-| `backend-rust/src/service.rs:367` | `let role = if redeemed.is_empty() { "user" } else { "admin" }` | **按邀请码的 `grant_role` 赋值**（默认 `user`）——这一行是当前最大的权限漏洞 |
-| `admin/admin.js` 的登录门禁 | 要求 `role === 'admin'` | 放行 `admin` 与 `super_admin` |
+| `backend-rust/src/http/extract.rs` | 只认 `role == "admin"` | 判定收口到 `models::can_enter_admin`：认 `admin` **和** `super_admin`；新增 `SuperAdminUser` 提取器（更窄，只认超管） |
+| `backend-go/middleware/auth.go` | `RoleAdmin = "admin"` | 加 `RoleSuperAdmin = "super_admin"`；`RequireAdmin` 走 `CanEnterAdmin`（放行两者），新增 `RequireSuperAdmin` |
+| `backend-rust/src/service.rs` 注册那一行 | `let role = if redeemed.is_empty() { "user" } else { "admin" }` | **按邀请码的 `grant_role` 赋值**（默认 `user`）——这条权限漏洞已堵上 |
+| `admin/admin.js` 的门禁 | 要求 `role === 'admin'` | `canEnterAdmin(role)` 放行 `admin` 与 `super_admin`（`account.js`、`main.js` 里同样的判定也一并改了） |
+| 角色常量 | 散落的字符串字面量 | 收口在 `models.rs` 的 `ROLE_USER` / `ROLE_ADMIN` / `ROLE_SUPER_ADMIN`，**两侧各有一条测试钉住字面量**（改错时测试红，而不是线上 403） |
 
-**邀请码分级**：`invite_codes` 表加一列（见 P0-5 的 SQL），超管发码时选「普通用户码 / 管理员码」。
+**邀请码分级**：`invite_codes` 加了两列 —— `grant_role`（`user` / `admin`）与 `batch_id`（一次生成的一批共享，便于按批回收与统计），见 `backend-rust/migrations/0002_launch.sql`。
 
-**给现有管理员升级为超管**：一条 SQL 或 CLI 命令即可（`UPDATE users SET role='super_admin' WHERE email='2262997289@qq.com'`），建议顺手补一个 `cargo run --bin seed-admin -- --role super_admin` 的能力。
+**给现有管理员升级为超管**：**不需要手写 SQL 了**。启动时自动把 `AUTH_ADMIN_EMAIL` 那个账号**确保为超管**（不存在就建、是 admin 就提权、已经是超管就不动），另有 `cargo run --bin seed-admin -- --role super_admin` 供以后给**别人**授权。
+⚠️ 刻意**不做自动降级**：换了环境变量里的邮箱时，旧超管仍然是超管 —— 自动降权会把上一个超管悄悄锁死，而锁死超管无法自救。
 
 ---
 
@@ -285,6 +295,23 @@ ALTER TABLE invite_codes ADD COLUMN batch_id   TEXT NOT NULL DEFAULT '';      --
 ```
 
 **超管发码时能设的参数**：张数（1~100）、每张可用次数、有效期（天）、备注、**等级**（普通/管理员）。
+
+**这个命令怎么发码**：
+
+```powershell
+cd backend-rust
+# 普通邀请码（对方注册即普通用户）：默认 7 天有效、每张用 1 次
+cargo run --release --bin invite -- create --count 5 --note "第一批"
+
+# 管理员码（对方注册即管理员）：带 ADMIN- 前缀，一眼能看出分量
+cargo run --release --bin invite -- create --count 1 --grant-role admin --note "给运营"
+
+# 看列表（带等级列）/ 停用某张
+cargo run --release --bin invite -- list --status unused
+cargo run --release --bin invite -- disable 12
+```
+
+打印出来的码是**分组显示**（`7K3M-9QRT-2XWZ-5BHD`）方便你自己核对，**发给对方的仍然是紧凑形式**（两种写法查库时都认）。
 
 ---
 
@@ -446,6 +473,8 @@ DB_PATH=/var/lib/guangxue/guangxue.db
 ### 9.3 备份（每天 03:00）
 
 - 用 `backend-go/cmd/backup` 编译出的 **Linux 二进制**（`GOOS=linux GOARCH=amd64 go build ./cmd/backup`），走 `VACUUM INTO`，**不用复制 `.db` 文件**——实测磁盘上 4 KB 的 `auth.db` 安全快照出来是 124 KB，直接拷贝丢 97%；
+  - ⚠️ **也不要手工 `Copy-Item auth.db`**：这个库开着 WAL，最新变更可能还只在 `auth.db-wal` 里，而 `VACUUM INTO` 会把 WAL 一起并进去。手工拷贝 `.db`（尤其漏掉 `-wal`）拿到的是**旧快照**，恢复时会丢掉最近的用户与邀请码。
+  - 这条是实测踩出来的（2026-10-03）：拷完发现 `sqlite` 头的 `user_version` 还是 1、新表结构「不见了」——因为那些变更全在 3.7 MB 的 WAL 里。
 - systemd timer 每天跑一次，`-keep 14` 保留两周；
 - ⚠️ 备份产物**不要和数据库放同一块盘**（盘坏了两个一起没），建议 `rsync` 到对象存储或另一台机器；
 - 每月手动恢复演练一次（把备份文件拷到测试目录起一次服务，确认能登录）。
@@ -623,5 +652,73 @@ DB_PATH=/var/lib/guangxue/guangxue.db
 **刻意没做（不是遗漏）**
 
 1. **前端邀请码框没改成必填**：你选的「先不动前端」。服务端是唯一安全边界，界面只影响用户是否提前知道要填码 → 跟 P1 一起改。
-2. **按 `grant_role` 赋角色留在 P0-5**：那一列由 P0-5 的 `0002_launch.sql` 引入。现在带码注册仍是「升级为管理员」（老行为）。
+2. **按 `grant_role` 赋角色留在 P0-5**：那一列由 P0-5 的 `0002_launch.sql` 引入。
+   ✅ **2026-10 已由 P0-5 补齐**（见下一条记录）。
+
+---
+
+### ✅ P0-5 三级角色与邀请码分级（已完成，2026-10）
+
+**13 条与你逐条敲定的决策**（前 8 条是格式/发放/生成，后 5 条是边界行为）：
+
+| # | 问题 | 定案 |
+|---|---|---|
+| 1 | 码长与显示 | **16 位不变**，只在界面/列表里分组显示成 `7K3M-9QRT-2XWZ-5BHD`；给用户的仍是紧凑形式 |
+| 2 | 一张能用几次 | **默认 1 次**；要批量就发 N 张，要「一码多用」也可以（表结构与 CLI 本来就支持） |
+| 3 | 有效期默认 | **默认 7 天**，界面给 1/7/30/90 天选项 |
+| 4 | 怎么发出去 | 面板一键复制（P1）+ 邀请链接（P1）+ 整批发邮件（等 P0-3 SMTP）+ 导出 CSV/文本（P1） |
+| 5 | 在哪里生成 | **CLI 先上，面板紧随** → CLI 与 HTTP 接口这次都做了，**面板界面留在 P1** |
+| 6 | 等级与发放权限 | **只做普通码 + 管理员码**（不设超管码），且**只有超管能发** |
+| 7 | 已有用户改角色 | **超管在用户列表里改**（管理员码只给新人） |
+| 8 | 超管怎么产生 | **环境变量 + CLI 双保险**：启动期确保 `AUTH_ADMIN_EMAIL` 是超管，另有 `--role super_admin` |
+| 9 | 存量邀请码怎么办 | **全部停用**（它们没有等级信息，留着就是一批身份不明的凭证）→ 迁移里 `UPDATE invite_codes SET disabled = 1` |
+| 10 | 一次填多张码 | **拒绝**（400 `invalid_params`「一次只能使用一张邀请码」）——两张码等级可能冲突，「取最高」很难解释 |
+| 11 | 超管自锁保护 | **禁止降级/封禁最后一个可用超管**（只数 `status='active'` 的） |
+| 12 | 管理员码形态 | `ADMIN-` 前缀 + 库里 `grant_role`，**两种都保留**：前缀给人看，判定永远查库 |
+| 13 | 权限矩阵 | 严格按第 3 节：管理员进后台管内容，**碰不到权限**；发码/调权限/封号/审计只有超管 |
+
+**代码清单**
+
+- `backend-rust/migrations/0002_launch.sql`（新）：加 `grant_role` / `batch_id` 两列 + 两个索引 + **停用全部存量码**；`db.rs` 的 `MIGRATIONS` 登记为版本 2。
+- `models.rs`：`ROLE_USER` / `ROLE_ADMIN` / `ROLE_SUPER_ADMIN` 三个常量 + `can_enter_admin` / `is_super_role` / `is_valid_grant_role` / `role_rank` 四个判定，**所有角色判定都从这里走**（不再有散落的字符串比较）。
+- `service.rs`：`create_invites(.., grant_role)` 生成带前缀的码并共享 `batch_id`；`register` 里角色改为
+  `let grant_role = redeemed.first().map(|inv| inv.grant_role.clone()).unwrap_or(ROLE_USER)`（默认 `user`）；
+  `ensure_super_admin`（启动期确保超管，**不降权**）；`change_user_role` / `set_user_status` / `list_users`（都带自锁保护与审计）。
+- `http/extract.rs`：`AdminUser` 改用 `can_enter_admin`（放行两者），新增 `SuperAdminUser`。
+- `http/admin.rs`：发码接口加 `grant_role` 出参与入参；新增 `GET /admin/users`、`POST /admin/users/{id}/role`、`POST /admin/users/{id}/status`；**邀请码与治理接口全部改成超管准入**。
+- `bin/invite.rs`：`--grant-role` + 分组显示；`bin/seed_admin.rs`：`--role`（默认 `super_admin`）+ 明确「只在新账号时生效」。
+- `backend-go/middleware/auth.go`：`RoleSuperAdmin` + `CanEnterAdmin` + `RequireSuperAdmin`。
+- 前端：`admin/admin.js` 的 `canEnterAdmin`、`account/account.js` 的角色显示与后台入口、`main.js` 的标题标记。
+
+**实测**
+
+- 账号服务测试 **99 → 124 项**、0 失败。其中 P0-5 新增 **25 项**：
+  `tests/roles.rs` 15 项（三级准入、超管提权幂等且不降权、发码分级、非法 `grant_role`、管理员发不了码、
+  封禁顺带吊销会话、**最后超管不能降级/封禁**、被封的超管不算「可用」、用户列表过滤、管理员码端到端），
+  `core/invite.rs` 3 项（前缀生成、前缀不是安全边界），`models.rs` 5 项（角色字面量契约、三道判定），
+  `db.rs` 1 项（**迁移停用存量码** + 新列默认值），Go 侧 2 项（`RequireSuperAdmin` 门禁 + 字面量契约）。
+- `scripts/verify-auth.ps1`：22 → **26 项全 PASS**（新增 4 项真实 HTTP：超管发管理员码带前缀、
+  普通用户看邀请码/用户列表都 403、降级最后一个超管 400）。
+- `scripts/verify.ps1` 6 步 PASS、`go test ./...` 5 包 ok。
+
+**开发库实迁记录（2026-10-03）**
+
+- 迁移日志：`已应用数据库迁移 version=2` + `已有账号已提升为超级管理员 email=2262997289@qq.com`。
+- 实测：登录后 `role = super_admin`；发码得到 `ADMIN-2XRBKGKY2FPQKG6V`（`grant_role=admin`，带 `batch_id`）；
+  邀请码列表 **17 张里 16 张 disabled**（存量码全停用，只有刚发的那张 unused）。
+- ⚠️ **踩坑（值得记住）**：`cargo build`（不加 `--release`）只更新 `target/debug/`，而**开发服务跑的是
+  `target/release/guangxue-auth.exe`** —— 我一度以为「改好的代码没生效、迁移没跑」，
+  实际是那个 release 二进制还是三周前的。`scripts/verify-auth.ps1` 用的是 debug 二进制（它自己会 `cargo build`），
+  所以它一直测的是新代码；**只有手动起的开发服务踩到了这个坑**。改完服务端后请 `cargo build --release`。
+- ⚠️ 另一个坑：**不要用 `Copy-Item auth.db` 手工备份**。这个库开着 WAL，
+  当时磁盘上 `auth.db` 是 126 KB 而 `auth.db-wal` 有 3.7 MB —— 变更全在 WAL 里，
+  手工拷贝（尤其漏掉 `-wal`）拿到的是旧快照。备份请用 `VACUUM INTO`（`cmd/backup`）。
+
+**刻意没做（不是遗漏）**
+
+1. **邀请码管理面板**：发码/列表/一键复制/导出 CSV/邀请链接/邮件发放都要界面，属 P1 的四个面板之一。
+   P0-5 交付的是能力（CLI + HTTP 接口都通了），**现在发码用 CLI**。
+2. **超管码**：一张码就能再造一个能封你号的人，且本期没有「超管能否封超管」的设计 —— 按第 3 节的取舍不做。
+3. **管理员的只读用户列表**：权限矩阵里写了「管理员 ✅（只读）」，但这次 `GET /admin/users` 只放给超管。
+   理由是「只读用户列表」属于 P1 面板的功能，等面板做的时候再按矩阵放开（接口已经就绪，改准入即可）。
    **所以做完 P0-2 并不等于有了三级角色**，别把这两件事混起来。

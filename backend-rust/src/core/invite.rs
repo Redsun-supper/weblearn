@@ -26,10 +26,25 @@ const ALPHABET: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 /// 默认邀请码长度
 pub const CODE_LEN: usize = 16;
 
+/// 管理员码的前缀（**只是给人看的**：方便一眼分出手上这张码的分量）
+pub const ADMIN_PREFIX: &str = "ADMIN-";
+
 /// 生成一个邀请码（系统随机源）
 pub fn generate_code() -> String {
     let mut rng = rand::rngs::OsRng;
     (0..CODE_LEN).map(|_| ALPHABET[rng.gen_range(0..ALPHABET.len())] as char).collect()
+}
+
+/// 按要授予的角色生成邀请码：管理员码带 `ADMIN-` 前缀。
+///
+/// ⚠️ 前缀**不是安全边界**：兑换时一律查库读 `grant_role`。
+/// 作用只是让人扫一眼就知道这张码能不能造管理员（避免把管理员码当普通码随手转出去）。
+pub fn generate_code_for(grant_role: &str) -> String {
+    if grant_role == crate::models::ROLE_ADMIN {
+        format!("{ADMIN_PREFIX}{}", generate_code())
+    } else {
+        generate_code()
+    }
 }
 
 /// 规范化**单个**邀请码：去空白、统一大写（大小写不敏感）。
@@ -138,6 +153,34 @@ mod tests {
         for _ in 0..64 {
             assert!(seen.insert(generate_code()), "邀请码出现重复");
         }
+    }
+
+    #[test]
+    fn admin_codes_carry_the_prefix_but_user_codes_do_not() {
+        let admin = generate_code_for(crate::models::ROLE_ADMIN);
+        assert!(admin.starts_with(ADMIN_PREFIX), "管理员码应当带前缀：{admin}");
+        assert_eq!(admin.len(), ADMIN_PREFIX.len() + CODE_LEN);
+        assert!(is_plausible(&admin), "带前缀的码必须能通过预筛");
+
+        let user = generate_code_for(crate::models::ROLE_USER);
+        assert!(!user.starts_with(ADMIN_PREFIX));
+        assert_eq!(user.len(), CODE_LEN);
+
+        // 未知角色按普通码处理（不能因为传了个奇怪的字符串就生成管理员码）
+        let odd = generate_code_for("root");
+        assert!(!odd.starts_with(ADMIN_PREFIX));
+    }
+
+    #[test]
+    fn prefix_is_not_a_security_boundary() {
+        // 前缀只是给人看的：兑换判定永远查库读 grant_role。
+        // 这条测试锁的是「规范化不会把前缀抹掉」——抹掉了就没法在日志/列表里看出分量，
+        // 但也**不能**靠它判定权限（`service.rs` 只读 grant_role）。
+        let admin = generate_code_for(crate::models::ROLE_ADMIN);
+        assert_eq!(normalize_code(&admin), admin, "前缀必须原样保留");
+        assert!(!admin.is_empty());
+        // 反过来：手里拿一个不带前缀的码，也可能是 admin —— 判定在库里，不在字符串上
+        assert!(!generate_code_for(crate::models::ROLE_USER).starts_with(ADMIN_PREFIX));
     }
 
     #[test]

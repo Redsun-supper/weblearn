@@ -168,7 +168,12 @@ try {
         -Body (@{ email = $adminEmail; password = $adminPassword; device_label = 'verify-auth' } | ConvertTo-Json)
     $role = ''
     try { $role = [string](($login.Content | ConvertFrom-Json).data.user.role) } catch { }
-    Add-Check '账号服务：管理员登录成功且 role=admin' ($login.StatusCode -eq 200 -and $role -eq 'admin') "HTTP $($login.StatusCode) role=$role"
+    # P0-5 起**启动期种子账号是 super_admin**（否则全新部署没人能发码 / 调权限）。
+    # 这里刻意保持宽松：admin 或 super_admin 都算「后台角色」，
+    # 免得以后调整种子角色时这条检查又假红一次（真正的契约由两侧的常量测试钉住）。
+    Add-Check '账号服务：管理员登录成功且是后台角色（admin / super_admin）' `
+        ($login.StatusCode -eq 200 -and ($role -eq 'admin' -or $role -eq 'super_admin')) `
+        "HTTP $($login.StatusCode) role=$role"
 
     $accessCookie = @($adminSession.Cookies.GetAllCookies() | Where-Object { $_.Name -eq 'gx_access' })
     Add-Check '账号服务：下发 gx_access Cookie' ($accessCookie.Count -eq 1) "Cookie 数=$($accessCookie.Count)"
@@ -243,6 +248,43 @@ try {
     Add-Check 'Go：普通用户写词条 → 403 forbidden（RequireAdmin 拦住）' `
         ($r.StatusCode -eq 403 -and (Get-ErrorCode $r) -eq 'forbidden') `
         "HTTP $($r.StatusCode) error=$(Get-ErrorCode $r)"
+
+    # 5b) P0-5：三级角色的权限边界（这是「管理员 = 内容/运营角色，碰不到权限」的现场验证）
+    #     超管能发码；普通用户不能看码、不能进用户列表。
+    $r = Invoke-WebRequest -Uri "$authBase/api/auth/admin/invites" -Method POST -WebSession $adminSession `
+        -ContentType 'application/json' -Headers @{ Origin = $allowedOrigin } -SkipHttpErrorCheck `
+        -Body (@{ count = 1; grant_role = 'admin'; note = 'verify-auth 联调' } | ConvertTo-Json)
+    $issuedCode = ''
+    $issuedRole = ''
+    try {
+        $issuedCode = [string](($r.Content | ConvertFrom-Json).data.items[0].code)
+        $issuedRole = [string](($r.Content | ConvertFrom-Json).data.items[0].grant_role)
+    } catch { }
+    Add-Check 'P0-5：超管发管理员码 → 200 且带 ADMIN- 前缀' `
+        ($r.StatusCode -eq 200 -and $issuedRole -eq 'admin' -and $issuedCode.StartsWith('ADMIN-')) `
+        "HTTP $($r.StatusCode) grant_role=$issuedRole code=$issuedCode"
+
+    $r = Invoke-WebRequest -Uri "$authBase/api/auth/admin/invites" -WebSession $userSession -SkipHttpErrorCheck
+    Add-Check 'P0-5：普通用户看邀请码列表 → 403 forbidden' `
+        ($r.StatusCode -eq 403 -and (Get-ErrorCode $r) -eq 'forbidden') `
+        "HTTP $($r.StatusCode) error=$(Get-ErrorCode $r)"
+
+    $r = Invoke-WebRequest -Uri "$authBase/api/auth/admin/users" -WebSession $userSession -SkipHttpErrorCheck
+    Add-Check 'P0-5：普通用户看用户列表 → 403 forbidden' `
+        ($r.StatusCode -eq 403 -and (Get-ErrorCode $r) -eq 'forbidden') `
+        "HTTP $($r.StatusCode) error=$(Get-ErrorCode $r)"
+
+    # 自锁保护：临时库里唯一的超管就是种子账号，降级/封禁都必须被拒
+    $superID = 0
+    try {
+        $usersResp = Invoke-WebRequest -Uri "$authBase/api/auth/admin/users?size=50" -WebSession $adminSession -SkipHttpErrorCheck
+        $superID = [int](($usersResp.Content | ConvertFrom-Json).data.items | Where-Object { $_.role -eq 'super_admin' } | Select-Object -First 1).id
+    } catch { }
+    $r = Invoke-WebRequest -Uri "$authBase/api/auth/admin/users/$superID/role" -Method POST -WebSession $adminSession `
+        -ContentType 'application/json' -Headers @{ Origin = $allowedOrigin } -SkipHttpErrorCheck `
+        -Body (@{ role = 'admin' } | ConvertTo-Json)
+    Add-Check 'P0-5：降级最后一个超管 → 400（自锁保护）' `
+        ($r.StatusCode -eq 400) "HTTP $($r.StatusCode) message=$((($r.Content | ConvertFrom-Json).message))"
 
     # 6) P0-1：进度按人隔离 —— 管理员与普通用户复习**同一个词**，各自只该看到自己那一条。
     #    改造前 word_reviews 的唯一键是 word_id（一个词全局一行），两人共用一行、

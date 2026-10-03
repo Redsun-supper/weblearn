@@ -17,7 +17,8 @@ const USER_COLUMNS: &str = "id, email, username, password_hash, role, status, em
                             failed_attempts, locked_until, last_login_at, created_at, updated_at";
 const SESSION_COLUMNS: &str = "id, user_id, family_id, refresh_hash, device_label, user_agent, ip, \
                                created_at, last_used_at, expires_at, revoked_at, revoked_reason, replaced_by";
-const INVITE_COLUMNS: &str = "id, code, note, max_uses, used_count, expires_at, disabled, created_by, created_at";
+const INVITE_COLUMNS: &str = "id, code, note, max_uses, used_count, expires_at, disabled, created_by, \
+                               created_at, grant_role, batch_id";
 const EMAIL_CODE_COLUMNS: &str =
     "id, email, purpose, code_hash, attempts, expires_at, consumed_at, created_at, ip";
 
@@ -77,6 +78,8 @@ fn invite_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<InviteRow> {
         disabled: row.get::<_, i64>("disabled")? != 0,
         created_by: row.get("created_by")?,
         created_at: req_ts(row.get("created_at")?),
+        grant_role: row.get("grant_role")?,
+        batch_id: row.get("batch_id")?,
     })
 }
 
@@ -159,6 +162,75 @@ pub fn update_login_success(conn: &Connection, user_id: i64, now: OffsetDateTime
         params![user_id, ts(now)],
     )?;
     Ok(())
+}
+
+/// 数「还有几个这种角色的**可用**账号」——自锁保护的依据。
+///
+/// 只数 `status = 'active'`：被禁用/封禁的超管等于不存在，不能拿来当「还有人能救我」的理由。
+/// 否则「先封掉另一个超管、再把自己降级」会一路通过，最后没人能进后台。
+pub fn count_active_users_with_role(conn: &Connection, role: &str) -> R<i64> {
+    let n = conn.query_row(
+        "SELECT count(*) FROM users WHERE role = ?1 AND status = 'active'",
+        params![role],
+        |row| row.get::<_, i64>(0),
+    )?;
+    Ok(n)
+}
+
+/// 改某个用户的角色；返回受影响行数
+pub fn update_user_role(conn: &Connection, user_id: i64, role: &str, now: OffsetDateTime) -> R<usize> {
+    let n = conn.execute(
+        "UPDATE users SET role = ?2, updated_at = ?3 WHERE id = ?1",
+        params![user_id, role, ts(now)],
+    )?;
+    Ok(n)
+}
+
+/// 改某个账号的状态（`active` / `disabled`）；返回受影响行数
+pub fn update_user_status(conn: &Connection, user_id: i64, status: &str, now: OffsetDateTime) -> R<usize> {
+    let n = conn.execute(
+        "UPDATE users SET status = ?2, updated_at = ?3 WHERE id = ?1",
+        params![user_id, status, ts(now)],
+    )?;
+    Ok(n)
+}
+
+/// 列出用户（分页，可按角色/状态过滤，按 id 倒序）
+pub fn list_users(
+    conn: &Connection,
+    role: Option<&str>,
+    status: Option<&str>,
+    limit: i64,
+    offset: i64,
+) -> R<(Vec<UserRow>, i64)> {
+    let mut where_clause = String::from(" WHERE 1 = 1");
+    let mut args: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+    if let Some(role) = role {
+        where_clause.push_str(" AND role = ?");
+        args.push(Box::new(role.to_string()));
+    }
+    if let Some(status) = status {
+        where_clause.push_str(" AND status = ?");
+        args.push(Box::new(status.to_string()));
+    }
+    let total: i64 = conn.query_row(
+        &format!("SELECT count(*) FROM users{where_clause}"),
+        rusqlite::params_from_iter(args.iter().map(|b| b.as_ref())),
+        |row| row.get(0),
+    )?;
+    args.push(Box::new(limit.clamp(1, 200)));
+    args.push(Box::new(offset.max(0)));
+    let sql = format!("SELECT {USER_COLUMNS} FROM users{where_clause} ORDER BY id DESC LIMIT ? OFFSET ?");
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(
+        rusqlite::params_from_iter(args.iter().map(|b| b.as_ref())),
+        user_from_row,
+    )?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row?);
+    }
+    Ok((out, total))
 }
 
 /// 登录失败：累加计数，达到阈值则锁定并清零计数；返回 `(累加后的次数, 锁定到期时间)`
@@ -308,11 +380,14 @@ pub fn insert_invite(
     expires_at: Option<OffsetDateTime>,
     created_by: Option<i64>,
     now: OffsetDateTime,
+    grant_role: &str,
+    batch_id: &str,
 ) -> R<i64> {
     conn.execute(
-        "INSERT INTO invite_codes (code, note, max_uses, used_count, expires_at, disabled, created_by, created_at) \
-         VALUES (?1, ?2, ?3, 0, ?4, 0, ?5, ?6)",
-        params![code, note, max_uses.max(1), expires_at.map(ts), created_by, ts(now)],
+        "INSERT INTO invite_codes \
+           (code, note, max_uses, used_count, expires_at, disabled, created_by, created_at, grant_role, batch_id) \
+         VALUES (?1, ?2, ?3, 0, ?4, 0, ?5, ?6, ?7, ?8)",
+        params![code, note, max_uses.max(1), expires_at.map(ts), created_by, ts(now), grant_role, batch_id],
     )?;
     Ok(conn.last_insert_rowid())
 }
@@ -494,4 +569,20 @@ pub fn insert_audit(conn: &Connection, entry: &NewAudit) -> R<()> {
         ],
     )?;
     Ok(())
+}
+
+/// 某个动作在审计表里有多少条（测试用：治理动作必须留痕）
+pub fn count_audit_by_action(conn: &Connection, action: &str) -> R<i64> {
+    let n = conn.query_row(
+        "SELECT count(*) FROM audit_logs WHERE action = ?1",
+        params![action],
+        |row| row.get::<_, i64>(0),
+    )?;
+    Ok(n)
+}
+
+/// 邀请码总行数（含停用/过期的）。测试用：迁移要能证明「存量码都被停用了」。
+pub fn count_all_invites(conn: &Connection) -> R<i64> {
+    let n = conn.query_row("SELECT count(*) FROM invite_codes", [], |row| row.get::<_, i64>(0))?;
+    Ok(n)
 }

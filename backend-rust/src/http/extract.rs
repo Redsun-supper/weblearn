@@ -19,11 +19,10 @@ impl FromRequestParts<AppState> for AuthUser {
     }
 }
 
-/// 管理员（在 `AuthUser` 之上加一条 `role == "admin"` 的最小准入）。
+/// 管理员（在 `AuthUser` 之上加一条「能进后台」的准入）。
 ///
-/// ⚠️ 这是**邀请码管理接口的准入**，不是权限系统本身：需求里「权限等级暂时仅预留」
-/// 指的是不做 RBAC、权限点、用户管理后台；`users.role` / `users.status` 只存不判。
-/// 若哪天要实现完整权限系统，替换点就是这里。
+/// 放行 `admin` 与 `super_admin`（两者都能进后台、管词条、看数据）。
+/// 判定收口在 [`crate::models::can_enter_admin`]，避免同一套字符串散落在各处。
 pub struct AdminUser(pub AuthUser);
 
 impl FromRequestParts<AppState> for AdminUser {
@@ -31,10 +30,29 @@ impl FromRequestParts<AppState> for AdminUser {
 
     async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Self::Rejection> {
         let user = AuthUser::from_request_parts(parts, state).await?;
-        if user.role != "admin" {
+        if !crate::models::can_enter_admin(&user.role) {
             tracing::warn!(user_id = user.user_id, role = %user.role, "非管理员访问管理接口");
             return Err(AuthError::Forbidden);
         }
         Ok(AdminUser(user))
+    }
+}
+
+/// 超级管理员（治理动作：发码、改他人角色、封禁、查审计）。
+///
+/// ⚠️ 比 [`AdminUser`] **严格更窄**：普通管理员做不了这些事。
+/// 权限矩阵见 `docs/launch-plan.md` 第 3 节；判定收口在 [`crate::models::is_super_role`]。
+pub struct SuperAdminUser(pub AuthUser);
+
+impl FromRequestParts<AppState> for SuperAdminUser {
+    type Rejection = AuthError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Self::Rejection> {
+        let user = AuthUser::from_request_parts(parts, state).await?;
+        if !crate::models::is_super_role(&user.role) {
+            tracing::warn!(user_id = user.user_id, role = %user.role, "非超管尝试治理动作");
+            return Err(AuthError::Forbidden);
+        }
+        Ok(SuperAdminUser(user))
     }
 }

@@ -9,6 +9,44 @@ use time::OffsetDateTime;
 
 use crate::db::ts;
 
+// ---------------------------------------------------------------- 角色
+//
+// ⚠️ 这三个字符串是**跨服务的契约**：Rust 账号服务写进 `users.role`，
+// Go 后端与前端拿它做准入判定（`backend-go/middleware/auth.go` 里的同名常量）。
+// 任何一边改了字面量，另一边就会静默失配——症状是「后台能进、接口 403」这类灵异现象，
+// 所以两侧都有测试把字面量钉死。
+
+/// 普通用户：只能复习、看自己的数据
+pub const ROLE_USER: &str = "user";
+/// 管理员：内容 / 运营角色（管词条、看数据、看用户），**碰不到权限**
+pub const ROLE_ADMIN: &str = "admin";
+/// 超级管理员：治理角色（发码、调权限、封号、查审计）
+pub const ROLE_SUPER_ADMIN: &str = "super_admin";
+
+/// 这个角色能不能进后台（管理员与超管都可以）
+pub fn can_enter_admin(role: &str) -> bool {
+    role == ROLE_ADMIN || role == ROLE_SUPER_ADMIN
+}
+
+/// 这个角色能不能做治理动作（发码 / 改他人角色 / 封禁）
+pub fn is_super_role(role: &str) -> bool {
+    role == ROLE_SUPER_ADMIN
+}
+
+/// 角色是否合法（用于发码时校验 grant_role）
+pub fn is_valid_grant_role(role: &str) -> bool {
+    role == ROLE_USER || role == ROLE_ADMIN
+}
+
+/// 角色权重：用来判断「提升 / 降级」，以及多张码取最高等级
+pub fn role_rank(role: &str) -> i32 {
+    match role {
+        ROLE_SUPER_ADMIN => 3,
+        ROLE_ADMIN => 2,
+        _ => 1,
+    }
+}
+
 /// 用户行（含密码哈希，仅服务端使用）
 #[derive(Debug, Clone)]
 pub struct UserRow {
@@ -34,7 +72,11 @@ impl UserRow {
     }
 
     pub fn is_admin(&self) -> bool {
-        self.role == "admin"
+        can_enter_admin(&self.role)
+    }
+
+    pub fn is_super_admin(&self) -> bool {
+        is_super_role(&self.role)
     }
 
     /// 锁是否仍然有效
@@ -134,6 +176,11 @@ pub struct InviteRow {
     pub disabled: bool,
     pub created_by: Option<i64>,
     pub created_at: OffsetDateTime,
+    /// 兑换后得到的角色（`user` / `admin`）——**这才是真正的判定**，
+    /// 码上那个 `ADMIN-` 前缀只是给人看的
+    pub grant_role: String,
+    /// 一次生成的一批（同一批共享），便于按批回收与统计
+    pub batch_id: String,
 }
 
 impl InviteRow {
@@ -148,6 +195,8 @@ impl InviteRow {
             disabled: self.disabled,
             created_at: ts(self.created_at),
             status: self.status(now).to_string(),
+            grant_role: self.grant_role.clone(),
+            batch_id: self.batch_id.clone(),
         }
     }
 
@@ -177,6 +226,10 @@ pub struct InvitePublic {
     pub created_at: String,
     /// unused / used / expired / disabled
     pub status: String,
+    /// 兑换后得到的角色（`user` / `admin`）
+    pub grant_role: String,
+    /// 生成批次（同一次生成的码共享）
+    pub batch_id: String,
 }
 
 /// 邮箱验证码行（只存摘要）
@@ -242,3 +295,49 @@ impl NewAudit {
 
 /// 验证码用途（本期只有注册；找回密码等留待后续）
 pub const PURPOSE_REGISTER: &str = "register";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// ⚠️ 这三个字面量是**跨服务契约**（Go 侧 `middleware.RoleSuperAdmin` 必须逐字相同）：
+    /// 改了这里而没改 Go，症状是「后台能进、接口 403」。这条测试的价值就是让改动卡在这里。
+    #[test]
+    fn role_strings_are_the_cross_service_contract() {
+        assert_eq!(ROLE_USER, "user");
+        assert_eq!(ROLE_ADMIN, "admin");
+        assert_eq!(ROLE_SUPER_ADMIN, "super_admin");
+    }
+
+    #[test]
+    fn admin_gate_accepts_both_admin_and_super_admin() {
+        assert!(can_enter_admin(ROLE_ADMIN));
+        assert!(can_enter_admin(ROLE_SUPER_ADMIN));
+        assert!(!can_enter_admin(ROLE_USER));
+        assert!(!can_enter_admin(""));
+        assert!(!can_enter_admin("root"), "不认识的字符串一律不放行");
+    }
+
+    #[test]
+    fn super_gate_is_strictly_narrower() {
+        assert!(is_super_role(ROLE_SUPER_ADMIN));
+        assert!(!is_super_role(ROLE_ADMIN), "管理员不能做治理动作（发码、调权限）");
+        assert!(!is_super_role(ROLE_USER));
+    }
+
+    #[test]
+    fn grant_role_only_allows_user_or_admin() {
+        assert!(is_valid_grant_role(ROLE_USER));
+        assert!(is_valid_grant_role(ROLE_ADMIN));
+        // 本期刻意不支持超管码：一张码就能再造一个能封你号的人
+        assert!(!is_valid_grant_role(ROLE_SUPER_ADMIN));
+        assert!(!is_valid_grant_role("root"));
+    }
+
+    #[test]
+    fn role_rank_orders_user_below_admin_below_super() {
+        assert!(role_rank(ROLE_USER) < role_rank(ROLE_ADMIN));
+        assert!(role_rank(ROLE_ADMIN) < role_rank(ROLE_SUPER_ADMIN));
+        assert_eq!(role_rank("nonsense"), role_rank(ROLE_USER), "未知角色按最低算");
+    }
+}

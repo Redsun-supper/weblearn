@@ -20,7 +20,8 @@ use crate::core::validate;
 use crate::error::{AuthError, Result};
 use crate::mail::Mailer;
 use crate::models::{
-    InvitePublic, InviteRow, NewAudit, SessionPublic, SessionRow, UserPublic, UserRow, PURPOSE_REGISTER,
+    self, InvitePublic, InviteRow, NewAudit, SessionPublic, SessionRow, UserPublic, UserRow,
+    PURPOSE_REGISTER,
 };
 use crate::rate_limit::RateLimiter;
 use crate::store::sql::{self, InviteFilter};
@@ -296,9 +297,15 @@ impl AuthService {
         // 邀请码：强制模式下必填（否则整个邀请制是假的），可选模式下留空 = 普通用户。
         // 填了（或必须填时）就逐个校验，注册成功后按码上的等级赋角色
         // （等级列 `grant_role` 随 P0-5 一起加，当前带码注册仍是「升级为管理员」）。
+        // 邀请码：**一张**（P0-5 起不允许一次填多张，见下）。
         let codes = invite::split_codes(&input.invite_code);
         if self.cfg.require_invite && codes.is_empty() {
             return Err(AuthError::InvalidInvite);
+        }
+        if codes.len() > 1 {
+            // ⚠️ 一次只收一张：多张码的等级可能冲突（一张 user、一张 admin），
+            // 「取最高的」这种规则在出问题时很难向用户解释清楚。要两个身份就注册两个号。
+            return Err(AuthError::InvalidParams("一次只能使用一张邀请码".into()));
         }
         for code in &codes {
             if !invite::is_plausible(code) {
@@ -378,17 +385,37 @@ impl AuthService {
                 }
 
                 // ⑤ 建用户 + 登录标识（多方式登录的预留位）
-                //    带邀请码 → 管理员（兑换成功的标志）；不带 → 普通用户
-                let role = if redeemed.is_empty() { "user" } else { "admin" };
+                //
+                //    ⚠️ 角色**只看码上的 `grant_role`**（P0-5 之前是「带码即管理员」，
+                //    那正是当时最大的权限漏洞：任何一张码都能造管理员）。
+                //    不带码 = 普通用户（`AUTH_REQUIRE_INVITE=true` 时这一步根本走不到，
+                //    上面 `codes.is_empty()` 就拦掉了；开关关掉时它就是开放注册）。
+                let grant_role = redeemed
+                    .first()
+                    .map(|inv| inv.grant_role.clone())
+                    .unwrap_or_else(|| models::ROLE_USER.to_string());
                 let user_id =
-                    sql::insert_user(conn, &email_w, username.as_deref(), &password_hash, role, Some(now), now)?;
+                    sql::insert_user(conn, &email_w, username.as_deref(), &password_hash, &grant_role, Some(now), now)?;
                 sql::insert_identity(conn, user_id, "email", &email_w, Some(now), now)?;
                 for inv in &redeemed {
                     sql::insert_invite_use(conn, inv.id, Some(user_id), &email_w, &ip_w, now)?;
-                    audit(now, conn, "invite_use", Some(user_id), &inv.code, &ip_w, &ua_w, "邀请码兑换")?;
+                    audit(
+                        now,
+                        conn,
+                        "invite_use",
+                        Some(user_id),
+                        &inv.code,
+                        &ip_w,
+                        &ua_w,
+                        &format!("邀请码兑换，授予角色 {grant_role}"),
+                    )?;
                 }
-                let register_note = if redeemed.is_empty() { "邮箱注册" } else { "邮箱注册（邀请码升级为管理员）" };
-                audit(now, conn, "register", Some(user_id), &email_w, &ip_w, &ua_w, register_note)?;
+                let register_note = if redeemed.is_empty() {
+                    "邮箱注册".to_string()
+                } else {
+                    format!("邮箱注册（邀请码授予角色 {grant_role}）")
+                };
+                audit(now, conn, "register", Some(user_id), &email_w, &ip_w, &ua_w, &register_note)?;
 
                 // ⑥ 注册即登录：新建一个会话
                 let family = uuid::Uuid::new_v4().to_string();
@@ -678,6 +705,10 @@ impl AuthService {
     // ------------------------------------------------------------ 邀请码（管理）
 
     /// 批量创建邀请码；明文只在返回值里出现这一次
+    ///
+    /// `grant_role` 决定兑换后拿到的角色（只允许 `user` / `admin`，见 [`models::is_valid_grant_role`]）。
+    /// ⚠️ 管理员码的 `ADMIN-` 前缀**只是给人看的**：真正的判定永远是查库读 `grant_role`，
+    /// 所以伪造/删掉前缀都不会改变兑换结果（有测试把这一点钉死）。
     pub async fn create_invites(
         &self,
         actor_user_id: Option<i64>,
@@ -685,7 +716,13 @@ impl AuthService {
         max_uses: i64,
         expires_in_days: i64,
         note: &str,
+        grant_role: &str,
     ) -> Result<InviteCreated> {
+        if !models::is_valid_grant_role(grant_role) {
+            return Err(AuthError::InvalidParams(format!(
+                "grant_role 只能是 user 或 admin，收到：{grant_role}"
+            )));
+        }
         let count = count.clamp(1, 50);
         let max_uses = max_uses.clamp(1, 1000);
         let now = self.clock.now();
@@ -696,6 +733,9 @@ impl AuthService {
         };
         let note = validate::truncate(note.trim(), 100);
         let ip = "";
+        // 一批共享一个 batch_id：便于「按批回收」与统计（例如「上周发的那 20 张用了几个」）
+        let batch_id = uuid::Uuid::new_v4().to_string();
+        let grant_role = grant_role.to_string();
 
         let rows: Vec<InviteRow> = self
             .write(move |conn| -> Result<Vec<InviteRow>> {
@@ -704,8 +744,18 @@ impl AuthService {
                     // 极小概率撞码：撞了就换一个，最多试 5 次
                     let mut created = None;
                     for _ in 0..5 {
-                        let code = invite::generate_code();
-                        match sql::insert_invite(conn, &code, &note, max_uses, expires_at, actor_user_id, now) {
+                        let code = invite::generate_code_for(&grant_role);
+                        match sql::insert_invite(
+                            conn,
+                            &code,
+                            &note,
+                            max_uses,
+                            expires_at,
+                            actor_user_id,
+                            now,
+                            &grant_role,
+                            &batch_id,
+                        ) {
                             Ok(id) => {
                                 created = Some(InviteRow {
                                     id,
@@ -717,6 +767,8 @@ impl AuthService {
                                     disabled: false,
                                     created_by: actor_user_id,
                                     created_at: now,
+                                    grant_role: grant_role.clone(),
+                                    batch_id: batch_id.clone(),
                                 });
                                 break;
                             }
@@ -729,7 +781,16 @@ impl AuthService {
                     out.push(row);
                 }
                 let summary = out.iter().map(|r| r.code.clone()).collect::<Vec<_>>().join(",");
-                audit(now, conn, "invite_create", actor_user_id, &summary, ip, "", &format!("共 {count} 个"))?;
+                audit(
+                    now,
+                    conn,
+                    "invite_create",
+                    actor_user_id,
+                    &summary,
+                    ip,
+                    "",
+                    &format!("共 {count} 个，等级 {grant_role}，批次 {batch_id}"),
+                )?;
                 Ok(out)
             })
             .await?;
@@ -775,7 +836,14 @@ impl AuthService {
     // ------------------------------------------------------------ 管理员
 
     /// 确保管理员账号存在（幂等：已存在就跳过，绝不覆盖已有密码）
-    pub async fn seed_admin(&self, email_raw: &str, password: &str) -> Result<bool> {
+    ///
+    /// `role` 只能是 [`models::is_valid_grant_role`] 允许的两级再加 `super_admin`
+    /// （超管由 `--role super_admin` 或 `ensure_super_admin` 显式指定，
+    /// **不能**通过发邀请码获得）。
+    pub async fn seed_admin(&self, email_raw: &str, password: &str, role: &str) -> Result<bool> {
+        if role != models::ROLE_ADMIN && role != models::ROLE_SUPER_ADMIN {
+            return Err(AuthError::InvalidParams(format!("管理员角色只能是 admin / super_admin，收到：{role}")));
+        }
         let email = validate::normalize_email(email_raw)
             .ok_or_else(|| AuthError::InvalidParams("管理员邮箱格式不正确".into()))?;
         validate::validate_password(password).map_err(AuthError::InvalidParams)?;
@@ -791,17 +859,89 @@ impl AuthService {
         let now = self.clock.now();
         let hash = self.password.hash(password)?;
         let email_w = email.clone();
+        let role_owned = role.to_string();
         self.write(move |conn| -> Result<bool> {
             if sql::find_user_by_email(conn, &email_w)?.is_some() {
                 return Ok(false);
             }
-            let user_id =
-                sql::insert_user(conn, &email_w, Some("管理员"), &hash, "admin", Some(now), now)?;
+            let user_id = sql::insert_user(
+                conn,
+                &email_w,
+                Some("管理员"),
+                &hash,
+                &role_owned,
+                Some(now),
+                now,
+            )?;
             sql::insert_identity(conn, user_id, "email", &email_w, Some(now), now)?;
-            audit(now, conn, "admin_seed", Some(user_id), &email_w, "", "", "初始管理员")?;
+            audit(
+                now,
+                conn,
+                "admin_seed",
+                Some(user_id),
+                &email_w,
+                "",
+                "",
+                &format!("初始管理员（role={role_owned}）"),
+            )?;
             Ok(true)
         })
         .await
+    }
+
+    /// 启动期幂等：确保 `AUTH_ADMIN_EMAIL` 那个账号是**超级管理员**。
+    ///
+    /// 这是「超管怎么产生」那条决策的落地点（用户选了「环境变量 + CLI 双保险」）：
+    /// - 账号不存在 → 由 `seed_admin` 建出来（role=super_admin）；
+    /// - 账号存在但是 admin → **提升**为 super_admin（上线时把老库那个管理员变超管）；
+    /// - 已经是 super_admin → 什么也不做。
+    ///
+    /// ⚠️ 刻意**不做反向降级**：如果配置文件里换了邮箱，旧超管仍然是超管 ——
+    /// 自动降权会在「改了环境变量想换人」时把上一个超管悄悄锁死，而锁死超管是无法自救的。
+    /// 要降权请显式用 CLI 或后台改。
+    ///
+    /// 返回 `(是否新建, 是否提权)`，供启动日志与测试断言。
+    pub async fn ensure_super_admin(&self, email_raw: &str, password: &str) -> Result<(bool, bool)> {
+        let email = validate::normalize_email(email_raw)
+            .ok_or_else(|| AuthError::InvalidParams("管理员邮箱格式不正确".into()))?;
+        let created = self.seed_admin(&email, password, models::ROLE_SUPER_ADMIN).await?;
+        if created {
+            return Ok((true, false));
+        }
+
+        // 已存在：看看要不要提权
+        let existing = {
+            let email_q = email.clone();
+            self.read(move |conn| Ok(sql::find_user_by_email(conn, &email_q)?)).await?
+        };
+        let Some(user) = existing else {
+            // seed_admin 说建了，这里却查不到 —— 只能是并发删号，交给下一次启动
+            return Ok((false, false));
+        };
+        if user.role == models::ROLE_SUPER_ADMIN {
+            return Ok((false, false));
+        }
+
+        let now = self.clock.now();
+        let user_id = user.id;
+        let old_role = user.role.clone();
+        let email_w = email.clone();
+        self.write(move |conn| -> Result<()> {
+            sql::update_user_role(conn, user_id, models::ROLE_SUPER_ADMIN, now)?;
+            audit(
+                now,
+                conn,
+                "role_change",
+                None,
+                &email_w,
+                "",
+                "",
+                &format!("启动期确保超管：{old_role} → {}", models::ROLE_SUPER_ADMIN),
+            )?;
+            Ok(())
+        })
+        .await?;
+        Ok((false, true))
     }
 
     /// 改密码（CLI 用；会顺带吊销该用户的全部会话）
@@ -820,6 +960,141 @@ impl AuthService {
             Ok(())
         })
         .await
+    }
+
+    // ------------------------------------------------------------ 用户治理（超管）
+
+    /// 列出用户（可按角色 / 状态过滤）
+    pub async fn list_users(
+        &self,
+        role: Option<String>,
+        status: Option<String>,
+        page: i64,
+        size: i64,
+    ) -> Result<(Vec<UserPublic>, i64)> {
+        let page = page.max(1);
+        let size = size.clamp(1, 100);
+        let offset = (page - 1) * size;
+        let (rows, total) = self
+            .read(move |conn| {
+                let (rows, total) =
+                    sql::list_users(conn, role.as_deref(), status.as_deref(), size, offset)?;
+                Ok((rows, total))
+            })
+            .await?;
+        Ok((rows.iter().map(|r| r.public()).collect(), total))
+    }
+
+    /// 改某个用户的角色（超管动作，写审计）。
+    ///
+    /// ⚠️ **自锁保护**：不允许把最后一个可用的超管降级 —— 那样谁也进不了后台，
+    /// 只能 SSH 上去手写 SQL 救回来。判据是「改完之后还剩几个 active 的超管」。
+    pub async fn change_user_role(
+        &self,
+        actor_user_id: i64,
+        target_user_id: i64,
+        new_role: &str,
+        ip: &str,
+        ua: &str,
+    ) -> Result<UserPublic> {
+        if !models::is_valid_grant_role(new_role) && new_role != models::ROLE_SUPER_ADMIN {
+            return Err(AuthError::InvalidParams(format!(
+                "角色只能是 user / admin / super_admin，收到：{new_role}"
+            )));
+        }
+        let now = self.clock.now();
+        let new_role_owned = new_role.to_string();
+        let ip_owned = ip.to_string();
+        let ua_owned = ua.to_string();
+        let updated = self
+            .write(move |conn| -> Result<Option<UserRow>> {
+                let Some(target) = sql::find_user_by_id(conn, target_user_id)? else {
+                    return Ok(None);
+                };
+                if target.role == new_role_owned {
+                    return Ok(Some(target)); // 幂等：本来就是那个角色
+                }
+                // 只有「把某个超管降下去」才可能触发自锁
+                if target.role == models::ROLE_SUPER_ADMIN
+                    && target.is_active()
+                    && sql::count_active_users_with_role(conn, models::ROLE_SUPER_ADMIN)? <= 1
+                {
+                    return Err(AuthError::InvalidParams(
+                        "这是最后一个超级管理员，不能降级（否则没人能进后台了）".into(),
+                    ));
+                }
+                sql::update_user_role(conn, target_user_id, &new_role_owned, now)?;
+                audit(
+                    now,
+                    conn,
+                    "role_change",
+                    Some(actor_user_id),
+                    &target.email,
+                    &ip_owned,
+                    &ua_owned,
+                    &format!("{} → {}", target.role, new_role_owned),
+                )?;
+                Ok(sql::find_user_by_id(conn, target_user_id)?)
+            })
+            .await?;
+        updated.map(|u| u.public()).ok_or(AuthError::NotFound)
+    }
+
+    /// 封禁 / 解封账号（超管动作，写审计）。
+    ///
+    /// 封禁会顺带吊销该用户全部会话（否则他手里的令牌 15 分钟内还能用）。
+    /// ⚠️ 同样是自锁保护：不能封掉最后一个可用超管。
+    pub async fn set_user_status(
+        &self,
+        actor_user_id: i64,
+        target_user_id: i64,
+        new_status: &str,
+        ip: &str,
+        ua: &str,
+    ) -> Result<UserPublic> {
+        if new_status != "active" && new_status != "disabled" {
+            return Err(AuthError::InvalidParams(format!(
+                "status 只能是 active / disabled，收到：{new_status}"
+            )));
+        }
+        let now = self.clock.now();
+        let status_owned = new_status.to_string();
+        let ip_owned = ip.to_string();
+        let ua_owned = ua.to_string();
+        let updated = self
+            .write(move |conn| -> Result<Option<UserRow>> {
+                let Some(target) = sql::find_user_by_id(conn, target_user_id)? else {
+                    return Ok(None);
+                };
+                if target.status == status_owned {
+                    return Ok(Some(target)); // 幂等
+                }
+                if status_owned == "disabled"
+                    && target.role == models::ROLE_SUPER_ADMIN
+                    && sql::count_active_users_with_role(conn, models::ROLE_SUPER_ADMIN)? <= 1
+                {
+                    return Err(AuthError::InvalidParams(
+                        "这是最后一个超级管理员，不能封禁（否则没人能进后台了）".into(),
+                    ));
+                }
+                sql::update_user_status(conn, target_user_id, &status_owned, now)?;
+                if status_owned == "disabled" {
+                    sql::revoke_user_sessions(conn, target_user_id, "disabled", now, None)?;
+                }
+                audit(
+                    now,
+                    conn,
+                    "user_status",
+                    Some(actor_user_id),
+                    &target.email,
+                    &ip_owned,
+                    &ua_owned,
+                    &format!("{} → {}", target.status, status_owned),
+                )?;
+                Ok(sql::find_user_by_id(conn, target_user_id)?)
+            })
+            .await?;
+        updated.map(|u| u.public()).ok_or(AuthError::NotFound)
     }
 }
 

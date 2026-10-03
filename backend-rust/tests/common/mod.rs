@@ -24,6 +24,7 @@ use guangxue_auth::clock::FakeClock;
 use guangxue_auth::config::{Argon2Config, Config, RateConfig, RateRule};
 use guangxue_auth::mail::log_mailer::LogMailer;
 use guangxue_auth::mail::Mailer;
+use guangxue_auth::models::{ROLE_ADMIN, ROLE_SUPER_ADMIN, ROLE_USER};
 use guangxue_auth::rate_limit::RateLimiter;
 use guangxue_auth::service::AuthService;
 use guangxue_auth::store::SqliteStore;
@@ -77,12 +78,22 @@ pub async fn spawn_with(configure: impl FnOnce(&mut Config)) -> TestApp {
 }
 
 impl TestApp {
-    /// 直接建一个邀请码（测试里的准备动作，不走 HTTP）
+    /// 直接建一个邀请码（测试里的准备动作，不走 HTTP）——默认授予普通用户角色
     pub async fn new_invite(&self, max_uses: i64, expires_in_days: i64) -> String {
+        self.new_invite_with_role(max_uses, expires_in_days, ROLE_USER).await
+    }
+
+    /// 建一个指定等级的邀请码（`admin` 会带 `ADMIN-` 前缀）
+    pub async fn new_invite_with_role(
+        &self,
+        max_uses: i64,
+        expires_in_days: i64,
+        grant_role: &str,
+    ) -> String {
         let created = self
             .state
             .service
-            .create_invites(None, 1, max_uses, expires_in_days, "测试")
+            .create_invites(None, 1, max_uses, expires_in_days, "测试", grant_role)
             .await
             .expect("建邀请码");
         created.codes[0].code.clone()
@@ -105,9 +116,69 @@ impl TestApp {
             .expect("查 email_codes 行数")
     }
 
-    /// 确保管理员存在
+    /// 某个用户当前的 role（直接查库，绕开接口）
+    pub async fn role_of(&self, email: &str) -> String {
+        let email = email.to_string();
+        self.state
+            .service
+            .store
+            .read(move |conn| guangxue_auth::store::sql::find_user_by_email(conn, &email))
+            .await
+            .expect("查用户")
+            .map(|u| u.role)
+            .unwrap_or_else(|| "<不存在>".to_string())
+    }
+
+    /// 某个用户当前的 status（直接查库）
+    pub async fn status_of(&self, email: &str) -> String {
+        let email = email.to_string();
+        self.state
+            .service
+            .store
+            .read(move |conn| guangxue_auth::store::sql::find_user_by_email(conn, &email))
+            .await
+            .expect("查用户")
+            .map(|u| u.status)
+            .unwrap_or_else(|| "<不存在>".to_string())
+    }
+
+    /// 某个用户在 `audit_logs` 里出现过几条指定动作的记录
+    pub async fn audit_count(&self, action: &str) -> i64 {
+        let action = action.to_string();
+        self.state
+            .service
+            .store
+            .read(move |conn| guangxue_auth::store::sql::count_audit_by_action(conn, &action))
+            .await
+            .expect("查审计日志")
+    }
+
+    /// 确保管理员存在（默认超管：P0-5 起启动期也是这个角色）
     pub async fn seed_admin(&self, email: &str, password: &str) {
-        self.state.service.seed_admin(email, password).await.expect("建管理员");
+        self.state
+            .service
+            .seed_admin(email, password, ROLE_SUPER_ADMIN)
+            .await
+            .expect("建管理员");
+    }
+
+    /// 建一个**普通管理员**（`role = admin`），用来验证「管理员做不了治理动作」
+    pub async fn seed_plain_admin(&self, email: &str, password: &str) {
+        self.state
+            .service
+            .seed_admin(email, password, ROLE_ADMIN)
+            .await
+            .expect("建普通管理员");
+    }
+
+    /// 邀请码行数（含各级、含已停用）
+    pub async fn invite_rows(&self) -> i64 {
+        self.state
+            .service
+            .store
+            .read(move |conn| guangxue_auth::store::sql::count_all_invites(conn))
+            .await
+            .expect("查邀请码行数")
     }
 
     pub fn advance(&self, secs: i64) {
@@ -383,8 +454,9 @@ pub async fn fetch_dev_code(client: &mut Client, email: &str) -> String {
 
 /// 一步到位：建邀请码 + 注册一个新账号。
 ///
-/// ⚠️ 带邀请码注册**会升级成管理员**（邀请码现在是兑换券，不是注册门槛）——
-/// 需要普通用户请改用 [`register_open`]。
+/// ⚠️ P0-5 起带邀请码注册**不再自动是管理员**：角色由码上的 `grant_role` 决定，
+/// 而 `new_invite` 建的是普通码（`user`）。要管理员请用
+/// `new_invite_with_role(.., ROLE_ADMIN)` 再配 [`register`]。
 pub async fn register_new(app: &TestApp, client: &mut Client, email: &str, password: &str) -> Resp {
     let invite = app.new_invite(1, 7).await;
     register(app, client, email, password, &invite).await

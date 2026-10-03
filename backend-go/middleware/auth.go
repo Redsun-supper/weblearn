@@ -31,9 +31,13 @@ const (
 	// ⚠️ 两边必须一致：Go 这边更严就会出现「账号服务认为有效、Go 判过期」的 401 抖动。
 	tokenLeeway = 60 * time.Second
 
-	// RoleAdmin 管理员角色值，
-	// 与账号服务 backend-rust/src/models.rs:37 的 role == "admin" 对齐
+	// RoleAdmin / RoleSuperAdmin 角色值。
+	// ⚠️ 这是**跨服务的契约**：字面量必须与账号服务 backend-rust/src/models.rs 的
+	// ROLE_ADMIN / ROLE_SUPER_ADMIN 逐字相同，否则症状是「后台能进、接口 403」，
+	// 而且两边各自的单元测试都不会红（各自 mock 自己的字符串）。两侧都有测试钉住字面量。
 	RoleAdmin = "admin"
+	// RoleSuperAdmin 超级管理员：治理角色（发码、调权限、封号、查审计）
+	RoleSuperAdmin = "super_admin"
 )
 
 // gin.Context 里的登录态键名：后续处理器要取「当前用户是谁」时统一用这几个常量，
@@ -41,7 +45,7 @@ const (
 const (
 	CtxUserID    = "auth.user_id"    // int64：users.id
 	CtxSessionID = "auth.session_id" // int64：登录会话（sessions.id）
-	CtxRole      = "auth.role"       // string：user / admin
+	CtxRole      = "auth.role"       // string：user / admin / super_admin
 )
 
 // AccessClaims 与账号服务 backend-rust/src/core/token.rs:25-36 的 AccessClaims 一一对应。
@@ -51,7 +55,7 @@ const (
 type AccessClaims struct {
 	Sub  int64  `json:"sub"`  // 用户 id
 	Sid  int64  `json:"sid"`  // 会话 id
-	Role string `json:"role"` // 角色：user / admin
+	Role string `json:"role"` // 角色：user / admin / super_admin
 	Iat  int64  `json:"iat"`  // 签发时间（Unix 秒）
 	Exp  int64  `json:"exp"`  // 过期时间（Unix 秒）
 	Jti  string `json:"jti"`  // 令牌唯一 id
@@ -91,8 +95,16 @@ func RequireUser(secret string) gin.HandlerFunc {
 	}
 }
 
-// RequireAdmin 在 RequireUser 之上再要求 role == "admin"：
-// 没登录 → 401；登录了但不是管理员 → 403（与账号服务 backend-rust/src/http/extract.rs:34 同口径）。
+// CanEnterAdmin 能不能进后台做内容/运营：管理员与超管都可以。
+//
+// 收口成一个函数是为了避免「放行规则」散落在各处 —— 少改一处的症状是
+// 超管被自己的后台挡在门外（403），而日志里只留下一句「非管理员访问」。
+func CanEnterAdmin(role string) bool {
+	return role == RoleAdmin || role == RoleSuperAdmin
+}
+
+// RequireAdmin 在 RequireUser 之上再要求「能进后台」（admin 或 super_admin）：
+// 没登录 → 401；登录了但两条都不是 → 403（与账号服务 backend-rust/src/http/extract.rs 同口径）。
 func RequireAdmin(secret string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		claims, ok := verifyRequestToken(c, secret)
@@ -100,7 +112,28 @@ func RequireAdmin(secret string) gin.HandlerFunc {
 			abortUnauthorized(c)
 			return
 		}
-		if claims.Role != RoleAdmin {
+		if !CanEnterAdmin(claims.Role) {
+			abortForbidden(c)
+			return
+		}
+		setAuthContext(c, claims)
+		c.Next()
+	}
+}
+
+// RequireSuperAdmin 在 RequireUser 之上再要求 role == "super_admin"：
+// **比 RequireAdmin 严格更窄** —— 普通管理员做不了治理动作（发码、改他人角色、封禁）。
+//
+// ⚠️ 目前 Go 侧还没有治理类接口（发码在账号服务里），这条中间件是为「以后要在 Go 上加
+// 管理接口」预留的，并顺手把口径与 Rust 侧对齐；有测试直接调用它，避免它成为死代码。
+func RequireSuperAdmin(secret string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		claims, ok := verifyRequestToken(c, secret)
+		if !ok {
+			abortUnauthorized(c)
+			return
+		}
+		if claims.Role != RoleSuperAdmin {
 			abortForbidden(c)
 			return
 		}

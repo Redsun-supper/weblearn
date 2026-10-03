@@ -25,7 +25,13 @@ const TS_PARSE_FORMAT: &[FormatItem<'static>] =
     format_description!("[year]-[month]-[day]T[hour]:[minute]:[second]");
 
 /// 迁移表：`(版本号, SQL)`，按版本号升序应用，用 `PRAGMA user_version` 记录进度
-pub const MIGRATIONS: &[(i64, &str)] = &[(1, include_str!("../migrations/0001_init.sql"))];
+///
+/// ⚠️ 版本号只能往后加、**不能改已发布的脚本**：`PRAGMA user_version` 会跳过已应用的版本，
+/// 所以改了旧脚本对已经迁移过的库毫无效果（本地看着是好的，线上却是旧结构）。
+pub const MIGRATIONS: &[(i64, &str)] = &[
+    (1, include_str!("../migrations/0001_init.sql")),
+    (2, include_str!("../migrations/0002_launch.sql")),
+];
 
 /// 时间 → 存储文本（UTC，秒精度）
 pub fn ts(t: OffsetDateTime) -> String {
@@ -105,5 +111,53 @@ mod tests {
             .query_row("SELECT count(*) FROM sqlite_master WHERE type='table'", [], |r| r.get(0))
             .unwrap();
         assert!(n >= 7, "应当建出 users/sessions/invite_codes 等表，实际 {n}");
+    }
+
+    /// P0-5 的迁移：存量邀请码**全部停用**（用户定案的决策 —— 它们没有等级信息，
+    /// 留着就等于一批身份不明的凭证），同时新列要有默认值。
+    ///
+    /// 做法：手工把库停在版本 1、塞两张码，再跑一次 `migrate` —— 这才是真实场景
+    /// （开发库里已经有码了），而不是在空库上跑全套迁移。
+    #[test]
+    fn launch_migration_disables_legacy_invites_and_adds_role_columns() {
+        let mut conn = open_connection(":memory:").unwrap();
+        // 只应用版本 1
+        conn.execute_batch(MIGRATIONS[0].1).unwrap();
+        conn.execute_batch("PRAGMA user_version = 1").unwrap();
+        conn.execute(
+            "INSERT INTO invite_codes (code, note, max_uses, used_count, expires_at, disabled, created_by, created_at) \
+             VALUES ('LEGACYONE', '存量码', 1, 0, NULL, 0, NULL, '2026-01-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO invite_codes (code, note, max_uses, used_count, expires_at, disabled, created_by, created_at) \
+             VALUES ('LEGACYTWO', '已经停用的存量码', 1, 0, NULL, 1, NULL, '2026-01-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+
+        migrate(&mut conn).unwrap();
+
+        let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(version, 2, "应当推进到版本 2");
+
+        // 两张存量码都被停用（包括本来就停用的那张，幂等）
+        let disabled: i64 =
+            conn.query_row("SELECT count(*) FROM invite_codes WHERE disabled = 1", [], |r| r.get(0)).unwrap();
+        assert_eq!(disabled, 2, "存量码必须全部停用");
+
+        // 新列的默认值
+        let (role, batch): (String, String) = conn
+            .query_row("SELECT grant_role, batch_id FROM invite_codes WHERE code = 'LEGACYONE'", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(role, "user", "默认等级是普通用户");
+        assert_eq!(batch, "", "存量码没有批次号");
+
+        // 迁移不会碰用户表
+        let users: i64 = conn.query_row("SELECT count(*) FROM users", [], |r| r.get(0)).unwrap();
+        assert_eq!(users, 0);
     }
 }

@@ -515,7 +515,10 @@ document.addEventListener('DOMContentLoaded', function() {
                     throw new Error('响应里没有用户信息');
                 }
                 btn.classList.add('is-signed');
-                setTitle((user.username || user.email) + (user.role === 'admin' ? '（管理员）' : '') + ' · 个人中心');
+                // 管理员与超管都要标出来（P0-5 之前只认 'admin'，超管会看不到标记）
+                var roleTag = user.role === 'super_admin' ? '（超级管理员）'
+                    : (user.role === 'admin' ? '（管理员）' : '');
+                setTitle((user.username || user.email) + roleTag + ' · 个人中心');
             })
             .catch(function() {
                 btn.classList.remove('is-signed');

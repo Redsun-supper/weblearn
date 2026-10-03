@@ -52,13 +52,24 @@ async fn run() -> Result<(), String> {
 
     let state = AppState::init(cfg).await.map_err(|e| e.to_string())?;
 
-    // 初始管理员：幂等（已存在就跳过，绝不覆盖已有密码）
+    // 初始管理员：幂等。
+    // ⚠️ 用的是 `ensure_super_admin`：把 `AUTH_ADMIN_EMAIL` 那个账号**确保为超级管理员**
+    // （账号不存在就建、是 admin 就提权、已经是超管就什么都不做）。
+    // 这是「超管怎么产生」那条决策（环境变量 + CLI 双保险）里环境变量那一半 —— 没有它，
+    // 全新部署出来的库只有普通管理员，而发码 / 调权限都要求超管，等于谁也开不了张。
     if seed_admin {
         if let Some(password) = admin_password {
-            match state.service.seed_admin(&admin_email, &password).await {
-                Ok(true) => tracing::info!(email = %admin_email, "已创建初始管理员账号"),
-                Ok(false) => tracing::info!(email = %admin_email, "管理员账号已存在，跳过创建"),
-                Err(e) => tracing::error!(error = %e, "创建初始管理员失败"),
+            match state.service.ensure_super_admin(&admin_email, &password).await {
+                Ok((true, _)) => {
+                    tracing::info!(email = %admin_email, "已创建初始超级管理员账号")
+                }
+                Ok((false, true)) => {
+                    tracing::info!(email = %admin_email, "已有账号已提升为超级管理员")
+                }
+                Ok((false, false)) => {
+                    tracing::info!(email = %admin_email, "超级管理员账号已存在，跳过")
+                }
+                Err(e) => tracing::error!(error = %e, "初始化超级管理员失败"),
             }
         }
     }

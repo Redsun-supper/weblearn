@@ -38,7 +38,11 @@ pub fn router(state: AppState) -> Router {
         .route("/api/auth/sessions", get(auth::sessions))
         .route("/api/auth/logout-all", post(auth::logout_all))
         .route("/api/auth/admin/invites", get(admin::list_invites).post(admin::create_invites))
-        .route("/api/auth/admin/invites/{id}/disable", post(admin::disable_invite));
+        .route("/api/auth/admin/invites/{id}/disable", post(admin::disable_invite))
+        // 用户治理（超管）：列表 / 改角色 / 封禁解封
+        .route("/api/auth/admin/users", get(admin::list_users))
+        .route("/api/auth/admin/users/{id}/role", post(admin::change_user_role))
+        .route("/api/auth/admin/users/{id}/status", post(admin::change_user_status));
 
     // 调试接口只在 development 注册——生产环境是「路由不存在」，而不是「存在但 403」
     if state.cfg.dev_endpoints {

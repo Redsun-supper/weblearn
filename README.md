@@ -131,7 +131,7 @@ e:\porject\4/
 │   ├── snapshot/
 │   │   └── snapshot.go          # SQLite 安全快照（VACUUM INTO），backup 与 migrate 共用
 │   ├── middleware/
-│   │   └── auth.go              # 共享密钥本地验签（RequireUser / RequireAdmin / CSRFGuard / CurrentUserID）
+│   │   └── auth.go              # 共享密钥本地验签（RequireUser / RequireAdmin / RequireSuperAdmin / CSRFGuard / CurrentUserID）
 │   ├── cmd/
 │   │   ├── seed/
 │   │   │   └── main.go          # 词表导入命令（JSON → words 表）
@@ -232,7 +232,7 @@ modules/<学科>/admin/  各学科自己的后台模块，按需动态加载
 | 通用能力 | `ctx.api` / `toast` / `confirm` / `el` / `escapeHtml` / `setTitle`，避免各学科重复实现 |
 | 英语后台 | 词条列表（搜索 / 词书 / 单元筛选 / 分页）、新增编辑删除、**多释义编辑**（一个词性一块，每块可带自己的例句与译文）、**批量导入**（粘贴词表 → 引擎解析 → 预览 → 分批导入） |
 
-> ✅ **登录门禁已接入**：打开 `/admin/` 会先调 `GET /api/auth/me`，只有 `role=admin` 的账号
+> ✅ **登录门禁已接入**：打开 `/admin/` 会先调 `GET /api/auth/me`，只有后台角色（`admin` / `super_admin`）的账号
 > 才渲染后台，否则显示登录表单（普通账号会提示「不是管理员」）。顶栏显示当前账号与「退出登录」。
 > ⚠️ 但这只是**界面层**的门禁：Go 侧的 `/api/words` 写接口**还没有服务端鉴权**，
 > 直接调接口（例如 `curl -X PUT /api/words/1`）仍然能改数据。
@@ -703,22 +703,27 @@ go run ./cmd/seed -file my_words.json -db guangxue.db
 只负责 `/api/auth/*`；Go 主后端继续负责词汇复习接口。线上 Nginx 与本地 `dev-server.js`
 都按前缀分流，两边形态一致。
 
-### 注册：邮箱验证码是门槛，邀请码是「升级券」
+### 注册：邮箱验证码是门槛，邀请码决定「拿到什么角色」
 
 1. `POST /api/auth/email-code`：给该邮箱发 6 位验证码（10 分钟有效、最多试 5 次，
    重发会让旧码立即失效）。**邀请码可选**——填了就先校验（未停用 / 未过期 / 没用完），
    让用户在发码这一步就拿到「码不对」的反馈；不填直接发码。
+   > 生产环境请把 `AUTH_REQUIRE_INVITE=true` 打开：那样**没有有效邀请码连验证码都发不出来**
+   > （也不会写库），邀请制才算真正成立。
 2. `POST /api/auth/register`：验证码 + 邮箱 + 密码即可建号，**注册完就是登录状态**。
    - **不带邀请码** → 普通用户（`role=user`），也就是**开放注册**；
-   - **带邀请码** → 注册即**升级为管理员**（`role=admin`）。将来同一个入口还会承载
-     积分 / 礼物之类的兑换（后台靠邀请码里的 `-` 前缀区分用途）。
-   - 邀请码用量在**同一事务**里占位，所以同一枚码被并发使用时只有一个能成功；
-     多个邀请码用**空格**分隔，一张张依次核销（同一个码写两遍只扣一次）。
+   - **带邀请码** → 角色**只看码上的 `grant_role`**：普通码给 `user`，管理员码（`ADMIN-` 前缀）给 `admin`。
+     ⚠️ **不再是「带码即管理员」**——那是 P0-5 之前的权限漏洞，任何一张码都能造管理员。
+   - **一次只能填一张码**：多张会返回 400 `invalid_params`「一次只能使用一张邀请码」。
+     理由是一张 `user` 码 + 一张 `admin` 码同时提交时角色无法自洽地解释；要两个身份请注册两个号。
+   - 邀请码用量在**同一事务**里占位，所以同一枚码被并发使用时只有一个能成功。
 
-> ⚠️ 邀请码现在等同于「管理员授权」：拿到码的人注册出来就是管理员。
-> 所以码只发给信得过的人，用完可以 `POST /api/auth/admin/invites/{id}/disable` 停用。
-> 邀请码由管理员生成：`POST /api/auth/admin/invites`（明文码只在生成响应里出现一次），
-> 或命令行 `cargo run --release --bin invite -- create --count 3`。
+> **三级角色**（P0-5）：`user` / `admin` / `super_admin`。
+> 管理员是内容/运营角色（管词条、看数据，**碰不到权限**）；超管是治理角色（发码、调权限、封号、查审计）。
+> 邀请码**只有超管能发**：`POST /api/auth/admin/invites`（明文码只在生成响应里出现一次），
+> 或命令行 `cargo run --release --bin invite -- create --count 3 --grant-role admin`。
+> ⚠️ 邀请码管理**面板**属于 P1，现在发码走 CLI 或接口。
+> ⚠️ 迁移到 P0-5 时**库里的存量邀请码全部被停用**（它们没有等级信息），要用请重新发。
 
 ### 多端同时登录
 
@@ -737,19 +742,22 @@ go run ./cmd/seed -file my_words.json -db guangxue.db
   refresh 30 天（库中只存 SHA-256 摘要）；
 - 受保护接口每次都会校验会话表，所以**登出与踢端是即时生效的**，不必等 access 过期；
 - 防爆破：账号连续失败 5 次锁 15 分钟（落库），另有 IP / 邮箱维度的滑动窗口限流；
-- 权限等级：`users.role`（`user`/`admin`）已实际使用——**带邀请码注册即为 `admin`**；
+- 权限等级：`users.role` = `user` / `admin` / `super_admin`（P0-5 起三级）。
+  **带邀请码注册给什么角色由码上的 `grant_role` 决定**（默认 `user`），不再是「带码即管理员」；
+  超管可以在后台把已注册用户提升/降级（治理动作都写 `audit_logs`），
+  并且**不能把最后一个可用超管降级或封禁**（否则谁也进不了后台，只能 SSH 改库）；
   `users.status` 与更细的 RBAC 仍是预留字段。
 
 ### 页面与门禁（前端怎么用这套接口）
 
 | 入口 | 做什么 |
 |------|--------|
-| `account/`（个人中心） | 打开先问 `GET /api/auth/me`：已登录显示**身份卡**（头像 + 昵称 + 角色徽章）、账号信息、**登录中的设备列表**（可「登出其他设备」或「退出登录」）、可用操作（管理员多一个进后台的按钮）；未登录显示登录 / 注册表单，登录表单下面的小字里「注册」二字**可点击**，点了直接切到注册标签页。**邀请码可留空**（直接注册成普通用户），填了注册后就是管理员；多个邀请码用空格分隔。注册表单的「获取验证码」带 60 秒倒计时，**本地开发会自动调 `/api/auth/dev/codes` 把验证码填进表单**（生产环境该接口不存在，静默忽略）。所有组件按顺序入场（`data-enter` + `playEnter()`）；**标签栏的选中高亮是滑动的滑块**（`.acc-tabs-thumb`，切标签时滑过去），表单按点击方向从侧边滑入，同时**白色卡片会平滑地向下延伸 / 向上回缩**到新表单的高度（`animateCardHeight()`：量旧高 → 换内容 → 量新高 → 过渡 → 收尾还原成自动高度）；带 `?from=avatar` 进来时跳过身份卡的入场，与首页过场衔接 |
-| `admin/`（后台） | 打开先 `checkAuth()` 问服务端：`role=admin` 才渲染后台，否则只显示登录表单（普通账号会明确提示「不是管理员」）。顶栏显示当前账号与「退出登录」 |
+| `account/`（个人中心） | 打开先问 `GET /api/auth/me`：已登录显示**身份卡**（头像 + 昵称 + 角色徽章）、账号信息、**登录中的设备列表**（可「登出其他设备」或「退出登录」）、可用操作（管理员多一个进后台的按钮）；未登录显示登录 / 注册表单，登录表单下面的小字里「注册」二字**可点击**，点了直接切到注册标签页。**邀请码可留空**（直接注册成普通用户，生产打开 `AUTH_REQUIRE_INVITE` 后必填）；填了则角色由码上的 `grant_role` 决定（普通码 → 用户，`ADMIN-` 管理员码 → 管理员），一次只能填一张。注册表单的「获取验证码」带 60 秒倒计时，**本地开发会自动调 `/api/auth/dev/codes` 把验证码填进表单**（生产环境该接口不存在，静默忽略）。所有组件按顺序入场（`data-enter` + `playEnter()`）；**标签栏的选中高亮是滑动的滑块**（`.acc-tabs-thumb`，切标签时滑过去），表单按点击方向从侧边滑入，同时**白色卡片会平滑地向下延伸 / 向上回缩**到新表单的高度（`animateCardHeight()`：量旧高 → 换内容 → 量新高 → 过渡 → 收尾还原成自动高度）；带 `?from=avatar` 进来时跳过身份卡的入场，与首页过场衔接 |
+| `admin/`（后台） | 打开先 `checkAuth()` 问服务端：`admin` 或 `super_admin` 才渲染后台，否则只显示登录表单（普通账号会明确提示「不是管理员」）。顶栏显示当前账号与「退出登录」 |
 | 站点左上角**头像** | 个人中心的入口（原来是右上角的「登录 / 注册」文字链接）：点击后以头像为圆心扩散一层遮罩盖满全屏，再跳到 `account/?from=avatar`。已登录时头像右下角亮一个绿点、`title` 显示昵称；未登录时是「登录 / 注册 · 个人中心」。⚠️ 它在 `.rectangle` 里，**沉浸模式下会随导航栏一起隐藏**（复习页默认沉浸） |
 
 三处都只做**界面层**的门禁：真正的权限必须由服务端判定。服务端侧已经补齐（阶段 2）：Rust 账号服务的 `/api/auth/admin/*` 要
-`role=admin`，Go 侧的 `/api/words` 写接口走 `RequireAdmin`、`/api/reviews/*` 走 `RequireUser`，两边共享同一把
+后台角色（`admin` / `super_admin`），Go 侧的 `/api/words` 写接口走 `RequireAdmin`（放行两者）、`/api/reviews/*` 走 `RequireUser`，两边共享同一把
 `AUTH_JWT_SECRET` 本地验签（见 [`backend-go/README.md`](backend-go/README.md)）。
 ✅ 复习进度已**按人隔离**（P0-1，2026-10）：`word_reviews` 的唯一键是 `(user_id, word_id)`，
 `review_logs` 也带 `user_id`，而词库（`words`）仍然共享——**词库共享、进度私有**。
@@ -874,7 +882,7 @@ AUTH_ADMIN_PASSWORD='管理员密码' \
 | `AUTH_MAIL_MODE` | `log` 只打日志 / `smtp` 真发信 | `log` |
 | `AUTH_SMTP_*` | SMTP 主机/端口/账号/授权码/发件人/加密方式 | — |
 | `AUTH_REQUIRE_INVITE` | **强制邀请码注册**：`true` 时没有有效邀请码**连验证码都发不出来**（也不写库），注册同样必须带码。**生产必须显式写 `true`** | `false` |
-| `AUTH_ADMIN_EMAIL` / `AUTH_ADMIN_PASSWORD` | 初始管理员 | `2262997289@qq.com` / 开发默认密码 |
+| `AUTH_ADMIN_EMAIL` / `AUTH_ADMIN_PASSWORD` | 初始管理员（**启动时确保是超级管理员**） | `2262997289@qq.com` / 开发默认密码 |
 | `AUTH_SEED_ADMIN` | 启动时确保管理员存在（幂等） | 随 `APP_ENV` |
 | `AUTH_ARGON2_M_COST` / `_T_COST` / `_P_COST` | 密码哈希参数 | `19456` / `2` / `1` |
 | `AUTH_RL_*` / `AUTH_LOCK_THRESHOLD` / `AUTH_LOCK_MINUTES` | 限流与锁定 | 见 `.env.example` |
@@ -932,8 +940,8 @@ AUTH_ADMIN_PASSWORD='管理员密码' \
       账号锁定与限流、审计日志（不含密码与验证码明文）
 - [x] 账号系统与 Go 后端按前缀分流（`/api/auth/*` → 8081），本地 `dev-server.js` 与线上 Nginx 同形态
 - [x] 个人中心页面 `account/`（身份卡 / 账号信息 / 登录中的设备 / 可用操作，本地开发自动回填验证码，全部组件带入场动效）
-- [x] 后台登录门禁（`admin/` 只放行 `role=admin`）与站点左上角头像入口（点头像扩散过场进个人中心，含登录态圆点）
-- [ ] 权限等级系统（RBAC）—— 三级角色（超级管理员 / 管理员 / 用户）与按等级发码的完整方案见 [`docs/launch-plan.md`](docs/launch-plan.md) 的 P0-5
+- [x] 后台登录门禁（`admin/` 放行 `admin` 与 `super_admin`）与站点左上角头像入口（点头像扩散过场进个人中心，含登录态圆点）
+- [x] **三级角色**（超级管理员 / 管理员 / 用户）与按等级发码（P0-5，2026-10）：角色常量收口、`RequireSuperAdmin`、邀请码 `grant_role`/`batch_id`、超管自锁保护；邀请码**管理面板**仍待做（见 [`docs/launch-plan.md`](docs/launch-plan.md) 的 P1）
 - [x] 词条写接口鉴权（Go 侧用同一 JWT 密钥本地验签：`/api/reviews/*` 需登录、`/api/words` 写接口需管理员）
 - [x] 用户与复习数据绑定（`word_reviews` / `review_logs` 加 `user_id`，唯一键 `(user_id, word_id)`；老库跑一次 `go run ./cmd/migrate -apply`）
 - [ ] 每日配额从 localStorage 迁到服务端（见 `docs/launch-plan.md` 的 P2）

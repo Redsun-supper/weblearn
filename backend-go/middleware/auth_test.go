@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -229,10 +230,68 @@ func TestRequireAdminRoleGate(t *testing.T) {
 		t.Fatalf("管理员期望 200，实际 %d，响应体=%s", rec.Code, rec.Body.String())
 	}
 
+	// P0-5：超管也能进后台（改造前这里会是 403 —— 「超管被自己的后台挡在门外」）
+	rec = probe(router, http.MethodGet, signToken(t, testSecret, RoleSuperAdmin, time.Hour), nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("超级管理员期望 200，实际 %d，响应体=%s", rec.Code, rec.Body.String())
+	}
+	if !CanEnterAdmin(RoleAdmin) || !CanEnterAdmin(RoleSuperAdmin) {
+		t.Fatal("CanEnterAdmin 应当同时放行 admin 与 super_admin")
+	}
+	if CanEnterAdmin("user") || CanEnterAdmin("root") {
+		t.Fatal("CanEnterAdmin 不该放行 user / 未知角色")
+	}
+
 	// 没登录时是 401 而不是 403（前端要能把「去登录」和「没权限」区分开）
 	rec = probe(router, http.MethodGet, "", nil)
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("未登录访问管理员接口期望 401，实际 %d，响应体=%s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestRequireSuperAdminRoleGate 治理动作只放行超管：
+// 普通管理员在这里必须是 403 —— 这是「管理员 = 内容/运营角色，碰不到权限」的实现口径。
+func TestRequireSuperAdminRoleGate(t *testing.T) {
+	router := newProbeRouter(RequireSuperAdmin(testSecret))
+
+	rec := probe(router, http.MethodGet, signToken(t, testSecret, RoleSuperAdmin, time.Hour), nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("超管期望 200，实际 %d，响应体=%s", rec.Code, rec.Body.String())
+	}
+
+	// ⚠️ 关键断言：管理员不是超管，不能做治理动作
+	rec = probe(router, http.MethodGet, signToken(t, testSecret, RoleAdmin, time.Hour), nil)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("普通管理员访问治理接口期望 403，实际 %d，响应体=%s", rec.Code, rec.Body.String())
+	}
+
+	rec = probe(router, http.MethodGet, signToken(t, testSecret, "user", time.Hour), nil)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("普通用户访问治理接口期望 403，实际 %d，响应体=%s", rec.Code, rec.Body.String())
+	}
+
+	rec = probe(router, http.MethodGet, "", nil)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("未登录访问治理接口期望 401，实际 %d，响应体=%s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestRoleStringsMatchTheAuthService 角色字面量是**跨服务契约**。
+//
+// 这条测试的价值不在于「测出什么逻辑」，而在于**把改动卡在编译期之外的那一处**：
+// 账号服务（Rust）写进 users.role 的字符串，Go 这边靠字面量比对。
+// 有人把 "super_admin" 改成 "superadmin" 时，两侧各自的测试都不会红
+// （各自 mock 自己的字符串），只有线上会出现「后台能进、接口 403」。
+func TestRoleStringsMatchTheAuthService(t *testing.T) {
+	if RoleAdmin != "admin" {
+		t.Fatalf("RoleAdmin 必须与 Rust 的 ROLE_ADMIN 一致，实际 %q", RoleAdmin)
+	}
+	if RoleSuperAdmin != "super_admin" {
+		t.Fatalf("RoleSuperAdmin 必须与 Rust 的 ROLE_SUPER_ADMIN 一致，实际 %q", RoleSuperAdmin)
+	}
+	// 有下划线、全小写 —— 这是账号服务 0001_init.sql 注释里预留的写法
+	if !strings.Contains(RoleSuperAdmin, "_") {
+		t.Fatal("super_admin 带下划线，写成 superadmin 就与账号服务对不上了")
 	}
 }
 

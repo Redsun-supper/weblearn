@@ -90,10 +90,20 @@ function apiAuth(path, options) {
 }
 
 // 返回 Promise<boolean>：true = 已登录且是管理员，可以渲染后台
+// 能进后台的角色：管理员与超级管理员（P0-5 三级角色）。
+// ⚠️ 与 backend-rust/src/models.rs 的 can_enter_admin 和
+// backend-go/middleware/auth.go 的 CanEnterAdmin 是同一套口径 ——
+// 少改一处就会出现「超管登录后台被自己的页面挡住」。
+var ADMIN_ROLES = ['admin', 'super_admin'];
+
+function canEnterAdmin(role) {
+    return ADMIN_ROLES.indexOf(role) !== -1;
+}
+
 function checkAuth() {
     return apiAuth('/api/auth/me').then(function (res) {
         var user = (res.data && res.data.data) ? res.data.data.user : null;
-        if (res.status === 200 && user && user.role === 'admin') {
+        if (res.status === 200 && user && canEnterAdmin(user.role)) {
             CURRENT_USER = user;
             showAdminLayout(user);
             return true;
@@ -122,7 +132,7 @@ function showGate(user, res) {
     var who = document.getElementById('adminUser');
     if (who) who.textContent = '未登录';
 
-    if (user && user.role !== 'admin') {
+    if (user && !canEnterAdmin(user.role)) {
         // 已登录但不是管理员：这类账号能进学生站，但进不了后台
         setGateMsg('当前账号 ' + user.email + ' 不是管理员（role=' + user.role + '），无法进入后台。', 'error');
     } else if (res && res.networkError) {
@@ -168,7 +178,7 @@ function bindGate() {
                         return;
                     }
                     var user = (res.data.data && res.data.data.user) ? res.data.data.user : null;
-                    if (!user || user.role !== 'admin') {
+                    if (!user || !canEnterAdmin(user.role)) {
                         setGateMsg('该账号不是管理员（role=' + ((user && user.role) || '未知') + '），无法进入后台。', 'error');
                         return;
                     }
