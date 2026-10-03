@@ -69,13 +69,14 @@ body.acc-page {
     animation: accRise 0.42s cubic-bezier(0.22, 0.61, 0.36, 1) both;
 }
 
-/* 切标签页时的入场：不做「原地淡入」，而是**顺着点击方向从侧边滑进来**——
-   切到「注册」从右边来、切回「登录」从左边来，和滑块的移动方向一致。
-   动作在下面这几个 keyframes 里，什么时候开始仍由 account.js 排延时。 */
-@keyframes accSlideFromRight {
+/* 切标签页时的入场：**短的淡入 + 一点点纵向浮起**（不再做横向滑动）。
+   早先是 22px 的横向滑入，切「登录 ⇄ 注册」时 10 个字段一起横着穿过来，观感吵、帧上也重；
+   现在只留方向感：切到「注册」从下方 6px 浮上来、切回「登录」从上方 6px 落下来，
+   和滑块的移动方向一致。动作在下面这几个 keyframes 里，什么时候开始仍由 account.js 排延时。 */
+@keyframes accFadeFromDown {
     from {
         opacity: 0;
-        transform: translateX(22px);
+        transform: translateY(6px);
     }
     to {
         opacity: 1;
@@ -83,10 +84,10 @@ body.acc-page {
     }
 }
 
-@keyframes accSlideFromLeft {
+@keyframes accFadeFromUp {
     from {
         opacity: 0;
-        transform: translateX(-22px);
+        transform: translateY(-6px);
     }
     to {
         opacity: 1;
@@ -110,11 +111,20 @@ body.acc-page {
 /* ⚠️ 必须写在所有 .is-enter* 之后（见下面 .acc-hero-avatar.is-enter 之后那条）：
    同类选择器靠出现顺序决定胜负，退场时元素上万一还挂着入场类就输了。 */
 .is-enter-right {
-    animation: accSlideFromRight 0.3s cubic-bezier(0.22, 0.61, 0.36, 1) both;
+    animation: accFadeFromDown 0.22s cubic-bezier(0.22, 0.61, 0.36, 1) both;
 }
 
 .is-enter-left {
-    animation: accSlideFromLeft 0.3s cubic-bezier(0.22, 0.61, 0.36, 1) both;
+    animation: accFadeFromUp 0.22s cubic-bezier(0.22, 0.61, 0.36, 1) both;
+}
+
+/* 动画期间把组件提升成合成层（account.js 的 playEnter 挂 / 摘这个类）。
+   为什么需要：.acc-card 上那圈 0 10px 26px 的模糊阴影，一旦跟着 opacity 一起动，
+   浏览器每帧都要重绘整张卡的阴影；提升成层之后整段动画只做合成，不重绘。
+   代价是每层占一点显存，所以 playEnter 在动画跑完就把它摘掉，不做常驻。 */
+.is-animating {
+    will-change: transform, opacity;
+    backface-visibility: hidden;
 }
 
 /* 身份卡里的头像用回弹那套 */
@@ -153,6 +163,12 @@ body.acc-page {
     /* 加载卡的淡出也省掉，改成即时（account.js 里的 setTimeout 时长不变） */
     .acc-loading {
         transition: none;
+    }
+
+    /* 动画没了，但 account.js 排的 animation-delay 还在：真面板会先在原地「隐身」等
+       160ms 才出现。这里把延时清掉，换面板就是即时交接（接力改由「加载卡立刻消失」体现）。 */
+    .acc-wrap [data-enter] {
+        animation-delay: 0s !important;
     }
 
     /* 脉冲点静止，避免「一直闪」对前庭敏感的人不友好 */
@@ -321,6 +337,10 @@ body.acc-page {
    所以它在目标面板之上淡出时不会影响布局高度 */
 .acc-stage {
     position: relative;
+    /* 切换面板时高度是**动出来**的（account.js 的 syncStageHeight 写具体像素）。
+       为什么不用 height:auto 直接过渡：CSS 无法在 auto 之间过渡 —— 不写死像素就只能是
+       一次跳变。这条 transition 只在高度真的变化时生效，入场那一次是「首次落位」，不参与。 */
+    transition: height 0.26s cubic-bezier(0.33, 0.86, 0.36, 1);
 }
 
 /* 加载卡：**绝对定位的浮层**，浮在新面板上面淡出（account.js 的 showOnly 挂 is-leaving）。
@@ -330,8 +350,22 @@ body.acc-page {
     left: 0;
     right: 0;
     top: 0;
+    /* 加载完之后它就被 hidden 掉了，所以这层阴影只存在于加载期间 */
+    box-shadow: 0 10px 26px rgba(8, 20, 32, 0.18);
+    /* 内容**贴顶居中**，不垂直居中：这张卡会被撑到整块舞台那么高（≈700px，
+       为的是让下一屏的高度提前占住），垂直居中会让这行字停在离屏幕中央很远、
+       离顶栏很空的位置。贴顶之后它就落在卡片原来的位置 ——
+       与「还没撑开时的那一帧」完全一致，整段加载期间一动不动。 */
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-start;
     text-align: center;
-    transition: opacity 0.18s linear;
+    /* 撑到舞台那么高是行内 min-height 干的（account.js 的 applyStageHeight）。
+       ⚠️ 这里**刻意不写 CSS min-height**：一写死，JS 想量它「本来多高」就永远量到那个下限。
+       没有下限时卡片自然高度 ≈ 81px，也就是「字 + 三个点 + 上下内边距」。 */
+    overflow: hidden;
+    transition: opacity 0.16s linear;
 }
 
 .acc-loading.is-leaving {
@@ -613,6 +647,23 @@ body.acc-page {
 /* 设备列表 */
 .acc-sessions {
     list-style: none;
+    /* ⚠️ 这个列表**必须能滚动**：它是页面上唯一「行数由数据决定」的地方。
+       实测开发库里有 86 个活跃会话（反复联调登录攒下来的），不设上限时这一张卡
+       高 3496px、整页 4290px，「可用操作」卡被推到屏幕外，看着像页面坏了。
+       生产环境正常也就几台设备，滚动条根本不出现；一旦出现，反而说明该去清设备了。 */
+    max-height: 264px;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    /* 滚动条不占位，免得列表右边多出一条 15px 的空白 */
+    scrollbar-width: thin;
+}
+
+/* 标题里的会话计数：让「列表被截断了」这件事有解释。默认隐藏，有一台以上时才出现 */
+.acc-title-count {
+    margin-left: 8px;
+    color: #90a4ae;
+    font-size: 13px;
+    font-weight: normal;
 }
 
 .acc-session {

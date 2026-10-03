@@ -96,11 +96,33 @@
 
     // ===================== 面板切换与入场动效 =====================
 
+    // 过渡节奏，集中放一处 —— 想微调「加载屏 → 真面板」这一段的手感，改这里的数字就够了
+    // （一起对齐的还有 account.css 里 .acc-loading 的 opacity 过渡时长，见下面那条注释）。
+    //   step          卡与卡之间的入场错开    innerStep  卡内组件的入场错开
+    //   loadingFade   加载卡淡出时长（也是真面板起手的延时：两者接力，不重叠）
+    //   cardHeight    切「登录 / 注册」标签时白卡长高 / 收短的时长
+    var TIMING = {
+        step: 30,
+        innerStep: 12,
+        loadingFade: 160,
+        cardHeight: 380
+    };
+
+    // 入场动画里最长的那一个（accRise 0.42s —— 见 account.css）：动画结束后延迟摘
+    // is-animating（合成层提示）要用它算时间。
+    var ANIM_LONGEST_MS = 420;
+    var animatingTimer = null;
+
     // 组件之间的错开间隔（毫秒）：「什么时候开始」在这里排延时，
     // 「怎么动」写在 account.css 的 accRise（浮起淡入）/ accPop（头像回弹）。
     // 取 30ms 而不是更大：个人中心有 30 来个组件，间隔一大整体要 1.5 秒才装配完，
     // 看上去像「页面一直在慢慢冒东西」；30ms 能让最后一组在 1 秒内到位。
-    var ENTER_STEP_MS = 30;
+    var ENTER_STEP_MS = TIMING.step;
+
+    // 卡片**内部**组件的错开间隔（毫秒）：比卡与卡之间的 30ms 小一半。
+    // 卡里最多的登录表单有 10 个字段，都按 30ms 排的话最后一个要等 300ms 才开始往上浮，
+    // 看起来像「表单一直在往外冒」。12ms 既保留从左到右的次序感，整块又在 120ms 内到位。
+    var INNER_STEP_MS = TIMING.innerStep;
 
     // 面板分组：一组里的卡片一起显示 / 隐藏
     // （个人中心把「账号信息 / 登录设备 / 可用操作」拆成了三张卡，所以是分组而不是单块）
@@ -112,54 +134,83 @@
 
     // 收集要参与入场的组件：卡片本身（带 data-enter 的）在前，卡片内部的 [data-enter] 随后。
     // 顺序即延时顺序，所以「卡 → 标题 → 每一行」会依次浮入。
+    // 每项都带上「这是第几张卡 / 卡内第几个」——排延时时两者用的步长不一样（见 playEnter）。
+    //
+    // ⚠️ **藏在 [hidden] 里的组件一概跳过**：切到登录面板时，注册表单那 8 个 [data-enter]
+    //    其实也在面板里，早先它们会跟着一起跑动画（不可见，却照样占着合成与重绘的时间），
+    //    正好挤在可见字段那一批上。判据用 closest（祖先里只要有 hidden 就跳过），
+    //    与 playExit 的口径一致 —— 只判断元素自己的 hidden 属性是不够的。
     function collectEnterNodes(cards) {
-        var nodes = [];
+        var items = [];
+        var cardIndex = 0;
         for (var i = 0; i < cards.length; i++) {
             var card = cards[i];
             if (!card || card.hasAttribute('hidden')) continue;
-            if (card.hasAttribute('data-enter')) nodes.push(card);
+            if (card.hasAttribute('data-enter')) items.push({ el: card, card: cardIndex, inner: 0 });
             var inner = card.querySelectorAll('[data-enter]');
+            var n = 0;
             for (var k = 0; k < inner.length; k++) {
-                if (!inner[k].hasAttribute('hidden')) nodes.push(inner[k]);
+                if (inner[k].closest('[hidden]')) continue;
+                n += 1;
+                items.push({ el: inner[k], card: cardIndex, inner: n });
             }
+            cardIndex += 1;
         }
-        return nodes;
+        return items;
     }
 
-    // 三种入场类：默认「浮起淡入」，切标签页时按方向「从侧边滑入」（动作在 account.css）
+    // 三种入场类：默认「浮起淡入」，切标签页时按方向「轻轻浮上来」（动作在 account.css）
     var ENTER_CLASSES = ['is-enter', 'is-enter-right', 'is-enter-left'];
 
+    // 动画期间挂这个类（CSS 里给它 will-change: transform, opacity）：
+    // 让浏览器把组件提升成合成层，整段动画只做合成、不重绘 —— 卡片那圈 26px 模糊的阴影
+    // 就是靠这一步免掉每帧重绘的。动画跑完就摘掉，别让几十个层常驻占显存。
+    var ANIMATING_CLASS = 'is-animating';
+
     // 给这些组件排一遍入场动效。
-    //   mode：'' = 浮起淡入 | 'right' = 从右侧滑入 | 'left' = 从左侧滑入
+    //   mode：'rise' = 轻轻浮上来（默认）| 'right' / 'left' = 顺着点击方向偏一点浮上来
+    //   baseDelay（毫秒，可选）：整体推迟多久开始 —— 交给调用方做「接力」用
+    //    （换面板时先让加载卡淡出，真面板再起手，见 showOnly）
     //
     // ⚠️ 性能要点：先把所有元素的旧动画类摘掉（只写不读），**只强制重排一次**，
     // 最后统一挂新类。早先的写法是「逐个元素：摘类 → 读 offsetWidth → 挂类」，
     // 每个 offsetWidth 都会让浏览器同步重算整页布局 —— 30 个组件就是 30 次布局，
     // 正好卡在进场那一两帧上。
-    function playEnter(cards, mode) {
-        var nodes = collectEnterNodes(cards);
-        if (!nodes.length) return;
+    function playEnter(cards, mode, baseDelay) {
+        var items = collectEnterNodes(cards);
+        if (!items.length) return;
 
         var cls = mode === 'right' ? 'is-enter-right' : (mode === 'left' ? 'is-enter-left' : 'is-enter');
+        var base = baseDelay || 0;
         var i, k;
 
-        for (i = 0; i < nodes.length; i++) {
+        for (i = 0; i < items.length; i++) {
             for (k = 0; k < ENTER_CLASSES.length; k++) {
-                nodes[i].classList.remove(ENTER_CLASSES[k]);
+                items[i].el.classList.remove(ENTER_CLASSES[k]);
             }
         }
         void document.body.offsetHeight;
 
-        for (i = 0; i < nodes.length; i++) {
-            nodes[i].style.animationDelay = (i * ENTER_STEP_MS) + 'ms';
-            nodes[i].classList.add(cls);
+        for (i = 0; i < items.length; i++) {
+            items[i].el.style.animationDelay = (base + items[i].card * ENTER_STEP_MS + items[i].inner * INNER_STEP_MS) + 'ms';
+            items[i].el.classList.add(cls, ANIMATING_CLASS);
         }
+
+        // 动画跑完就把合成层的提示摘掉（最后起手的那一个 + 它的时长）。上面每次排新动画都会
+        // 重新计时，所以这一条定时器不会误摘还在跑的层。用 > 号而不是 =：多出来的余量是留给
+        // 「定时器抖动」和「浏览器晚一帧才结束动画」的，摘早了反而会多一次重绘。
+        clearTimeout(animatingTimer);
+        animatingTimer = window.setTimeout(function () {
+            animatingTimer = null;
+            for (i = 0; i < items.length; i++) items[i].el.classList.remove(ANIMATING_CLASS);
+        }, base + (items.length - 1) * INNER_STEP_MS + ENTER_STEP_MS + ANIM_LONGEST_MS + 120);
     }
 
     // 一次只显示一组面板（组内的卡片一起显示 / 隐藏）。
     // 加载卡单独处理：它是**绝对定位的浮层**，要「淡出」而不是立刻藏掉 —— 新面板这时
-    // 已经在它下面渲染好了，让它在上面淡 180ms 再藏（时长与 account.css 的
-    // .acc-loading 过渡一致），否则会看到一次布局高度跳变。显示完再排入场动效。
+    // 已经在它下面渲染好了，让它在上面淡完再藏（时长见 LOADING_FADE_MS，与 account.css 的
+    // .acc-loading 过渡一致），否则会看到一次布局高度跳变。
+    // 交接是**接力**的：加载卡先淡出，真面板等它淡完（playEnter 的 baseDelay）再起手。
     function showOnly(group) {
         var visible = PANEL_GROUPS[group] || [];
         Object.keys(PANEL_GROUPS).forEach(function (key) {
@@ -175,6 +226,12 @@
             });
         });
 
+        // 舞台高度**一次落定**（不给过渡）：加载卡就是按这个高度铺的浮层，真面板一显示
+        // 就已经是这个高度了，中间那一小截零头（换行/小数取整，几像素）如果还走 260ms 的
+        // 过渡，就会在交叉淡出期间被看见 —— 那正是「切到下一个动画时也有问题」。
+        // 放在 playEnter 之前：入场动效带 transform，先量准再动。
+        applyStageHeight(group === 'loading' ? reservedStageHeight() : targetStageHeight($('panelLoading')));
+
         var loading = $('panelLoading');
         if (loading) {
             if (group === 'loading') {
@@ -183,22 +240,145 @@
                 loading.classList.remove('is-leaving');
                 loading.removeAttribute('hidden');
             } else if (!loading.hasAttribute('hidden')) {
-                loading.classList.add('is-leaving');
+                // 加载卡淡出 → 真面板起手，两者接力而不是同时动（后者看起来是两屏叠在一起互相穿模）
+                loading.classList.add('is-animating', 'is-leaving');
                 clearTimeout(loadingFadeTimer);
                 loadingFadeTimer = window.setTimeout(function() {
                     loadingFadeTimer = null;
                     loading.setAttribute('hidden', 'hidden');
-                    loading.classList.remove('is-leaving');
+                    loading.classList.remove('is-leaving', 'is-animating');
+                    // 清掉把它撑到整屏高的行内值：只在**藏起来之后**清 —
+                    // 淡出期间它还可见，清掉会当场缩回 81px
+                    loading.style.minHeight = '';
                 }, LOADING_FADE_MS);
             }
         }
 
-        playEnter(visible.map(function (id) { return $(id); }));
+        playEnter(visible.map(function (id) { return $(id); }), 'rise', group === 'loading' ? 0 : LOADING_FADE_MS);
     }
 
-    // 加载卡的交叉淡出时长（毫秒）：与 account.css 的 .acc-loading 过渡一致
-    var LOADING_FADE_MS = 180;
+    // 舞台该有多高：当前**可见**卡片里最高的那张（按 scrollHeight 量，含被 max-height 裁掉的内容）。
+    // 注意每次都要**重新量**：卡片内容是入场后才填的（设备列表要等接口），量早了高度就停在旧值。
+    function targetStageHeight(loading) {
+        var stage = document.querySelector('.acc-stage');
+        if (!stage) return 0;
+        var best = 0;
+        for (var i = 0; i < stage.children.length; i++) {
+            var el = stage.children[i];
+            if (el === loading || el.hasAttribute('hidden')) continue;
+            if (el.scrollHeight > best) best = el.scrollHeight;
+        }
+        return best;
+    }
+
+    // 把**藏着**的候选面板临时放出来量一遍（量完立刻藏回去），返回最高的那张。
+    // 为什么要量：登录后要显示的卡（账号 204 + 设备 366 + 操作 205 ≈ 775）比加载卡高得多，
+    // 这一屏的高度得提前定下来，加载卡才有地方铺（见 reservedStageHeight）。
+    // ⚠️ 量完必须恢复 hidden：这里改的是真实 DOM，漏掉一张就会让面板提前露出来。
+    function hiddenPanelsHeight(stage, loading) {
+        var best = 0;
+        for (var i = 0; i < stage.children.length; i++) {
+            var el = stage.children[i];
+            if (el === loading || !el.hasAttribute('hidden')) continue;
+            el.removeAttribute('hidden');
+            if (el.scrollHeight > best) best = el.scrollHeight;
+            el.setAttribute('hidden', 'hidden');
+        }
+        return best;
+    }
+
+    // 加载屏该占的高度（每打开一次页面只量一次，之后一直用这个值）。
+    //
+    // 为什么要**提前定死**：加载卡是绝对定位的浮层，而舞台原来是首帧之后自己长上去的
+    //（87px → 700px 上下）。这一长，卡里居中的「正在检查登录状态…」就被一路往下带 300 多像素，
+    // 顺带把页脚顶出屏幕、切面板时页面又缩回来。现在改成：一上来就按「下一屏的高度」铺好，
+    // 加载卡自己撑满这块地方，整段过渡里**没有任何东西移动**。
+    //
+    // 量的是「藏着的那些面板里最高的那张」而不是「下面所有屏里最高的那张」：后者会让
+    // 加载期间凭空多出一条更长的滚动条。取**原值**（不加余量）也很重要 —— 加载屏与真面板
+    // 高度一致时页面总高完全不变，用户就算提前往下滚了，交接时也不会有一次滚动回弹。
+    // ⚠️ 已知小瑕疵：如果最终显示的是「账号信息」那组（更高），真面板浮上来时会往下抻一点。
+    //    这是刻意的取舍 —— 首屏那个瞬间还不知道登录态，猜错方向时宁可下面多出来。
+    function reservedStageHeight() {
+        if (reserved !== null) return reserved;
+        var stage = document.querySelector('.acc-stage');
+        var loading = $('panelLoading');
+        if (!stage || !loading) return 0;
+        var natural = naturalLoadingHeight(loading);
+        var next = hiddenPanelsHeight(stage, loading);
+        reserved = next > 0 ? Math.max(natural, next) : natural;
+        return reserved;
+    }
+
+    // 加载卡「本来多高」（自然高度）：量之前先把自己行内的 min-height 摘掉 ——
+    // 那个值正是它被撑到的当前高度，不摘就会把上一轮的高度当成自然高度。
+    function naturalLoadingHeight(loading) {
+        var saved = loading.style.minHeight;
+        loading.style.minHeight = '0';
+        var h = Math.round(loading.getBoundingClientRect().height);
+        loading.style.minHeight = saved;
+        return h;
+    }
+
+    // 写舞台高度。CSS 的 .acc-stage 上有 height 过渡，所以这里是「动过去」而不是跳。
+    // 只有「舞台高度已经和当前内容对齐过」之后的变化才给过渡（is-sized 就是这件事的标记）：
+    // 首屏那一趟是**一次性落位**，就该是跳的 —— 否则会看到页面开场时高度自己长出来。
+    // loading 传进来时，顺便把加载卡也撑到同一高度：这样「加载中 → 真面板」看起来是
+    // 同一次呼吸，而不是一张小卡浮在大卡片里。
+    // ⚠️ 不在这里清加载卡的行内 min-height：它淡出的那 160ms 里还是可见的，
+    //    清掉会让这张卡当场缩回 81px 再淡出（比位移更显眼）。清理由淡出结束的回调接手。
+    function applyStageHeight(value, loading) {
+        var stage = document.querySelector('.acc-stage');
+        if (!stage) return;
+        var settled = stage.classList.contains('is-sized');
+        stage.style.transition = settled ? '' : 'none';
+        stage.style.height = value > 0 ? value + 'px' : '';
+        if (loading) {
+            loading.style.minHeight = value > 0 ? value + 'px' : '';
+        }
+        if (!settled) {
+            void stage.offsetHeight;          // 让「无过渡」这件事立刻生效
+            stage.classList.add('is-sized');
+            stage.style.transition = '';
+        }
+        stage.dataset.h = value;
+    }
+
+    // 把舞台高度对齐到「当前真正该显示的内容」。
+    // 三个时机调用：① 首帧（把加载屏的高度定死）② 卡片内容填完后
+    //（设备列表是异步来的，填之前那张卡只有几十像素高，不补量的话高度就停在旧值上）。
+    function syncStageHeight() {
+        var stage = document.querySelector('.acc-stage');
+        var loading = $('panelLoading');
+        if (!stage) return;
+
+        var isLoading = !!(loading && !loading.hasAttribute('hidden'));
+        var target = isLoading ? reservedStageHeight() : targetStageHeight(loading);
+        if (String(target) === stage.dataset.h) return;
+        applyStageHeight(target, isLoading ? loading : null);
+    }
+
+    // 首帧画完之后落位。用两帧：一帧太早（还没排过版，量出来的高度不作数），
+    // 两帧之后布局已经稳定。落位是**没有过渡**的跳变，所以看不到高度自己长出来；
+    // 用户看到的第一帧就是最终布局。
+    function scheduleStageFit() {
+        window.requestAnimationFrame(function () {
+            window.requestAnimationFrame(function () { syncStageHeight(); });
+        });
+    }
+
+    // 加载卡的交叉淡出时长（毫秒）：与 account.css 的 .acc-loading 过渡一致。
+    // 真面板的入场（playEnter 的 baseDelay）也用它 —— 于是「加载卡淡完」和「真面板起手」
+    // 正好接上：接力而不是两屏同时动。改 TIMING.loadingFade 记得同步 CSS 那个 0.16s。
+    var LOADING_FADE_MS = TIMING.loadingFade;
     var loadingFadeTimer = null;
+
+    // 加载屏占的高度（reservedStageHeight 量一次就缓存，null = 还没量过）
+    var reserved = null;
+
+    // 视口尺寸变了（浏览器缩放、手机转屏）之前量的高度就不作数了：清掉缓存，
+    // 下一次 syncStageHeight 重新量。不清的话加载屏会按旧尺寸铺，真面板上来时还得抻一下。
+    window.addEventListener('resize', function () { reserved = null; });
 
     // 顶栏的入场：品牌与徽章各错开一点（动作仍是 accRise，画风不变）。
     // 为什么单独排而不是并进面板那套：顶栏不在面板分组里，而且它必须在遮罩溶掉的
@@ -216,7 +396,7 @@
     }
 
     // 卡片高度过渡的时长（毫秒）：只在这里写一次，过渡是行内设的，不用和 CSS 对齐
-    var HEIGHT_MS = 380;
+    var HEIGHT_MS = TIMING.cardHeight;
     var heightTimer = null;
 
     // 白色底的高度过渡：切标签时「往下长」/「往上收」，而不是瞬间跳变。
@@ -311,9 +491,16 @@
         name.textContent = user.username || user.email || '已登录';
         sub.textContent = user.username ? (user.email || '') : '欢迎回来';
         if (role) {
-            role.textContent = user.role === 'admin' ? '管理员' : '普通用户';
+            role.textContent = roleLabel(user.role);
             role.removeAttribute('hidden');
         }
+    }
+
+    // 角色显示名（P0-5 三级角色）。`super_admin` 不加这层映射就会原样显示成英文。
+    function roleLabel(role) {
+        if (role === 'super_admin') return '超级管理员';
+        if (role === 'admin') return '管理员';
+        return '普通用户';
     }
 
     function showAccount(user) {
@@ -321,12 +508,13 @@
         setHero(user);
         if ($('accEmail')) $('accEmail').textContent = user.email || '—';
         if ($('accUsername')) $('accUsername').textContent = user.username || '（未设置）';
-        if ($('accRole')) $('accRole').textContent = user.role === 'admin' ? '管理员' : (user.role || 'user');
+        if ($('accRole')) $('accRole').textContent = roleLabel(user.role);
         if ($('accCreated')) $('accCreated').textContent = user.created_at || '—';
 
         var adminLink = $('accAdmin');
         if (adminLink) {
-            if (user.role === 'admin') {
+            // 管理员与超管都能进后台（与 admin.js 的 canEnterAdmin 同口径）
+            if (user.role === 'admin' || user.role === 'super_admin') {
                 adminLink.removeAttribute('hidden');
             } else {
                 adminLink.setAttribute('hidden', 'hidden');
@@ -341,23 +529,38 @@
         if (!list) return;
         list.innerHTML = '';
         api('GET', '/api/auth/sessions').then(function (res) {
-            if (res.status !== 200 || !res.data || !res.data.data) {
+            var items = (res.status === 200 && res.data && res.data.data && res.data.data.items) || [];
+            var failed = res.status !== 200 || !res.data || !res.data.data;
+            renderSessionCount(failed ? 0 : items.length);
+            if (failed) {
                 list.appendChild(sessionRow('读取失败：' + messageOf(res), ''));
-                return;
-            }
-            var items = res.data.data.items || [];
-            if (!items.length) {
+            } else if (!items.length) {
                 list.appendChild(sessionRow('没有活跃会话', ''));
-                return;
+            } else {
+                items.forEach(function (item) {
+                    var meta = [];
+                    if (item.current) meta.push('当前设备');
+                    meta.push('最近活跃 ' + (item.last_used_at || item.created_at || '—'));
+                    if (item.ip && item.ip !== 'unknown') meta.push('IP ' + item.ip);
+                    list.appendChild(sessionRow(item.device_label || '未知设备', meta.join(' · '), item.current));
+                });
             }
-            items.forEach(function (item) {
-                var meta = [];
-                if (item.current) meta.push('当前设备');
-                meta.push('最近活跃 ' + (item.last_used_at || item.created_at || '—'));
-                if (item.ip && item.ip !== 'unknown') meta.push('IP ' + item.ip);
-                list.appendChild(sessionRow(item.device_label || '未知设备', meta.join(' · '), item.current));
-            });
+            // 列表填完再量一次高度：这之前那张卡只有「正在读取…」那么高（见 syncStageHeight）
+            syncStageHeight();
         });
+    }
+
+    // 标题旁边的会话数。列表超过可视高度时会滚动，不给个数字用户不知道自己还有几台
+    function renderSessionCount(n) {
+        var el = $('devicesCount');
+        if (!el) return;
+        if (n > 0) {
+            el.textContent = '（' + n + ' 台）';
+            el.removeAttribute('hidden');
+        } else {
+            el.textContent = '';
+            el.setAttribute('hidden', 'hidden');
+        }
     }
 
     function sessionRow(name, meta, isCurrent) {
@@ -668,6 +871,9 @@
         }
 
         switchTab('login');
+        // 把加载屏的高度**在首帧就定死**（此时各面板都藏着，量出来的是它们的自然高度）：
+        // 加载卡按这个高度铺好之后，整段等待与交接期间页面不再有任何位移。
+        scheduleStageFit();
         refreshState();
     });
 
@@ -693,12 +899,19 @@
         showOnly(group);
     });
 
-    // 暴露到 window 便于在控制台调试（playEnter 方便单独重放某个组件的入场动效）
+    // 暴露到 window 便于在控制台调试（playEnter 方便单独重放某个组件的入场动效）。
+    // timing 是给「人工对齐转场时长」（见 TODO.md 第 4 条）用的只读快照：改值仍要动 TIMING。
     window.__guangxueAccount = {
         api: api,
         refreshState: refreshState,
         playEnter: playEnter,
         playExit: playExit,
-        leaveToHome: leaveToHome
+        leaveToHome: leaveToHome,
+        timing: {
+            step: ENTER_STEP_MS,
+            innerStep: INNER_STEP_MS,
+            loadingFade: LOADING_FADE_MS,
+            cardHeight: HEIGHT_MS
+        }
     };
 })();
