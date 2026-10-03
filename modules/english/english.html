@@ -25,12 +25,20 @@
 <div class="study" id="reviewApp" style="display:none;">
 
     <!-- 顶栏：沉浸模式开关 / 今日统计 / 当前卡片的记忆元信息 -->
+    <!--
+        三个数字的口径（单一循环池之后，见 docs/review-pool-plan.md 的 D17）：
+          statTodayNew    ← stats.today_reviewed（今天复习过多少个**不同的词**）
+          statTodayReview ← stats.pool_due      （池内此刻已到期的卡数）
+          statRest        ← stats.pool_size     （池内总数 = 整个词库）
+        元素 id 保持原名：改动只涉及文案与数据来源，避免动 english.css / english.js 里
+        依赖这些 id 的选择器（改 id 属于结构改动，收益为零）。
+    -->
     <header class="study-top">
         <button class="study-nav-toggle" id="studyNavToggle" type="button">沉浸模式</button>
         <div class="study-counts">
-            <div class="study-count"><b id="statTodayNew">0</b><span>今日新学</span></div>
-            <div class="study-count"><b id="statTodayReview">0</b><span>今日复习</span></div>
-            <div class="study-count"><b id="statRest">0</b><span>剩余待学</span></div>
+            <div class="study-count"><b id="statTodayNew">0</b><span>今日已复习</span></div>
+            <div class="study-count"><b id="statTodayReview">0</b><span>池内到期</span></div>
+            <div class="study-count"><b id="statRest">0</b><span>池内总数</span></div>
         </div>
         <div class="study-meta" id="studyMeta"></div>
     </header>

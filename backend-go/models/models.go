@@ -151,6 +151,11 @@ type ReviewLog struct {
 	// 其 stability_after 会明显低于 before（相当于把间隔压缩了）。
 	// 日后做 FSRS 参数优化（compute_parameters）时应当排除这批记录，否则参数会被带偏。
 	IsProbe bool `json:"is_probe"`
+	// IsReset 是否为「重置重学」：单一循环池里「今日 5 个」可能命中已经学过的词，
+	// 引擎按新卡口径重算（docs/review-pool-plan.md 的 C11）。
+	// 这类记录的 stability_before 会被强制记成 0，使「今日新学」只统计真正的第一次学；
+	// 做 FSRS 参数优化时同样必须排除。
+	IsReset bool `json:"is_reset"`
 }
 
 // TableName 指定数据库表名

@@ -12,10 +12,14 @@
 
 // ---------- 模块级状态 ----------
 
-// 复习页的全部可变状态。队列、游标、记忆上下文都在引擎（Rust）侧，这里只放界面与今日计划相关的东西。
-// ⚠️ planTotals 是今日计划的分母 {new, probe}，**建会话时算一次后固定**——每次渲染重算会让
-// 分子涨、分母也跟着涨（出现过「新词 1/4、2/5」）；pendingSubmit 是最近一次提交的 Promise，
-// 翻页取数前必须等它落库，否则刚评过的词会被当成到期卡再抽一次。
+// 复习页的全部可变状态。队列、游标、记忆上下文都在引擎（Rust）侧，这里只放界面相关的东西。
+// ⚠️ 「今日置顶 N/5」的分子用**两段**表示，不要退化成「一个计数器 + 与服务端取大」：
+//   · dailyBaseline —— 服务端已经确认评过的张数（建会话时与每次 stats 刷新时重设）
+//   · dailyRatedSinceBaseline —— 那之后本会话又评掉的张数（每次评分成功 +1）
+// 两者相加才是当前进度（见 dailyProgress）。取大值的写法会**虚高**：服务端快照落后，
+// 旧值仍被算进分子，界面上连评 6 张就报「整池已过一遍」而服务端才 3/5。
+// pendingSubmit 是最近一次提交的 Promise，翻页取数前必须等它落库，
+// 否则刚评过的词会被当成到期卡再抽一次。
 // started 表示「用户已经点过开始复习单词」：在此之前页面停在起始页，引擎与会话都还没建。
 var state = {
     session: null,
@@ -26,7 +30,9 @@ var state = {
     pendingSubmit: null,
     refilling: false,
     planInfo: null,
-    planTotals: null,
+    dailyTarget: 0,
+    dailyBaseline: 0,             // 服务端已确认评过的置顶卡数（建会话 / 每次 stats 刷新时重设）
+    dailyRatedSinceBaseline: 0,   // 那之后本会话又评掉的张数，评分成功时 +1
     planPhase: '',
     rounds: null,
     queueOffset: 0,
@@ -41,34 +47,34 @@ var AUTO_SPEAK_KEY = 'reviewAutoSpeak';
 // 沉浸模式（隐藏站点导航栏）在 localStorage 中的键名；没有记录时默认**开启**（进复习页就是要专注）
 var IMMERSIVE_KEY = 'reviewImmersive';
 
-// 今日计划（每天 5 个新词 + 5 个抽查）在 localStorage 中的键名。
-// ⚠️ 为什么配额记在浏览器上而不是服务端：现在没有登录系统，服务端只有一份共享词库，
-// 按「每天 5 个」在服务端算等于全站每天共放 5 个新词——你先学了别人就没得学。
-// 记在本地就是「每台设备各自一份计划」，代价是换设备 / 清缓存会重置（等有登录再迁走）。
-var PLAN_KEY = 'reviewDailyPlan';
+// ⚠️ 单一循环池（docs/review-pool-plan.md）之后，这里**不再有配额账**：
+//
+// 旧版把「每天 5 个新词 + 5 个抽查」的额度记在 localStorage（键 reviewDailyPlan），
+// 于是 100 个词的词库里只有 5 个词进过队列，而且换设备 / 清缓存就把额度重置、
+// 用 DevTools 也能改（等于没有限额）。
+//
+// 现在：池子 = 整个词库，优先级排序与「今日 5 个」全部由**服务端**按
+// (user, 当地日期, word) 的稳定哈希算好（backend-go/handlers/review_handlers.go），
+// 今日进度取自 /api/reviews/stats 的 daily_done。前端只负责显示。
 
-// 每天的新词 / 抽查配额
-var DAILY_NEW_TARGET = 5;
-var DAILY_PROBE_TARGET = 5;
-
-// 抽查冷却期（天）：同一个词在这段时间内不会被再次抽中，
-// 否则「每天都抽到期最远的那几个」会变成新的饥饿
-var PROBE_COOLDOWN_DAYS = 7;
-
-// 取数批量：复习区每次取多少张、新词 / 抽查候选取多少
-// （候选多取一些，随机抽与冷却过滤才有挑选余地）
+// 池子每页取多少张（服务端按四桶优先级排好序，翻页取下一页即可一直学下去）
 var QUEUE_PAGE_SIZE = 100;
-var NEW_CANDIDATE_SIZE = 20;
-var PROBE_CANDIDATE_SIZE = 20;
 
-// 本轮还剩这么多张没复习时，就去把复习区的下一页取回来（见 maybePrefetch）
+// 本轮还剩这么多张没复习时，就去把池子的下一页取回来（见 maybePrefetch）
 var PREFETCH_MARGIN = 5;
 
 // 「本轮已过一遍」提示在左下角停留多久（毫秒）
 var ROUND_FLASH_MS = 2600;
 
-// 引擎模块路径（相对本文件所在目录解析）
-var WASM_MODULE_URL = './engine/pkg/guangxue_wasm.js';
+// 引擎模块路径（相对本文件所在目录解析）。
+//
+// ⚠️ **末尾的版本号必须与引擎代码同步递增**：`dev-server.js:161` 给 `.wasm` 发的响应头是
+// `Cache-Control: public, max-age=86400`（不是 no-cache），所以浏览器会把旧 wasm 强缓存一整天，
+// 光重建 `pkg/` 是**看不见效果**的 —— 重建完打开页面，跑的还是旧引擎，
+// 而且不报任何错（真踩过：修好的置顶排序在页面上毫无反应，排查了半天）。
+// 任何改了 `engine/src/` 的重建，都要把这个数字 +1。
+var ENGINE_VERSION = 5;
+var WASM_MODULE_URL = './engine/pkg/guangxue_wasm.js?v=' + ENGINE_VERSION;
 
 // 换卡过渡 / 计划文案切换的时长（毫秒）：必须与 english.css 的 studyOut、planOut 保持一致
 var TRANSITION_MS = 150;
@@ -194,7 +200,7 @@ function beginReview() {
     // 起始页先留在原地，只把按钮压成「准备中」（文案 + 变淡，见 english.css 的 :disabled）
     setPreparing(true);
 
-    var plan = loadTodayPlan();
+    var plan = buildPlanOptions();
     state.planPhase = '';
 
     loadEngine().then(function(wasm) {
@@ -209,32 +215,35 @@ function beginReview() {
         // （enterReview 里还有同样一道闸，那道是给「失败回调迟到」这种情况用的）
         if (!document.getElementById('reviewApp')) return;
 
-        var statsRes = results[3];
+        // ⚠️ 下标跟着 fetchDay 走：现在是 [池子, 统计] 两个（旧版是四个请求，
+        //    统计在 results[3]）——改请求清单时这里必须一起改，否则统计永远是空对象。
+        var statsRes = results[1];
 
-        // 顶部统计先拿到，渲染卡片时一起显示
+        // 顶部统计先拿到，渲染卡片时一起显示。
+        // ⚠️ 必须走 syncDailyFromStats 而不是直接赋 state.stats：它同时重设
+        // 「今日置顶」的基线（见该函数注释里那个「基线 2/5 而服务端 0/5」的坑）。
         if (statsRes && statsRes.code === 200 && statsRes.data) {
-            state.stats = statsRes.data;
+            syncDailyFromStats(statsRes.data);
         }
 
-        // 队列编排（今日计划 + 复习区排序 + 日期换算）全部在引擎内完成：
+        // 队列编排（池子排序 + 四桶优先级 + 日期换算）全部在引擎内完成：
         // 本文件只把接口返回的 JSON 原文递进去，不再自己解析与保存卡片数组。
+        //
+        // ⚠️ 单一循环池之后不再有「新词候选 / 抽查候选」两个入参：
+        // 服务端把整池按 桶0（今日 5 个）→ 桶1（已过期）→ 桶2（从未复习）→ 桶3（未到期）
+        // 排好序，引擎按这个顺序抽卡即可。两个空数组仍然要传，位置参数不能省。
         state.session = new state.wasm.ReviewSession(
-            results[0], // 复习区：整库按紧迫度升序（含未到期）
-            results[1], // 新词候选
-            results[2], // 抽查候选（到期最远的）
-            JSON.stringify(buildPlanOptions(plan))
+            results[0], // 池子：整库按四桶优先级升序（含未复习与未到期）
+            '{"data":{"items":[]}}', // 新词候选：已废弃（保留位置）
+            '{"data":{"items":[]}}', // 抽查候选：已废弃（保留位置）
+            JSON.stringify(plan)
         );
 
-        state.queueOffset = parseQueueMeta(results[0]).count;
-        state.queueTotal = parseQueueMeta(results[0]).total;
+        var meta = parseQueueMeta(results[0]);
+        state.queueOffset = meta.count;
+        state.queueTotal = meta.total;
+        state.dailyTarget = meta.dailyTarget;
         state.planInfo = JSON.parse(state.session.plan_json());
-
-        // ⚠️ 今日计划的分母在建会话时**只算一次**：今天此前已经做完的 + 本次队列里排着的。
-        // 不能每次渲染时重算，否则分子涨一分母也跟着涨（会出现「新词 1/4、2/5」这种错）。
-        state.planTotals = {
-            new: plan.newDone + state.planInfo.new_target,
-            probe: plan.probeDone + state.planInfo.probe_target
-        };
 
         // 卡片是在起始页还盖着的时候渲染的（复习界面此时仍是 display:none），
         // 所以把这次的自动朗读压住，交给过场结束的 finishEnter 补 —— 否则单词会比画面先出声。
@@ -356,7 +365,9 @@ export function unmount() {
     state.pendingSubmit = null;
     state.refilling = false;
     state.planInfo = null;
-    state.planTotals = null;
+    state.dailyTarget = 0;
+    state.dailyBaseline = 0;
+    state.dailyRatedSinceBaseline = 0;
     state.planPhase = '';
     state.rounds = null;
     state.queueOffset = 0;
@@ -373,144 +384,133 @@ export function unmount() {
     }
 }
 
-// 取今日计划所需的数据：复习区（整库紧迫度序）/ 新词候选 / 抽查候选 / 顶部统计
+// 取复习页所需的数据：池子第一页 / 顶部统计。
+//
+// ⚠️ 单一循环池之后只剩两个请求：
+//   · /api/reviews/queue —— 整个池子按四桶排好序（桶 0 就是今日 5 个）
+//   · /api/reviews/stats —— 今日已复习 / 池内到期 / 池内总数 / daily_done
+// 旧的两个候选接口（/new、/probes）已经退出编排：前者返回空列表（保留字段兼容），
+// 后者降级成「池尾诊断」（到期最远的已学词，只用于排查）。
+//
+// `today=YYYYMMDD` 必须带：服务端用它当「今日 5 个」的哈希种子，不带就用服务器当地日期——
+// 浏览器与服务器不在同一时区时，两边会算出不同的「今天」（见 docs/review-pool-plan.md 冲突②）。
 function fetchDay(queueOffset) {
+    var today = todayParam();
     return Promise.all([
-        fetchText('/api/reviews/queue?limit=' + QUEUE_PAGE_SIZE + '&offset=' + queueOffset),
-        fetchText('/api/reviews/new?limit=' + NEW_CANDIDATE_SIZE),
-        fetchText('/api/reviews/probes?limit=' + PROBE_CANDIDATE_SIZE),
-        fetchJson('/api/reviews/stats')
-    ]);
+        fetchText('/api/reviews/queue?limit=' + QUEUE_PAGE_SIZE + '&offset=' + queueOffset + '&today=' + today),
+        fetchJson('/api/reviews/stats?today=' + today)
+    ]).then(function(res) {
+        // ⚠️ 这一步不能省，也不能只调用不存：`[1]` 是刚取回来的统计，必须
+        // ① 落进 state.stats、② 重设「今日置顶」基线。早先这里直接返回原始数组、
+        // 由调用方自己赋 state.stats，结果基线读的是**上一次会话**的旧快照（实测
+        // 基线 2/5 而服务端 0/5，界面上的进度条凭空多了两张）。
+        if (res[1] && res[1].code === 200 && res[1].data) syncDailyFromStats(res[1].data);
+        return res;
+    });
 }
 
-// 只取复习区的下一页（翻到底之后用），并顺手刷新顶部统计
+// 只取池子的下一页（翻到底之后用），并顺手刷新顶部统计
 function fetchQueuePage(offset) {
+    var today = todayParam();
     return Promise.all([
-        fetchText('/api/reviews/queue?limit=' + QUEUE_PAGE_SIZE + '&offset=' + offset),
-        fetchJson('/api/reviews/stats')
-    ]);
+        fetchText('/api/reviews/queue?limit=' + QUEUE_PAGE_SIZE + '&offset=' + offset + '&today=' + today),
+        fetchJson('/api/reviews/stats?today=' + today)
+    ]).then(function(res) {
+        // ⚠️ 与 fetchDay 同理：新拿到的统计必须**落进 state 并重设基线**，
+        // 否则下一轮 dailyProgress() 用的还是旧基线（分母也会退回 0）。
+        if (res[1] && res[1].code === 200 && res[1].data) syncDailyFromStats(res[1].data);
+        return res;
+    });
 }
 
-// 从复习区响应里读出「这一页多少张 / 一共多少张」
-// 解析失败时按 0 处理：取数异常不该让整个复习页打不开
+// ---------- 池子元信息与今日置顶进度 ----------
+//
+// 单一循环池之后这里不再记账（配额与「今日 5 个」都由服务端算，见文件顶部注释），
+// 只保留两件读的事：① 解析池子响应里的 total / daily；② 换算左下角文案。
+
+// 解析池子响应：这一页多少张、整池多少张、今天置顶几个、这一页里有几个是置顶卡。
+// 解析失败时按 0 处理：取数异常不该让整个复习页打不开。
 function parseQueueMeta(queueText) {
     try {
         var parsed = JSON.parse(queueText);
         var data = (parsed && parsed.data) || {};
         var items = data.items || [];
-        return { count: items.length, total: data.total || items.length };
+        var dailyInPage = 0;
+        for (var i = 0; i < items.length; i++) {
+            if (items[i] && items[i].daily) dailyInPage++;
+        }
+        return {
+            count: items.length,
+            total: data.total || items.length,
+            dailyTarget: data.daily || 0,
+            dailyInPage: dailyInPage
+        };
     } catch (e) {
-        return { count: 0, total: 0 };
+        return { count: 0, total: 0, dailyTarget: 0, dailyInPage: 0 };
     }
 }
 
-// ---------- 今日计划（每天 5 个新词 + 5 个抽查） ----------
-//
-// 配额与抽查冷却记录都放在浏览器 localStorage 里（原因见 PLAN_KEY 的注释）：
-// 引擎只管「按我给的剩余额度编排队列」，额度的账在这里算。
+// 今天的置顶卡评分了几张（本会话内）。
+// ⚠️ 必须是本地计数，不能用引擎的 done()：
+//    done() 在评分那一刻就 +1，而屏幕上还留着刚评完的那张卡，于是「5/5」会提前一张出现。
+//    也不能单用 stats.daily_done：那是**上一次请求**的快照，要等下一个请求回来才更新。
+//    所以用「服务端基线 + 本会话增量」，见 dailyProgress()。
+function markDailyRated(wasDaily) {
+    if (wasDaily) state.dailyRatedSinceBaseline += 1;
+}
 
-// 本地日期键（按浏览器本地自然日，跨零点即新的一天）
-function todayKey() {
+// 今日置顶的进度（分子 / 分母）。
+//
+// 分子 = **建会话时的服务端值（基线）+ 本次会话本地评掉的置顶卡数**。
+//
+// 为什么不直接用服务端的 `stats.daily_done`：要等请求回来才更新，界面慢半拍；
+// 为什么不用「服务端值与本地计数取大」：两者不是同一个量，取大必然虚高 ——
+// 实测连评 6 张时界面报 5/5「整池已过一遍」，而服务端才 3/5（用户被提前告知完成）。
+// 增量式写法没有这个缝：基线只在建会话 / 每次 stats 刷新时取一次，
+// 本地只在评分成功时 +1（见 handleReviewRating 的调用顺序）。
+function dailyProgress() {
+    var target = state.dailyTarget || (state.planInfo ? state.planInfo.plan_len : 0);
+    var done = state.dailyBaseline + state.dailyRatedSinceBaseline;
+    if (target < done) target = done;
+    return { done: done, target: target };
+}
+
+// 用服务端最新值重设基线（每次 stats 刷新后调用）。
+// `state.dailyBaseline` 是「服务端已经确认评过的」，`dailyRatedSinceBaseline`
+// 是本会话在那之后又评的，两者相加才是当前真实进度。
+//
+// ⚠️ 顺手把 `state.stats` 一起更新：早先这里只动基线，而 `fetchDay()` 拿回来的新 stats
+// **没有存进 state.stats**，于是建会话时那次 syncDailyFromStats 读到的仍是**上一次会话**
+// 的旧快照 —— 界面上的「今日置顶 N/5」从错误的数字起步（实测基线 2/5，服务端其实是 0/5）。
+function syncDailyFromStats(stats) {
+    if (!stats) return;
+    state.stats = stats;
+    state.dailyBaseline = stats.daily_done || 0;
+    state.dailyRatedSinceBaseline = 0;
+    if (stats.daily_target && stats.daily_target > state.dailyTarget) state.dailyTarget = stats.daily_target;
+}
+
+// 组装给引擎的计划参数。
+//
+// ⚠️ 单一循环池之后新词 / 抽查都由服务端编排（池子已按四桶排好序），
+// 所以这里把两个 limit 都置 0、冷却名单留空，交给引擎走「一段池子」的路径；
+// now_ms 仍然要传 —— 引擎用它换算「距上次复习多少天」。
+// 本地日期键（按浏览器本地自然日，跨零点即新的一天）——服务端用它算「今日 5 个」的种子：
+// 同一天内翻页、刷新、换设备都必须得到同一批，跨零点自然换一批。
+function todayParam() {
     var d = new Date();
     var m = d.getMonth() + 1;
     var day = d.getDate();
-    return d.getFullYear() + '-' + (m < 10 ? '0' + m : m) + '-' + (day < 10 ? '0' + day : day);
+    return '' + d.getFullYear() + (m < 10 ? '0' + m : m) + (day < 10 ? '0' + day : day);
 }
 
-// 读出今日计划状态；日期变了就重置计数（抽查冷却记录保留，并按冷却期清理）
-function loadTodayPlan() {
-    var today = todayKey();
-    var raw = null;
-    try {
-        raw = localStorage.getItem(PLAN_KEY);
-    } catch (e) {
-        raw = null;
-    }
-
-    var plan = null;
-    if (raw) {
-        try {
-            plan = JSON.parse(raw);
-        } catch (e) {
-            plan = null;
-        }
-    }
-    if (!plan || typeof plan !== 'object') plan = {};
-    if (!plan.probedAt || typeof plan.probedAt !== 'object') plan.probedAt = {};
-
-    if (plan.date !== today) {
-        plan.date = today;
-        plan.newDone = 0;
-        plan.probeDone = 0;
-    }
-    if (typeof plan.newDone !== 'number' || plan.newDone < 0) plan.newDone = 0;
-    if (typeof plan.probeDone !== 'number' || plan.probeDone < 0) plan.probeDone = 0;
-
-    pruneProbedAt(plan);
-    saveTodayPlan(plan);
-    return plan;
-}
-
-// 丢掉超过冷却期的抽查记录（否则这个对象会无限长大）
-function pruneProbedAt(plan) {
-    var limit = Date.now() - PROBE_COOLDOWN_DAYS * 86400000;
-    var kept = {};
-    var keys = Object.keys(plan.probedAt || {});
-    for (var i = 0; i < keys.length; i++) {
-        var ts = Number(plan.probedAt[keys[i]]);
-        if (isFinite(ts) && ts >= limit) kept[keys[i]] = ts;
-    }
-    plan.probedAt = kept;
-}
-
-function saveTodayPlan(plan) {
-    try {
-        localStorage.setItem(PLAN_KEY, JSON.stringify(plan));
-    } catch (e) {
-        console.error('保存今日计划失败:', e);
-    }
-}
-
-// 今天还剩多少额度（0 表示今天不再放这一类卡片）
-function remainingQuota(plan, kind) {
-    var target = kind === 'probe' ? DAILY_PROBE_TARGET : DAILY_NEW_TARGET;
-    var done = kind === 'probe' ? plan.probeDone : plan.newDone;
-    return Math.max(0, target - done);
-}
-
-// 冷却期内抽过的词 id 列表：交给引擎跳过，避免连续几天抽到同一批
-function probedIdsInCooldown(plan) {
-    var ids = [];
-    var keys = Object.keys(plan.probedAt || {});
-    for (var i = 0; i < keys.length; i++) {
-        var id = parseInt(keys[i], 10);
-        if (isFinite(id) && id > 0) ids.push(id);
-    }
-    return ids;
-}
-
-// 组装给引擎的计划参数：两个 limit 都是「今天还剩多少」，不是每日上限本身
-function buildPlanOptions(plan) {
+function buildPlanOptions() {
     return {
-        new_limit: remainingQuota(plan, 'new'),
-        probe_limit: remainingQuota(plan, 'probe'),
-        probed_ids: probedIdsInCooldown(plan),
+        new_limit: 0,
+        probe_limit: 0,
+        probed_ids: [],
         now_ms: Date.now()
     };
-}
-
-// 记一次计划完成（评分成功后调用）。
-// ⚠️ 这里**不刷界面**：评分紧接着就是换卡过渡（150ms），界面刷新交给换卡时的 renderPlanProgress。
-// 若在这里先刷一次，切换动画刚起步就会被换卡那次渲染掐断（踩过，表现为「动画没播」）。
-function markPlanDone(kind, wordId) {
-    var plan = loadTodayPlan();
-    if (kind === 'probe') {
-        plan.probeDone += 1;
-        if (wordId) plan.probedAt[String(wordId)] = Date.now();
-    } else {
-        plan.newDone += 1;
-    }
-    saveTodayPlan(plan);
 }
 
 // 释放引擎侧的会话对象（wasm-bindgen 为导出结构体生成的 free()）
@@ -532,8 +532,17 @@ function releaseSession() {
 // 2. wasm-bindgen 的 --target web 产物必须先 await 默认导出（__wbg_init）完成实例化，
 //    否则模块内部变量 wasm 仍是 undefined，调用任何导出函数都会抛 TypeError。
 function loadEngine() {
+    // ⚠️ 两个坑都在这一小段里，改之前先看完：
+    //  1. wasm 二进制也必须带版本号：不给 `module_or_path` 时，生成的 JS 用
+    //     `new URL('guangxue_wasm_bg.wasm', import.meta.url)` 去取 —— 那串 URL **不带**查询串，
+    //     于是 JS 更新了、wasm 还在吃 24 小时强缓存（两个文件分开缓存）。
+    //  2. 这个 URL 必须用 `import.meta.url` 拼成**绝对**地址。写成相对路径 `'./engine/pkg/…'`
+    //     会被解析到**文档**的地址上（英语页是 SPA 注入的，文档地址是站点根 `/index.html`），
+    //     实测报 `404 /engine/pkg/guangxue_wasm_bg.wasm`，整页卡在「复习功能加载失败」。
+    //     `import.meta.url` 才是本模块自己的地址（`/modules/english/english.js`）。
+    var wasmUrl = new URL('./engine/pkg/guangxue_wasm_bg.wasm?v=' + ENGINE_VERSION, import.meta.url).href;
     return import(WASM_MODULE_URL).then(function(mod) {
-        return mod.default().then(function() {
+        return mod.default({ module_or_path: wasmUrl }).then(function() {
             return mod;
         });
     });
@@ -734,7 +743,7 @@ function maybePrefetch() {
         var meta = parseQueueMeta(results[0]);
         var added = 0;
         try {
-            added = state.session.append(results[0], JSON.stringify(buildPlanOptions(loadTodayPlan())));
+            added = state.session.append(results[0], JSON.stringify(buildPlanOptions()));
         } catch (e) {
             setStatus('取下一页失败：' + e);
             console.error('取下一页失败:', e);
@@ -756,15 +765,23 @@ function maybePrefetch() {
     });
 }
 
-// 顶栏三个数字：今日新学 / 今日复习 / 剩余待学
+// 顶栏三个数字：今日已复习 / 池内到期 / 池内总数（用户决策 D17）
+//
+// ⚠️ 口径变化（单一循环池）：
+//   · 旧「今日新学」= stats.today_new，现在循环池里「今日 5 个」经常命中已学过的词，
+//     这个数字不再是「今天认识了多少新词」，所以不再展示；
+//   · 旧「今日复习」用的 today_review 是「今天复习过几次」（一次复习算一次），
+//     现在直接用 today_reviewed = 今天复习过**多少个不同的词**，与池子口径一致；
+//   · 旧「剩余待学」= new_words（从没学过的词数），现在池子里没有「学没学过」的概念，
+//     换成「池内到期」= 此刻已经到期、真正排在最前面的卡数。
 function renderStats(stats) {
     if (!stats) return;
-    setText('statTodayNew', stats.today_new || 0);
-    setText('statTodayReview', stats.today_review || 0);
-    setText('statRest', stats.new_words || 0);
+    setText('statTodayNew', stats.today_reviewed || 0);
+    setText('statTodayReview', stats.pool_due || 0);
+    setText('statRest', stats.pool_size || 0);
 }
 
-// ---------- 左下角：今日计划进度 ----------
+// ---------- 左下角：今日置顶进度 ----------
 
 // 计划文案的切换定时器（换卡 / 离开页面时要清掉）
 var planSwapTimer = null;
@@ -773,35 +790,29 @@ var roundFlashTimer = null;
 
 // 画出左下角小字。
 // 两个阶段：
-//   plan   —— 今日计划还没走完：「新词 3/5 · 抽查 2/5」
-//   review —— 计划区的卡全部评完了：「计划完成 · 进入复习阶段」（带动效切换）
+//   plan   —— 今日置顶还没评完：「今日置顶 3/5 · 继续复习不受限」（带上后面这句，
+//             因为单一循环池里 5 个只是**起步量**，评完照样能一直翻下去）
+//   review —— 置顶 5 个都评过了：「整池已过一遍，继续复习不受限」（用户决策 D16 的文案）
 // 阶段切换只在真的跨过去时播一次动画。
 function renderPlanProgress(forceAnimate) {
     var session = state.session;
-    var info = state.planInfo;
-    if (!session || !info) return;
+    if (!session) return;
 
-    var done = session.done();
-    var phase = done >= info.plan_len ? 'review' : 'plan';
+    var progress = dailyProgress();
+    var phase = progress.done >= progress.target ? 'review' : 'plan';
     var text;
 
     if (phase === 'review') {
-        text = '计划完成 · 进入复习阶段';
+        text = '整池已过一遍，继续复习不受限';
     } else {
-        var plan = loadTodayPlan();
-        var totals = state.planTotals || { new: 0, probe: 0 };
-        var parts = [];
-        if (totals.new > 0) parts.push('新词 ' + plan.newDone + '/' + totals.new);
-        if (totals.probe > 0) parts.push('抽查 ' + plan.probeDone + '/' + totals.probe);
-        // 两类都没有（例如词库空了）：小字不显示，保持界面干净
-        text = parts.join(' · ');
+        text = '今日置顶 ' + progress.done + '/' + progress.target + ' · 继续复习不受限';
     }
 
     setPlanText(text, !!forceAnimate || (phase !== state.planPhase && state.planPhase !== ''));
     state.planPhase = phase;
 }
 
-// 过完一整轮时的轻提示：左下角小字闪一句「本轮已过一遍」，过一会儿自动切回计划文案
+// 过完一整轮时的轻提示：左下角小字闪一句，过一会儿自动切回进度文案
 function checkRounds(rounds) {
     // 首次进入只记基线，不提示
     if (state.rounds === null || state.rounds === undefined) {
@@ -811,11 +822,11 @@ function checkRounds(rounds) {
     if (rounds <= state.rounds) return;
     state.rounds = rounds;
 
-    setPlanText('本轮已过一遍 · 可以继续', true);
+    setPlanText('整池已过一遍，继续复习不受限', true);
     clearTimeout(roundFlashTimer);
     roundFlashTimer = setTimeout(function() {
         roundFlashTimer = null;
-        renderPlanProgress(true); // 切回计划文案（也带动效）
+        renderPlanProgress(true); // 切回进度文案（也带动效）
     }, ROUND_FLASH_MS);
 }
 
@@ -1156,9 +1167,14 @@ function handleReviewRating(rating) {
         return;
     }
 
-    // 引擎内部完成：换算距上次复习天数 → FSRS 计算 → 取对应分支 → 推进游标；
-    // 抽查卡在引擎里按「新卡」重算（返回体里带 is_probe 标记）
-    var cardSource = state.card ? state.card.source : '';
+    // 记一次「今日置顶」的账。
+    // ⚠️ 两处顺序都不能改：
+    //   1. 必须在 session.rate() **之后** —— 来源与 is_reset 都在这次评分的返回体里；
+    //   2. 必须在 advanceCard() **之前** —— 换卡过渡里会 renderPlanProgress()，
+    //      晚一步记就会让左下角停在旧分子上（实测「评完还是 2/5 不涨」）。
+    // 来源读的是**引擎返回的请求体**（`body.source`），不是界面上的 state.card：
+    // 换卡过渡期间 state.card 可能已经指向下一张（或首张卡还没赋值），拿它计数会漏一张
+    // （实测：界面 5/5「整池已过一遍」而服务端才 4/5）。
     var payload;
     try {
         payload = session.rate(rating, Date.now());
@@ -1166,19 +1182,13 @@ function handleReviewRating(rating) {
         setStatus('引擎计算失败: ' + e);
         return;
     }
-
-    // 算一次今日计划的账：新词 / 抽查各自用掉一个额度，抽查还要记下冷却时间
     var body = null;
     try {
         body = JSON.parse(payload);
     } catch (e) {
         body = null;
     }
-    if (cardSource === 'new') {
-        markPlanDone('new');
-    } else if (cardSource === 'probe' || (body && body.is_probe)) {
-        markPlanDone('probe', body ? body.word_id : 0);
-    }
+    markDailyRated(!!(body && (body.source === 'daily' || body.is_reset)));
 
     advanceCard(); // 带动效推进到下一张（内部会先上锁，防止过渡期间重复评分）
 
@@ -1206,12 +1216,15 @@ function handleReviewRating(rating) {
     });
 }
 
-// 刷新统计（每次提交复习成功后调用）
+// 刷新统计（每次提交复习成功后调用）。带 today 与池子请求同一口径，
+// 否则跨时区时「今日已复习」会和「今日置顶」对不上。
 function loadReviewStats() {
-    return fetchJson('/api/reviews/stats')
+    return fetchJson('/api/reviews/stats?today=' + todayParam())
         .then(function(data) {
             if (data && data.code === 200 && data.data) {
                 state.stats = data.data;
+                // 只采纳「服务端更超前」的情况（例如用户在另一台设备上又评了几张）
+                syncDailyFromStats(data.data);
                 renderStats(data.data);
             }
             return data;

@@ -66,6 +66,13 @@ const SEEN_GUARD: usize = 10;
 /// 插回池子时的到期时间在引擎里自己算，口径不一致会让排序位置与服务端实际 due_at 有偏差。
 const MIN_INTERVAL_MS: f64 = 600_000.0;
 
+/// 最长间隔：365 天（用户决策 B8）。
+///
+/// 为什么必须封顶：FSRS 在连续评 Easy 时会把间隔推到几个月甚至几年，于是「记得牢的词」
+/// 会在池子里消失很久 —— 这正是「无法无限学下去」的根源。封顶后每张卡一年内必定回到池子里。
+/// ⚠️ 必须与服务端 `review_handlers.go` 的 `maxIntervalDays = 365` 同步改。
+const MAX_INTERVAL_MS: f64 = 365.0 * MS_PER_DAY;
+
 const MS_PER_DAY: f64 = 86_400_000.0;
 
 // ---------- 接口数据结构 ----------
@@ -128,6 +135,20 @@ pub struct ApiCard {
     /// 累计复习次数（仅到期卡有）
     #[serde(default)]
     pub reps: Option<u32>,
+    /// 是否属于「今日随机抽出的 5 个」（单一循环池的置顶卡）。
+    ///
+    /// 服务端按 (user, 当地日期, word) 的稳定哈希算出这 5 个并把它们排在池子最前，
+    /// 同时把这个标记置为 true。引擎对它们按**新卡**口径重算（`is_reset`），
+    /// 于是「循环池里再次遇到已学过的词」不会把「今日新学」统计冲高
+    /// （见 docs/review-pool-plan.md 的 C11 与 D15）。
+    ///
+    /// ⚠️ **JSON 键名是 `daily`，不是 `is_daily`**（Go 侧 `dueCard.Daily` 带 tag `json:"daily"`）。
+    /// 这里曾经写成 `is_daily`，配合 `#[serde(default)]` 的后果是**静默失效**：反序列化
+    /// 永远拿到 `false`（没有报错、没有告警），于是 5 张置顶卡被当成普通卡埋进池子里，
+    /// 「今日置顶 N/5」永远停在 0~1。Rust 侧的单元测试也没发现，因为测试夹具是按
+    /// 结构体字段手写 JSON 的 —— 只有走真实服务端响应的端到端才会暴露。
+    #[serde(default, rename = "daily")]
+    pub is_daily: bool,
 }
 
 /// `{"data":{"items":[...]}}` 外层信封
@@ -195,7 +216,16 @@ pub enum CardSource {
     /// 存在的意义：只按到期时间出题时，那些间隔被拉到几十天的词永远轮不到，
     /// 长期不露面就成了盲区。每天固定抽查几张，等于给整库做抽样体检。
     /// 评分时按**新卡**重算记忆状态（见 [`ReviewSession::try_rate`]）。
+    ///
+    /// ⚠️ 单一循环池上线后，这个来源**只在旧数据/旧调用下出现**：新模型把「让冷门词露面」
+    /// 的职责交给了整个循环池（用户决策 C12），服务端不再单独下发抽查候选。
+    /// 保留它只为兼容旧队列响应与历史日志语义。
     Probe,
+    /// 今日置顶的 5 个（单一循环池，用户决策 A2/A3）。
+    ///
+    /// 它们由服务端按稳定哈希从**整个池子**里抽出（可能命中已经学过的词），
+    /// 排在响应最前面。评分时同样按新卡口径重算，并在提交时带 `is_reset`。
+    Daily,
 }
 
 /// 队列输入：卡片 + 两个已解析成毫秒的时间。
@@ -260,89 +290,50 @@ pub struct PlannedCard {
     /// `None` 表示「今日计划卡」（新词 / 抽查），排序时按 −∞ 处理，排在最前面；
     /// 评完一次之后就会被填上新算出来的到期时间。
     pub due_ms: Option<f64>,
+    /// 是否属于「今日置顶的 5 个」（服务端按稳定哈希从整池抽出，`ApiCard.is_daily`）。
+    ///
+    /// ⚠️ 它决定排序：置顶卡一律排在**所有普通卡之前**（见 [`pool_key`]），
+    /// 否则「今天恰好抽到你」的卡会被几万个「从未复习」的卡盖住，永远轮不到。
+    /// 评分一次之后由 [`ReviewSession::try_rate`] 摘掉这个标记，它就回归普通循环。
+    pub is_daily: bool,
     /// 词条数据（由 Rust 持有，JS 不再保存一份）
     pub card: ApiCard,
 }
 
-/// 编排今日的初始池子。
+/// 编排今日的初始池子 —— **单一循环池**：池子就是服务端给的那一串，按原顺序照抄。
 ///
-/// 顺序（从前往后）：
-/// 1. **新词**：无放回随机抽 `new_limit` 个（随机而不是按词表顺序，避免每次刷新都从同一头开始）
-/// 2. **抽查**：从 `probes`（服务端按 `due_at` **倒序**给的候选）里取，跳过 `probed_ids` 里刚抽过的
-/// 3. **复习区**：其余已学词，按 `due_at` **升序**（服务端 `ORDER BY due_at ASC` 保证）
+/// 服务端（`QueueReviews`）已经把整池按**四桶**排好序并经 `daily` 标出今日置顶的 5 个：
+/// 桶 0 = 今日置顶 → 桶 1 = 已过期（`due_at` 升序）→ 桶 2 = 从未复习（稳定哈希）→ 桶 3 = 未到期。
+/// 引擎不再自己编排任何东西，只把「来源」标出来（`Daily` / `Due`），
+/// 供 [`ReviewSession::pick_index`] 与计分口径使用。
 ///
 /// ⚠️ 这里**不再打乱**：池子必须严格有序，评完的卡才能按新的到期时间插回正确位置
 /// （见 [`ReviewSession::try_rate`]）。「局部乱序」改在抽卡时做——未到期的卡在
 /// 最靠前的 [`CHUNK_SIZE`] 张里随机抽一张（见 [`ReviewSession::pick_index`]）。
+///
+/// ⚠️ `new` / `probes` 两个参数与 `opts.new_limit` / `opts.probe_limit` / `opts.probed_ids`
+/// 是**已废弃的三段编排遗留**，仍然留在签名里（前端还在传空数组与 0，接口冻结）。
+/// 它们现在**完全不参与编排**：早先 `plan_day` 仍会按 `new_limit` 把 `new` 里的卡拼到池子最前，
+/// 于是「给它们塞内容」会凭空多出一批既不在池子里、也不受四桶约束的卡
+/// （`legacy_new_and_probe_inputs_are_completely_ignored` 锁住这一点）。
 pub fn plan_day(
     queue: Vec<QueueInput>,
-    new: Vec<ApiCard>,
-    probes: Vec<ApiCard>,
-    opts: &PlanOptions,
-    seed: u32,
+    _new: Vec<ApiCard>,
+    _probes: Vec<ApiCard>,
+    _opts: &PlanOptions,
+    _seed: u32,
 ) -> DayPlan {
     let mut cards: Vec<PlannedCard> = Vec::new();
 
-    // ---- 1. 每日新词：无放回随机抽 ----
-    let new_take = opts.new_limit.min(new.len() as u32);
-    let new_order = random_sample(new.len() as u32, new_take, seed ^ 0x9E37_79B9);
-    let mut used_ids: HashSet<u32> = HashSet::new();
-    for &i in new_order.iter() {
-        let idx = i as usize;
-        if let Some(card) = new.get(idx) {
-            used_ids.insert(card.id);
-            cards.push(PlannedCard {
-                source: CardSource::New,
-                index: i,
-                state: None,
-                last_ms: None,
-                due_ms: None, // 没有到期时间 → 排序键为 −∞，排在最前面
-                card: card.clone(),
-            });
-        }
-    }
-
-    // ---- 2. 每日抽查：到期最远且最近没抽过的 ----
-    // 候选已按 due_at 倒序给出，这里顺序取前 probe_limit 个
-    let mut probe_ids: HashSet<u32> = HashSet::new();
-    for card in probes.iter() {
-        if cards.len() - new_take as usize >= opts.probe_limit as usize {
-            break;
-        }
-        if opts.probed_ids.contains(&card.id) || used_ids.contains(&card.id) {
-            continue;
-        }
-        probe_ids.insert(card.id);
-        used_ids.insert(card.id);
-        cards.push(PlannedCard {
-            source: CardSource::Probe,
-            index: 0,
-            state: match (card.stability, card.difficulty) {
-                (Some(stability), Some(difficulty)) => Some(CardState {
-                    stability,
-                    difficulty,
-                }),
-                _ => None,
-            },
-            last_ms: card
-                .last_review_at
-                .as_deref()
-                .or(card.due_at.as_deref())
-                .and_then(parse_time_ms),
-            due_ms: None,
-            card: card.clone(),
-        });
-    }
-    let plan_len = cards.len();
-    let probe_count = plan_len - new_take as usize;
-
-    // ---- 3. 复习区：按到期时间升序（保持服务端给的顺序，不再打乱）----
+    // 复习区：按到期时间升序（保持服务端给的顺序，不再打乱）
     for (i, item) in queue.iter().enumerate() {
-        if probe_ids.contains(&item.card.id) {
-            continue; // 今天已经抽查过它了，不再在复习区出现
-        }
         cards.push(PlannedCard {
-            source: CardSource::Due,
+            source: if item.card.is_daily {
+                // 今日置顶的 5 个：服务端已经把整池排好序，这里只标记来源
+                CardSource::Daily
+            } else {
+                CardSource::Due
+            },
             index: i as u32,
             state: match (item.card.stability, item.card.difficulty) {
                 (Some(stability), Some(difficulty)) => Some(CardState {
@@ -355,15 +346,20 @@ pub fn plan_day(
             },
             last_ms: item.last_ms,
             due_ms: item.due_ms,
+            // 服务端按稳定哈希挑出来的「今日置顶 5 个」：见 pool_key 的注释，
+            // 它决定这 5 个能不能真的出现在池首
+            is_daily: item.card.is_daily,
             card: item.card.clone(),
         });
     }
 
     DayPlan {
         cards,
-        plan_len,
-        new_count: new_take as usize,
-        probe_count,
+        // 计数一律为 0：池子里的每张都是「循环池的普通卡」，
+        // 「今日置顶」由 `is_daily` 表达，不再有独立的计划区
+        plan_len: 0,
+        new_count: 0,
+        probe_count: 0,
     }
 }
 
@@ -443,7 +439,9 @@ fn card_meta(card: &PlannedCard, now_ms: f64) -> CardMetaOut {
         None => 0,
     };
     CardMetaOut {
-        status: if card.source == CardSource::Probe {
+        status: if is_reset_card(card) {
+            // 置顶卡与抽查卡都是「重置重学」：界面上标成 probe 而不是「已到期」，
+            // 让人看得出这个词为什么反常地提前出现
             "probe"
         } else {
             "due"
@@ -469,6 +467,28 @@ struct SubmitPayload {
     /// 是否为每日抽查卡：后端记进 `review_logs.is_probe`，
     /// 供日后做 FSRS 参数优化时排除这批「间隔被压缩」的记录
     is_probe: bool,
+    /// 本次是否为「重置重学」（抽查卡 / 今日置顶卡）。
+    ///
+    /// ⚠️ 后端据此把日志的 `stability_before` 记成 0，使「今日新学」只统计**真正的第一次学**：
+    /// 单一循环池里「今日 5 个」经常命中已经学过的词，不区分的话新学数字会天天虚高。
+    /// 见 docs/review-pool-plan.md 的 4.3 与 D15。
+    is_reset: bool,
+    /// 这张卡的来源（`due` / `new` / `probe` / `daily`），前端用来记「今日置顶 N/5」的账。
+    ///
+    /// ⚠️ 由**引擎**在算好的同一刻写进请求体，前端不要再去猜：早先前端是读界面上
+    /// `state.card.source`，而换卡过渡期间那可能是下一张卡（或首张卡还没赋值），
+    /// 计数会漏掉一张（实测：界面显示 5/5「整池已过一遍」而服务端才 4/5）。
+    /// 服务端解析请求体时忽略未知字段，所以多这一个键是安全的。
+    source: &'static str,
+}
+
+/// 这张卡评分时是否按「新卡」口径重算（丢掉旧的 stability/difficulty、天数按 0）。
+///
+/// 两种卡都会重置：
+///   - `Daily`：今日置顶的 5 个（可能命中已学过的词）
+///   - `Probe`：旧的每日抽查（新模型下服务端不再下发）
+fn is_reset_card(card: &PlannedCard) -> bool {
+    matches!(card.source, CardSource::Probe | CardSource::Daily)
 }
 
 /// 卡片的记忆元信息（界面右上角展示，与参考产品的「难度/稳定性/预计记住」对应）
@@ -622,9 +642,35 @@ fn parse_plan_options(json: &str) -> Result<PlanOptions, String> {
     serde_json::from_str::<PlanOptions>(text).map_err(|e| format!("解析今日计划参数失败: {e}"))
 }
 
-/// 池中卡片的排序键：没有到期时间的（今日计划的新词 / 抽查）排在最前
-fn sort_key(card: &PlannedCard) -> f64 {
-    card.due_ms.unwrap_or(f64::NEG_INFINITY)
+/// 池中卡片的排序键（字典序越小越靠前）：**(优先级, 到期时间, 词 id)**。
+///
+/// 优先级只有两档：
+///   * `0` = **今日置顶的 5 个**（服务端按稳定哈希从整池抽出并标了 `is_daily`）
+///   * `1` = 其余全部（已过期 / 从未复习 / 未到期，它们的相对次序靠「到期时间」决定）
+///
+/// ⚠️ 为什么必须按**来源**分档，而不是只按到期时间排（2026-10-02 端到端抓到的真实 bug）：
+/// 置顶卡是「今天恰好抽到你」，它们大多**已经学过**，`due_at` 落在未来几周；而池子里还有
+/// 上万张「从未复习」的卡（`due_ms = None`，键视为 −∞）。只按时间排序的话，置顶卡会被
+/// 排到那些卡后面，用户连评 7 张只碰到 1 张 —— 「今日置顶 N/5」永远停在 2/5，
+/// 服务端辛苦算出来的 5 个等于没生效。
+///
+/// 第三项用**词 id** 而不是计划数组下标：池子会被 `insert_sorted`（评分后插回）与
+/// `append`（翻页）改写，下标不再稳定；词 id 让「同一用户同一天两次请求拿到同一顺序」
+/// 在任何一次插入之后依然成立。
+fn pool_key(card: &PlannedCard) -> (u8, f64, u32) {
+    let priority = if card.is_daily { 0 } else { 1 };
+    (
+        priority,
+        card.due_ms.unwrap_or(f64::NEG_INFINITY),
+        card.card.id,
+    )
+}
+
+/// 池首这张卡是不是「已经过期、该严格按最旧优先出」。
+///
+/// 置顶卡不算：它们是「今天想让你先看」的卡，到期时间在未来也要按池首顺序出。
+fn is_overdue(card: &PlannedCard, now_ms: f64) -> bool {
+    !card.is_daily && card.due_ms.map(|due| due <= now_ms).unwrap_or(true)
 }
 
 /// 推进一次随机种子（LCG）。抽卡时用，保证同一种子下整轮可复现。
@@ -632,11 +678,11 @@ fn next_seed(seed: u32) -> u32 {
     seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223)
 }
 
-/// 把一张卡按到期时间插回池中（池保持升序；相同到期时间保持相对顺序）
+/// 把一张卡按排序键插回池中（池保持升序；键相同则按词 id，所以位置唯一）
 fn insert_sorted(pool: &mut Vec<PlannedCard>, card: PlannedCard) {
-    let key = sort_key(&card);
+    let key = pool_key(&card);
     // partition_point 返回第一个「排序键 > key」的位置，即插入点
-    let at = pool.partition_point(|c| sort_key(c) <= key);
+    let at = pool.partition_point(|c| pool_key(c) <= key);
     pool.insert(at, card);
 }
 
@@ -655,8 +701,15 @@ impl ReviewSession {
         seed: u32,
     ) -> ReviewSession {
         let plan = plan_day(queue, new, probes, &opts, seed);
+        let mut pool = plan.cards;
+        // ⚠️ 必须**稳定**排序：池子的次序就是「先置顶的 5 个、再按到期时间」，
+        // 而服务端已经按四桶排好了，稳定排序才不会把同键的卡（例如一批同为 −∞ 的旧计划卡）
+        // 顺序打乱 —— 打乱会让「同一用户同一天两次请求拿到同一顺序」这个承诺失效。
+        // 这个排序是**必需**的：plan_day 只把计划卡拼在最前面，队列部分原样照抄，
+        // 而池子必须整体有序，评完的卡才能按 [`pool_key`] 插回正确位置。
+        pool.sort_by(|a, b| pool_key(a).partial_cmp(&pool_key(b)).unwrap_or(std::cmp::Ordering::Equal));
         let mut session = ReviewSession {
-            pool: plan.cards,
+            pool,
             current: None,
             done_count: 0,
             seen: VecDeque::new(),
@@ -691,8 +744,27 @@ impl ReviewSession {
 
         // 1) 池首还是「已过期 / 今日计划」的卡：严格按最旧优先，不打乱。
         //    这些卡刚评完就会带着未来到期时间插回池子，所以不存在「刚评完又抽到」。
-        if sort_key(&self.pool[0]) <= now_ms {
+        //    ⚠️ 置顶卡不算「已过期」：它们是「今天想让你先看」的卡，
+        //    到期时间在未来也要严格按池首顺序出（这正是置顶的意义）。
+        if is_overdue(&self.pool[0], now_ms) {
             return Some(0);
+        }
+
+        // 1b) 池首那段**还没评过的今日置顶卡**要一张不落地先出完。
+        //
+        // 为什么不能把它们交给下面那个随机窗口（2026-10-02 端到端抓到的真实缺陷）：
+        // 窗口是「最靠前 CHUNK_SIZE 张里随机抽一张」，里面除了置顶卡还混着大量
+        // 「从未复习」的普通卡 —— 实测连评 7 张只碰到 2 张置顶卡，
+        // 「今日置顶 N/5」停在 4/5，用户以为今天的 5 个没给全。
+        // 服务端已经用稳定哈希在这 5 张之间排好了随机顺序（见 dailyWordIDs），
+        // 所以这里按池子里的相对顺序取第一张即可，不需要再随机一次。
+        if self.current.is_none() {
+            if let Some(idx) = self.pool[..self.pool.len().min(CHUNK_SIZE)]
+                .iter()
+                .position(|c| c.is_daily && !self.round_seen.contains(&c.card.id))
+            {
+                return Some(idx);
+            }
         }
 
         // 2) 池首已经全是未到期的：在「最靠前的 CHUNK_SIZE 张」里随机抽一张。
@@ -789,35 +861,52 @@ impl ReviewSession {
             None => 0,
         };
 
-        // 抽查卡按**新卡**重算：丢掉原来的 stability/difficulty，天数按 0 算。
-        // 这是「重新体检」——它的间隔会被压缩回几天，从而很快回来重新标定。
-        let (state, days) = if card.source == CardSource::Probe {
-            (None, 0)
-        } else {
-            (card.state, days)
-        };
+        // 重置卡按**新卡**重算：丢掉原来的 stability/difficulty，天数按 0 算。
+        // 抽查卡是「重新体检」；今日置顶卡是「今天恰好抽到你」（用户决策 C11）。
+        let reset_card = is_reset_card(card);
+        let (state, days) = if reset_card { (None, 0) } else { (card.state, days) };
 
         let states = compute_next_states(state, self.desired_retention, days)
             .map_err(|e| format!("FSRS 计算失败: {e}"))?;
         let chosen = pick_branch(states, rating)
             .ok_or_else(|| format!("无对应的评分分支: {rating}"))?;
 
+        // ⚠️ 间隔在**算出来的第一时间**就封顶（上限 365 天，用户决策 B8），
+        // 而不是只截断插回池子的到期时间：
+        //   1. 提交给服务端的 interval_days 必须与本地算的 due_ms 同源，
+        //      否则服务端 due_at 与引擎池子里的位置会错开；
+        //   2. 前端卡片上显示的「下次 X 天」也要与服务端实际存的一致。
+        // 评分照常按 FSRS 结果累积记忆状态，被砍掉的只是**这次排期**。
+        let interval_days = (chosen.interval_days as f64).min(MAX_INTERVAL_MS / MS_PER_DAY) as f32;
+
         let payload = SubmitPayload {
             word_id: card.card.id,
             rating,
             stability: chosen.memory.stability,
             difficulty: chosen.memory.difficulty,
-            interval_days: chosen.interval_days,
-            is_probe: card.source == CardSource::Probe,
+            interval_days,
+            is_probe: reset_card,
+            is_reset: reset_card,
+            source: match card.source {
+                CardSource::Due => "due",
+                CardSource::New => "new",
+                CardSource::Probe => "probe",
+                CardSource::Daily => "daily",
+            },
         };
 
         // ---- 算完了才动状态：把这张卡按新的到期时间插回池子 ----
         let mut done = self.current.take().expect("上面已确认有当前卡");
         let done_id = done.card.id;
-        // ⚠️ 到期时间在这里自己算：now + 间隔，并镜像服务端「最短 10 分钟」的下限
-        //    （backend-go/handlers/review_handlers.go 的 dueSeconds）。
-        //    两处口径必须一致，否则插回池里的位置会和服务端实际 due_at 有偏差。
-        let interval_ms = ((chosen.interval_days as f64) * MS_PER_DAY).max(MIN_INTERVAL_MS);
+        // ⚠️ 到期时间在这里自己算：now + 间隔，并镜像服务端的两个口径
+        //    （backend-go/handlers/review_handlers.go）：
+        //      下限 max(interval*86400, 600) 秒 —— 防止 Again 后马上又到期；
+        //      上限 365 天（用户决策 B8）—— FSRS 满分时会把间隔推到几年，
+        //      那会让「记得牢的词」在池子里消失很久，正是「无法无限学下去」的根源。
+        //    两处不一致时，插回池里的位置会与服务端实际 due_at 有偏差。
+        let interval_ms = ((interval_days as f64) * MS_PER_DAY)
+            .max(MIN_INTERVAL_MS)
+            .min(MAX_INTERVAL_MS);
         done.due_ms = Some(now_ms + interval_ms);
         // 记忆状态也更新成刚算出来的，这样本轮再次抽到它时元信息、天数换算都基于新状态
         done.state = Some(CardState {
@@ -825,6 +914,9 @@ impl ReviewSession {
             difficulty: chosen.memory.difficulty,
         });
         done.last_ms = Some(now_ms);
+        // 置顶标记在这里摘掉：今天已经评过它了，之后它按正常到期时间参与循环
+        // （不摘掉的话它会永远钉在池首，把别的卡全挡住）。
+        done.is_daily = false;
         insert_sorted(&mut self.pool, done);
 
         self.done_count += 1;
@@ -867,6 +959,9 @@ impl ReviewSession {
                     },
                     last_ms: item.last_ms,
                     due_ms: item.due_ms,
+                    // 翻页追加进来的置顶卡同样要钉在池首（服务端不分页丢桶，
+                    // 第 2 页也可能出现「今日 5 个」里剩下的卡）
+                    is_daily: item.card.is_daily,
                     card: item.card,
                 },
             );
@@ -1054,6 +1149,7 @@ mod tests {
             due_at: None,
             last_review_at: None,
             reps: None,
+            is_daily: false,
         }
     }
 
@@ -1062,6 +1158,15 @@ mod tests {
             stability: Some(stability),
             difficulty: Some(difficulty),
             ..card(id, word)
+        }
+    }
+
+    /// 今日置顶卡（单一循环池）：服务端在池子最前给出、带 `is_daily` 标记的卡。
+    /// 它可以是有记忆状态的（已经学过、今天恰好被抽中）。
+    fn daily_card(id: u32, word: &str, stability: f32, difficulty: f32) -> ApiCard {
+        ApiCard {
+            is_daily: true,
+            ..due_card(id, word, stability, difficulty)
         }
     }
 
@@ -1075,6 +1180,16 @@ mod tests {
         }
     }
 
+    /// 把一张 `ApiCard` 直接裹成队列项（没有记忆状态、没有到期时间）。
+    /// 用于「只想测渲染，不关心记忆状态」的用例。
+    fn fresh(card: ApiCard) -> QueueInput {
+        QueueInput {
+            card,
+            last_ms: None,
+            due_ms: None,
+        }
+    }
+
     fn plan_opts(new_limit: u32, probe_limit: u32, now_ms: f64) -> PlanOptions {
         PlanOptions {
             new_limit,
@@ -1085,6 +1200,11 @@ mod tests {
     }
 
     /// 构造会话：`now` 固定为第 10 天，计划为「5 个新词 + 5 个抽查」
+    /// 建一个会话用于测试。
+    ///
+    /// ⚠️ `new` / `probes` 两个参数是**已废弃的三段编排遗留**，现在完全不参与编排
+    /// （见 `plan_day` 的注释）；保留形参只是为了让老测试的调用形状不用全改。
+    /// 新写的测试请直接把它们传空、把卡放进 `queue`。
     fn session(
         queue: Vec<QueueInput>,
         new: &[ApiCard],
@@ -1095,38 +1215,110 @@ mod tests {
             queue,
             new.to_vec(),
             probes.to_vec(),
-            plan_opts(5, 5, 10.0 * MS_PER_DAY),
+            plan_opts(0, 0, 10.0 * MS_PER_DAY),
             seed,
         )
     }
 
-    // ---------- 今日编排：新词 → 抽查 → 复习区 ----------
+    // ---------- 单一循环池：池子照抄服务端顺序 ----------
 
     #[test]
-    fn plan_puts_new_then_probe_then_review() {
-        // 复习区给 3 张已到期的卡（第 5 天到期，now = 第 10 天）
+    fn legacy_new_and_probe_inputs_are_completely_ignored() {
+        // ⚠️ 这条锁的是「引擎只编排单一循环池」这个契约本身（用户要求的「去三段化」）。
+        // 老的三段编排（新词 → 抽查 → 复习区）在 2026-10-02 的单一循环池改造里被服务端取代：
+        // 服务端把整池按四桶排好序、用 `daily` 标出今日置顶的 5 个，引擎只管按序抽卡。
+        // 但接口上还留着 `new` / `probes` 两个位置参数与 `PlanOptions.new_limit` /
+        // `probe_limit` / `probed_ids`（前端仍在传空数组与 0）—— 它们**必须是死的**。
+        // 哪天有人给它们塞了内容却悄悄生效，就会冒出一个「既不在池子里、也不受四桶约束」
+        // 的隐藏来源，池子的排序承诺（同一用户同一天拿到同一顺序）会被破坏。
+        let now = 10.0 * MS_PER_DAY;
         let queue: Vec<QueueInput> = (1..=3)
             .map(|i| learned(i, "d", 1.0, 5.0, 5.0 * MS_PER_DAY))
             .collect();
+
+        // 故意塞满内容 + 非零额度：如果旧路径还活着，池子里会多出 8 张卡
+        let new: Vec<ApiCard> = (10..15).map(|i| card(i, "n")).collect();
+        let probes: Vec<ApiCard> = (20..23).map(|i| due_card(i, "p", 8.0, 3.0)).collect();
+        let sneaky = ReviewSession::build(
+            queue.clone(),
+            new,
+            probes,
+            plan_opts(5, 5, now),
+            42,
+        );
+
+        // 干净调用（前端现在的真实用法）
+        let clean = ReviewSession::build(
+            queue,
+            Vec::new(),
+            Vec::new(),
+            plan_opts(0, 0, now),
+            42,
+        );
+
+        assert_eq!(
+            sneaky.total(),
+            clean.total(),
+            "塞进 new/probes 的卡不能被算进池子（总张数应当不变）"
+        );
+        assert_eq!(sneaky.total(), 3, "池子只应当有队列里的 3 张");
+        assert_eq!(
+            sneaky.plan_json(),
+            clean.plan_json(),
+            "计划信息不该受已废弃的 new_limit / probe_limit 影响"
+        );
+        assert_eq!(
+            sneaky.current.as_ref().map(|c| c.card.id),
+            clean.current.as_ref().map(|c| c.card.id),
+            "两张会话的首张卡必须一致"
+        );
+        assert_eq!(
+            sneaky.current.as_ref().map(|c| c.source),
+            Some(CardSource::Due),
+            "首张卡的来源只能是队列（Due），不可能是 New/Probe"
+        );
+    }
+
+    #[test]
+    fn plan_is_only_the_queue_order() {
+        // 原 `plan_puts_new_then_probe_then_review`：三段编排的「新词 → 抽查 → 复习区」。
+        // 单一循环池之后只剩一段——**池子照抄服务端给的顺序**，所以这里断言的是
+        // 「顺序原样保留、来源只由 daily 标记决定、计数一律 0」。
+        let queue: Vec<QueueInput> = vec![
+            QueueInput {
+                card: daily_card(9, "d0", 3.0, 3.0),
+                last_ms: None,
+                due_ms: None,
+            },
+            learned(1, "d1", 1.0, 5.0, 5.0 * MS_PER_DAY),
+            learned(2, "d2", 1.0, 5.0, 6.0 * MS_PER_DAY),
+        ];
+        // 故意塞满已废弃的输入：一旦它们重新生效，池子就会多出 8 张卡
         let new: Vec<ApiCard> = (10..15).map(|i| card(i, "n")).collect();
         let probes: Vec<ApiCard> = (20..23).map(|i| due_card(i, "p", 8.0, 3.0)).collect();
 
         let plan = plan_day(queue, new, probes, &plan_opts(5, 5, 10.0 * MS_PER_DAY), 42);
 
-        assert_eq!(plan.new_count, 5);
-        assert_eq!(plan.probe_count, 3);
-        assert_eq!(plan.plan_len, 8, "计划区 = 新词 + 抽查");
-        assert_eq!(plan.cards.len(), 11);
+        assert_eq!(plan.cards.len(), 3, "池子只该有队列里的 3 张");
+        assert_eq!(plan.new_count, 0);
+        assert_eq!(plan.probe_count, 0);
+        assert_eq!(plan.plan_len, 0, "不再有独立的计划区");
 
+        let ids: Vec<u32> = plan.cards.iter().map(|c| c.card.id).collect();
+        assert_eq!(ids, vec![9, 1, 2], "顺序必须原样保留（服务端已按四桶排好）");
         let sources: Vec<CardSource> = plan.cards.iter().map(|c| c.source).collect();
-        assert!(sources[..5].iter().all(|s| *s == CardSource::New), "最前面是新词");
-        assert!(sources[5..8].iter().all(|s| *s == CardSource::Probe), "接着是抽查");
-        assert!(sources[8..].iter().all(|s| *s == CardSource::Due), "最后是复习区");
+        assert_eq!(
+            sources,
+            vec![CardSource::Daily, CardSource::Due, CardSource::Due],
+            "来源只由 daily 标记决定"
+        );
     }
 
     #[test]
     fn plan_respects_remaining_quota() {
-        // 今天已经学过 3 个新词、2 个抽查 → 只剩 2 个新词与 3 个抽查的额度
+        // ⚠️ 「今日还剩几个新词 / 几个抽查的额度」这套记账**已经整段搬到服务端**
+        // （用户决策 D15：配额服务端化），客户端一侧只剩「今天评了几个置顶卡」这一个分子。
+        // 所以这条只验证一件事：引擎侧的额度字段**不再有任何效果**。
         let new: Vec<ApiCard> = (10..20).map(|i| card(i, "n")).collect();
         let probes: Vec<ApiCard> = (20..30).map(|i| due_card(i, "p", 8.0, 3.0)).collect();
         let plan = plan_day(
@@ -1136,45 +1328,35 @@ mod tests {
             &plan_opts(2, 3, 10.0 * MS_PER_DAY),
             7,
         );
-        assert_eq!(plan.new_count, 2);
-        assert_eq!(plan.probe_count, 3);
-        assert_eq!(plan.plan_len, 5);
+        assert_eq!(plan.cards.len(), 0, "没有队列就没有池子（额度不再凭空造卡）");
+        assert_eq!(plan.new_count, 0);
+        assert_eq!(plan.probe_count, 0);
+        assert_eq!(plan.plan_len, 0);
     }
 
     #[test]
-    fn plan_skips_recently_probed_words() {
-        // 候选按「到期最远」倒序给出：[1,2,3,4]；1、2 最近抽过 → 应换成 3、4
+    fn plan_ignores_deprecated_probe_candidates_entirely() {
+        // ⚠️ 这三条（原 `plan_skips_recently_probed_words` / `plan_probe_target_capped_by_available_candidates`
+        // / `plan_probed_card_is_not_repeated_in_review_region`）测的都是**已废弃的抽查编排**：
+        // 「候选按 due_at 倒序给出、跳过刚抽过的、按 probe_limit 截断」。
+        // 单一循环池之后这些规则全部搬到服务端（抽查降级为只读诊断），引擎不再自己挑抽查卡。
+        // 合并成一条：不管往 `probes` / `probed_ids` / `probe_limit` 里塞什么，池子都只由 `queue` 决定。
+        let queue = vec![learned(1, "p", 8.0, 3.0, 30.0 * MS_PER_DAY)];
         let probes: Vec<ApiCard> = (1..=4).map(|i| due_card(i, "p", 8.0, 3.0)).collect();
-        let mut opts = plan_opts(0, 2, 10.0 * MS_PER_DAY);
+        let mut opts = plan_opts(0, 5, 10.0 * MS_PER_DAY);
         opts.probed_ids = vec![1, 2];
 
-        let plan = plan_day(Vec::new(), Vec::new(), probes, &opts, 1);
-        assert_eq!(plan.probe_count, 2);
-        let ids: Vec<u32> = plan.cards.iter().map(|c| c.card.id).collect();
-        assert_eq!(ids, vec![3, 4], "刚抽过的词要被跳过");
-    }
+        let plan = plan_day(queue, Vec::new(), probes, &opts, 1);
 
-    #[test]
-    fn plan_probe_target_capped_by_available_candidates() {
-        let probes: Vec<ApiCard> = vec![due_card(1, "p", 8.0, 3.0)];
-        let plan = plan_day(Vec::new(), Vec::new(), probes, &plan_opts(0, 5, 0.0), 1);
-        assert_eq!(plan.probe_count, 1, "候选不够时只放现有的");
-    }
-
-    #[test]
-    fn plan_probed_card_is_not_repeated_in_review_region() {
-        // 抽查卡同时也是已学词（复习区里本来有它）→ 不应出现两次
-        let queue = vec![learned(1, "p", 8.0, 3.0, 30.0 * MS_PER_DAY)];
-        let probes = vec![due_card(1, "p", 8.0, 3.0)];
-        let plan = plan_day(
-            queue,
-            Vec::new(),
-            probes,
-            &plan_opts(0, 5, 10.0 * MS_PER_DAY),
-            1,
+        assert_eq!(plan.cards.len(), 1, "池子里只该有 queue 里的那一张");
+        assert_eq!(plan.cards[0].card.id, 1);
+        assert_eq!(
+            plan.cards[0].source,
+            CardSource::Due,
+            "来源由 queue 决定，不该被 probes 改写成 Probe"
         );
-        assert_eq!(plan.cards.len(), 1, "同一张卡只出现一次");
-        assert_eq!(plan.cards[0].source, CardSource::Probe);
+        assert_eq!(plan.probe_count, 0, "废弃口径的计数一律为 0");
+        assert_eq!(plan.new_count, 0, "废弃口径的计数一律为 0");
     }
 
     #[test]
@@ -1215,7 +1397,8 @@ mod tests {
 
     #[test]
     fn plan_cards_sort_to_the_front() {
-        // 今日计划卡没有到期时间（排序键 −∞）→ 一定排在复习区前面
+        // 「排序键 −∞ 的卡排最前」这条规则本身仍然成立（今日置顶卡若没有到期时间就走这条），
+        // 但**已废弃的新词路径不该再产出这种卡**：塞进 `new` 的卡必须完全不进池子。
         let queue = vec![learned(1, "d", 1.0, 5.0, 1.0 * MS_PER_DAY)];
         let new = vec![card(10, "n")];
         let plan = plan_day(
@@ -1225,8 +1408,169 @@ mod tests {
             &plan_opts(1, 0, 10.0 * MS_PER_DAY),
             1,
         );
-        assert_eq!(plan.cards[0].source, CardSource::New);
-        assert!(plan.cards[0].due_ms.is_none());
+        assert_eq!(plan.cards.len(), 1, "新词参数不再往池子里加卡");
+        assert_eq!(plan.cards[0].card.id, 1);
+        assert_eq!(plan.cards[0].source, CardSource::Due);
+        assert!(plan.cards[0].due_ms.is_some(), "池子里的卡带着自己的到期时间");
+    }
+
+    // ---------- 今日置顶卡必须真的能出现在池首 ----------
+
+    #[test]
+    fn api_card_reads_server_daily_key() {
+        // ⚠️ 锁一个**静默失效**的坑：服务端（Go `dueCard.Daily`）发的 JSON 键是 `daily`，
+        // 而 Rust 字段叫 `is_daily`。少了 `#[serde(rename = "daily")]` 时，
+        // `#[serde(default)]` 会把它静默读成 `false` —— 不报错、不告警，
+        // 5 张置顶卡被当成普通卡埋进池子，「今日置顶 N/5」永远停在 0~1。
+        // Rust 的其它测试夹具都是按**结构体字段名**手写 JSON 的，所以只有这条能发现它。
+        let raw = r#"{"code":200,"data":{"daily":2,"total":2,"items":[
+            {"id":10,"word":"apply","daily":true,"due_at":"2026-11-01T00:00:00Z","has_review":true},
+            {"id":12,"word":"argue","daily":false,"due_at":null,"has_review":false}
+        ]}}"#;
+        let items = parse_items(raw).expect("应当能解析服务端响应");
+        assert_eq!(items.len(), 2);
+        assert!(items[0].is_daily, "键 `daily: true` 必须映射到 ApiCard.is_daily");
+        assert!(!items[1].is_daily, "键 `daily: false` 应保持 false");
+
+        // 再走一遍完整链路：置顶卡必须在池首（用的是真实键名，不是结构体字段名）
+        let session = ReviewSession::build(
+            to_queue_inputs(items),
+            Vec::new(),
+            Vec::new(),
+            plan_opts(0, 0, 10.0 * MS_PER_DAY),
+            7,
+        );
+        assert_eq!(session.total(), 2);
+        let cur = session.current.as_ref().expect("应有当前卡");
+        assert_eq!(cur.card.id, 10, "池首应当是带 daily 标记的那张（id=10）");
+        assert_eq!(cur.source, CardSource::Daily);
+    }
+
+    #[test]
+    fn all_daily_cards_come_out_before_the_window_mixes_them() {
+        // ⚠️ 这条锁的是「置顶卡被随机窗口埋掉」这个真实缺陷（2026-10-02 端到端抓到）：
+        // 池子最前是 5 张置顶卡，后面是几十张「从未复习」的普通卡。
+        // 只靠 pick_index 的窗口（最靠前 10 张里随机抽）时，实测连评 7 张只碰到
+        // 2~3 张置顶卡，「今日置顶 N/5」停在 4/5 —— 用户以为今天的 5 个没给全。
+        // 修法是 1b 分支：还没评过的置顶卡按池首顺序**一张不落地先出完**。
+        let now = 10.0 * MS_PER_DAY;
+        let mut queue: Vec<QueueInput> = (100..140)
+            .map(|id| QueueInput {
+                card: card(id, "untouched"),
+                last_ms: None,
+                due_ms: None,
+            })
+            .collect();
+        // 5 张置顶卡插在**最前**（服务端的桶 0 就在最前），且都还没复习过
+        for (i, id) in [7u32, 21, 35, 49, 63].iter().enumerate() {
+            queue.insert(
+                i,
+                QueueInput {
+                    card: daily_card(*id, "daily", 10.0, 3.0),
+                    last_ms: None,
+                    due_ms: None,
+                },
+            );
+        }
+        let mut s = ReviewSession::build(
+            queue,
+            Vec::new(),
+            Vec::new(),
+            plan_opts(0, 0, now),
+            7,
+        );
+
+        let mut daily_seen = Vec::new();
+        for i in 0..5 {
+            let cur = s.current.as_ref().expect("应有当前卡");
+            assert_eq!(
+                cur.source,
+                CardSource::Daily,
+                "第 {} 张应当是置顶卡，实际是 id={} source={:?}",
+                i + 1,
+                cur.card.id,
+                cur.source
+            );
+            daily_seen.push(cur.card.id);
+            s.try_rate(3, now).unwrap();
+        }
+        assert_eq!(
+            daily_seen.len(),
+            5,
+            "5 张置顶卡应当最先出完，实际={daily_seen:?}"
+        );
+        // 第 6 张必须是普通卡（置顶出完了）
+        let sixth = s.current.as_ref().expect("应有当前卡");
+        assert_ne!(
+            sixth.source,
+            CardSource::Daily,
+            "置顶卡出完后不该再出置顶卡，实际 id={}",
+            sixth.card.id
+        );
+    }
+
+    #[test]
+    fn daily_cards_stay_at_the_head_despite_future_due() {
+        // ⚠️ 这条锁的是一个真实 bug（2026-10-02 浏览器端到端抓到）：
+        // 置顶卡是服务端从整池随机抽的，大多**已经学过**，`due_at` 落在未来；
+        // 而池子里还有一大堆「从未复习」的卡（`due_ms = None`，排序键 −∞）。
+        // 只按到期时间排序时，置顶卡会被排到那些卡后面 —— 用户连评 7 张只碰到 1 张，
+        // 「今日置顶 N/5」永远停在 2/5。所以置顶卡必须按**来源**而非时间排在最前。
+        let queue = vec![
+            // 一张从未复习的普通卡（会排在最前，除非置顶卡有更高优先级）
+            QueueInput {
+                card: card(99, "untouched"),
+                last_ms: None,
+                due_ms: None,
+            },
+            // 两张「今天恰好抽到你」的置顶卡：已经学过，到期时间在 30 天后
+            QueueInput {
+                card: daily_card(1, "daily-a", 10.0, 3.0),
+                last_ms: Some(10.0 * MS_PER_DAY),
+                due_ms: Some(40.0 * MS_PER_DAY),
+            },
+            QueueInput {
+                card: daily_card(2, "daily-b", 10.0, 3.0),
+                last_ms: Some(10.0 * MS_PER_DAY),
+                due_ms: Some(50.0 * MS_PER_DAY),
+            },
+        ];
+        let mut s = ReviewSession::build(
+            queue,
+            Vec::new(),
+            Vec::new(),
+            plan_opts(0, 0, 10.0 * MS_PER_DAY),
+            7,
+        );
+
+        // 前两张必须是置顶卡（且按池首顺序，不受未复习卡影响）
+        let mut order = Vec::new();
+        for _ in 0..3 {
+            let cur = s.current.as_ref().expect("应有当前卡");
+            order.push((cur.card.id, cur.source, cur.is_daily));
+            s.try_rate(3, 10.0 * MS_PER_DAY).unwrap();
+        }
+        assert_eq!(
+            order.iter().filter(|(_, _, d)| *d).count(),
+            2,
+            "两张置顶卡都必须在前三张里出现，实际顺序={order:?}"
+        );
+        // ⚠️ 不能断言「前两张都是置顶卡」：这个池子只有 3 张，而 pick_index 对未过期的卡
+        // 是在「最靠前的 10 张」（池子小就覆盖全池）里**随机**抽的 —— 第二张抽到那张
+        // 从未复习的普通卡完全合法（它本来就排在置顶卡之后、未到期卡之前）。
+        // 真正要钉住的是这一条：池首必须是置顶卡，且置顶卡不会掉到普通卡后面。
+        assert_eq!(order[0].1, CardSource::Daily, "池首必须是置顶卡，实际={order:?}");
+        assert_eq!(
+            order.iter().position(|(_, s, _)| *s == CardSource::Daily),
+            Some(0),
+            "第一张就必须是置顶卡，实际={order:?}"
+        );
+
+        // 评过的置顶卡要摘掉标记，之后按正常到期时间参与循环（不会永远钉在池首）
+        assert!(
+            s.pool.iter().all(|c| !c.is_daily) && s.current.as_ref().map(|c| !c.is_daily).unwrap_or(true),
+            "评过的置顶卡应当摘掉标记"
+        );
     }
 
     #[test]
@@ -1238,6 +1582,7 @@ mod tests {
             state: None,
             last_ms: None,
             due_ms: Some(due),
+            is_daily: false,
             card: card(id, "w"),
         };
         insert_sorted(&mut pool, mk(1, 30.0));
@@ -1282,9 +1627,12 @@ mod tests {
 
     #[test]
     fn plan_new_limit_capped_by_available() {
+        // ⚠️ 原意是「新词不够时全取」；配额搬到服务端后这个额度在引擎侧已经没有意义，
+        // 保留这条只为把「引擎不再按额度造卡」钉死（见 plan_is_only_the_queue_order）。
         let new: Vec<ApiCard> = (0..3).map(|i| card(i, "n")).collect();
         let plan = plan_day(Vec::new(), new, Vec::new(), &plan_opts(5, 0, 0.0), 1);
-        assert_eq!(plan.new_count, 3, "新词不足时全部取用");
+        assert_eq!(plan.cards.len(), 0, "没有队列就不造卡");
+        assert_eq!(plan.new_count, 0);
     }
 
     #[test]
@@ -1423,10 +1771,12 @@ mod tests {
             interval_ms / MS_PER_DAY,
             due / MS_PER_DAY
         );
-        let keys: Vec<f64> = s.pool.iter().map(sort_key).collect();
-        let mut sorted = keys.clone();
-        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        assert_eq!(keys, sorted, "插回后池子必须仍是有序的");
+        // 池子必须整体有序：排序键是 (优先级, 到期时间, 词 id)，所以逐对比较即可
+        let keys: Vec<(u8, f64, u32)> = s.pool.iter().map(pool_key).collect();
+        assert!(
+            keys.windows(2).all(|w| w[0] <= w[1]),
+            "插回后池子必须仍是有序的，实际={keys:?}"
+        );
     }
 
     #[test]
@@ -1574,16 +1924,24 @@ mod tests {
 
     #[test]
     fn session_rates_in_order_and_returns_submit_payload() {
-        let queue = vec![learned(1, "ability", 0.2, 9.0, 9.0 * MS_PER_DAY)];
-        let new = vec![card(2, "achieve")];
-        let mut s = session(queue, &new, &[], 12345);
+        // ⚠️ 原来是「队列 1 张 + 新词候选 1 张」；新词路径废弃后改成两张都在队列里
+        // （等价形状：置顶卡排前面、普通卡排后面，由服务端的四桶顺序保证）。
+        let queue = vec![
+            QueueInput {
+                card: daily_card(2, "achieve", 0.0, 0.0),
+                last_ms: None,
+                due_ms: None,
+            },
+            learned(1, "ability", 0.2, 9.0, 9.0 * MS_PER_DAY),
+        ];
+        let mut s = session(queue, &[], &[], 12345);
 
         assert_eq!(s.total(), 2);
         assert_eq!(s.done(), 0);
         assert!(!s.is_finished());
 
-        // 计划卡（新词）排在最前：先评它，再评复习区的卡
-        assert_eq!(s.current_word_id(), 2, "今日计划卡优先");
+        // 置顶卡排在最前：先评它，再评复习区的卡
+        assert_eq!(s.current_word_id(), 2, "今日置顶卡优先");
         let payload = s.try_rate(3, 0.0).expect("评分应成功");
         let v: serde_json::Value = serde_json::from_str(&payload).unwrap();
         assert_eq!(v["word_id"].as_u64().unwrap(), 2);
@@ -1605,8 +1963,12 @@ mod tests {
 
     #[test]
     fn session_rejects_invalid_rating() {
-        let new = vec![card(1, "w")];
-        let mut s = session(Vec::new(), &new, &[], 1);
+        let queue = vec![QueueInput {
+            card: card(1, "w"),
+            last_ms: None,
+            due_ms: None,
+        }];
+        let mut s = session(queue, &[], &[], 1);
         assert!(s.try_rate(0, 0.0).is_err());
         assert!(s.try_rate(5, 0.0).is_err());
         assert_eq!(s.done(), 0, "非法评分不应算作已复习");
@@ -1615,27 +1977,39 @@ mod tests {
 
     #[test]
     fn session_accepts_api_envelope_and_empty_input() {
-        let queue = r#"{"code":200,"data":{"items":[]},"message":"获取成功"}"#;
-        let new = r#"{"code":200,"data":{"items":[{"id":9,"word":"decide","phonetic":"/x/","meaning":"v. 决定","example":"e"}]},"message":"ok"}"#;
-        // 走 parse_items 的信封路径，再用 build 建会话（避开宿主上不可用的 JsValue）
+        // 空队列：池子必须是空的（不是报错、也不是凭空造卡）
+        let empty = r#"{"code":200,"data":{"items":[]},"message":"获取成功"}"#;
+        // 有卡的队列：走 parse_items 的信封路径，再用 build 建会话
+        // （避开宿主上不可用的 JsValue）
+        let queue = r#"{"code":200,"data":{"items":[{"id":9,"word":"decide","phonetic":"/x/","meaning":"v. 决定","example":"e","daily":true}]},"message":"ok"}"#;
         let s = ReviewSession::build(
             to_queue_inputs(parse_items(queue).unwrap()),
-            parse_items(new).unwrap(),
             Vec::new(),
-            plan_opts(5, 0, 0.0),
+            Vec::new(),
+            plan_opts(0, 0, 0.0),
             7,
         );
-        assert_eq!(s.total(), 1, "只有一个新词候选");
+        assert_eq!(s.total(), 1, "池子里只有队列给的那一张");
         assert_eq!(s.current_word_id(), 9);
         assert!(s.current_json(0.0).contains("decide"));
-        assert!(s.current_json(0.0).contains(r#""source":"new""#));
-        // 新词只给 status，不给记忆元信息
-        assert!(s.current_json(0.0).contains(r#""status":"new""#));
-        assert!(!s.current_json(0.0).contains("retrievability"));
+        assert!(s.current_json(0.0).contains(r#""source":"daily""#));
+
+        // 空队列：不报错、池子为空
+        let empty_session = ReviewSession::build(
+            to_queue_inputs(parse_items(empty).unwrap()),
+            Vec::new(),
+            Vec::new(),
+            plan_opts(0, 0, 0.0),
+            7,
+        );
+        assert_eq!(empty_session.total(), 0, "空队列应当得到空池子");
+        assert!(empty_session.is_finished(), "空池子就是「没有卡可出」");
     }
 
     #[test]
     fn session_reports_plan_targets() {
+        // 计划区的三个计数在单一循环池之后**一律为 0**：池子就是队列，没有独立的计划区。
+        // 前端也不再读它们（顶栏与左下角的数字分别来自 `stats` 与 `state.dailyTarget`）。
         let new: Vec<ApiCard> = (10..20).map(|i| card(i, "n")).collect();
         let probes: Vec<ApiCard> = (20..30).map(|i| due_card(i, "p", 8.0, 3.0)).collect();
         let s = ReviewSession::build(
@@ -1646,10 +2020,10 @@ mod tests {
             3,
         );
         let v: serde_json::Value = serde_json::from_str(&s.plan_json()).unwrap();
-        assert_eq!(v["new_target"], 5);
-        assert_eq!(v["probe_target"], 5);
-        assert_eq!(v["plan_len"], 10);
-        assert_eq!(s.total(), 10, "没有复习区时队列就是计划区");
+        assert_eq!(v["new_target"], 0, "额度已搬到服务端");
+        assert_eq!(v["probe_target"], 0, "额度已搬到服务端");
+        assert_eq!(v["plan_len"], 0, "不再有独立的计划区");
+        assert_eq!(s.total(), 0, "没有队列就没有池子");
     }
 
     // ---------- 抽查：按新卡重置 ----------
@@ -1657,21 +2031,28 @@ mod tests {
     #[test]
     fn probe_rating_resets_memory_state() {
         // 一张已经稳定到 60 天的卡：正常复习会得到很长的间隔，
-        // 但被抽查时应按新卡重算（Good → 初始稳定度 2.3065 天）
+        // 但**今日置顶卡**应按新卡重算（Good → 初始稳定度 2.3065 天）。
+        //
+        // ⚠️ 原来是拿「抽查卡」测的（那时它走的是已废弃的三段编排）；抽查降级为只读诊断后，
+        // 唯一还会走「重置重学」路径的就是服务端标了 `daily` 的置顶卡，所以这里换成它。
+        // 同一条口径的另一半（is_probe / is_reset 标记）见 `daily_card_is_marked_and_resets_memory_state`。
         let matured = 60.0f32;
-        let queue = vec![learned(1, "mature", matured, 3.0, 100.0 * MS_PER_DAY)];
-        let probes = vec![due_card(1, "mature", matured, 3.0)];
+        let queue = vec![QueueInput {
+            card: daily_card(1, "mature", matured, 3.0),
+            last_ms: Some(90.0 * MS_PER_DAY),
+            due_ms: Some(100.0 * MS_PER_DAY),
+        }];
         let mut s = ReviewSession::build(
             queue,
             Vec::new(),
-            probes,
-            plan_opts(0, 5, 10.0 * MS_PER_DAY),
+            Vec::new(),
+            plan_opts(0, 0, 10.0 * MS_PER_DAY),
             5,
         );
         assert_eq!(
             s.current.as_ref().map(|c| c.source),
-            Some(CardSource::Probe),
-            "抽查卡应排在复习区的卡之前（计划卡优先）"
+            Some(CardSource::Daily),
+            "置顶卡应被标成 Daily"
         );
 
         let payload = s.try_rate(3, 10.0 * MS_PER_DAY).unwrap();
@@ -1679,9 +2060,78 @@ mod tests {
         let interval = v["interval_days"].as_f64().unwrap();
         assert!(
             (interval - 2.3065).abs() < 1e-3,
-            "抽查应按新卡重算（Good → 2.3065 天），得到 {interval}"
+            "置顶卡应按新卡重算（Good → 2.3065 天），得到 {interval}"
         );
-        assert_eq!(v["is_probe"], true, "抽查必须在请求体里标记，供后端记进日志");
+        assert_eq!(v["is_probe"], true, "重置重学必须在请求体里标记，供后端记进日志");
+        assert_eq!(v["is_reset"], true, "同上");
+        assert_eq!(v["source"], "daily", "前端据此记「今日置顶 N/5」");
+    }
+
+    // ---------- 单一循环池：今日置顶卡与间隔封顶 ----------
+
+    #[test]
+    fn daily_card_is_marked_and_resets_memory_state() {
+        // 已经稳定到 60 天的词，今天恰好被「今日 5 个」抽中：
+        // 应当按新卡口径重算（不是按 60 天继续外推），并在提交时带 is_reset
+        let matured = 60.0f32;
+        let queue = vec![QueueInput {
+            card: daily_card(1, "mature", matured, 3.0),
+            last_ms: Some(10.0 * MS_PER_DAY - MS_PER_DAY),
+            due_ms: Some(10.0 * MS_PER_DAY),
+            }];
+        let mut s = ReviewSession::build(
+            queue,
+            Vec::new(),
+            Vec::new(),
+            plan_opts(0, 0, 10.0 * MS_PER_DAY),
+            5,
+        );
+        assert_eq!(
+            s.current.as_ref().map(|c| c.source),
+            Some(CardSource::Daily),
+            "带 is_daily 的卡应标记为 Daily 来源"
+        );
+
+        let payload = s.try_rate(3, 10.0 * MS_PER_DAY).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        let interval = v["interval_days"].as_f64().unwrap();
+        assert!(
+            (interval - 2.3065).abs() < 1e-3,
+            "置顶卡应按新卡重算（Good → 2.3065 天），得到 {interval}"
+        );
+        assert_eq!(v["is_reset"], true, "置顶卡必须在请求体里带 is_reset，否则「今日新学」会被冲高");
+        assert_eq!(v["is_probe"], true, "重置类卡同时按抽查口径记账");
+    }
+
+    #[test]
+    fn interval_is_capped_at_one_year() {
+        // 一张稳定度极高的卡（模拟长期满分）：Easy 分支的间隔会超过一年，
+        // 必须被 MAX_INTERVAL_MS 截断 —— 否则它会在池子里「消失」很久
+        let queue = vec![learned(1, "ancient", 20000.0, 3.0, 10.0 * MS_PER_DAY)];
+        let mut s = ReviewSession::build(
+            queue,
+            Vec::new(),
+            Vec::new(),
+            plan_opts(0, 0, 10.0 * MS_PER_DAY),
+            5,
+        );
+        let payload = s.try_rate(4, 10.0 * MS_PER_DAY).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        let interval = v["interval_days"].as_f64().unwrap();
+        assert!(
+            interval <= 365.0 + 1e-6,
+            "间隔必须封顶在 365 天（用户决策 B8），得到 {interval} 天"
+        );
+
+        // 插回池子后的到期时间同样受封顶约束（与服务端 maxIntervalDays 口径一致）。
+        // ⚠️ 单卡会话里评完会立刻被抽成「当前卡」（池子里没别的可抽），
+        //    所以这里要看 current，而不是 pool —— 曾经按 pool 断言而误判成「卡丢了」。
+        let card = s.current.as_ref().expect("评完的卡应被抽回来当当前卡");
+        let due = card.due_ms.expect("插回后应有到期时间");
+        assert!(
+            due <= 10.0 * MS_PER_DAY + MAX_INTERVAL_MS + 1.0,
+            "插回池子的到期时间也必须封顶，实际 {due}"
+        );
     }
 
     #[test]
@@ -1708,17 +2158,25 @@ mod tests {
 
     #[test]
     fn probe_meta_is_marked_as_probe() {
-        let probes = vec![ApiCard {
-            stability: Some(60.0),
-            difficulty: Some(3.0),
-            reps: Some(9),
-            ..card(1, "mature")
+        // ⚠️ 原来是用已废弃的 `probes` 入参造卡的；抽查降级为只读诊断后，
+        // 界面上唯一的「重置重学」来源就是服务端标了 `daily` 的置顶卡 —— 换成它，
+        // 断言的东西不变（status=probe + 仍展示旧记忆状态供参考）。
+        let queue = vec![QueueInput {
+            card: ApiCard {
+                stability: Some(60.0),
+                difficulty: Some(3.0),
+                reps: Some(9),
+                is_daily: true,
+                ..card(1, "mature")
+            },
+            last_ms: None,
+            due_ms: None,
         }];
         let s = ReviewSession::build(
+            queue,
             Vec::new(),
             Vec::new(),
-            probes,
-            plan_opts(0, 5, 10.0 * MS_PER_DAY),
+            plan_opts(0, 0, 10.0 * MS_PER_DAY),
             5,
         );
         let v: serde_json::Value = serde_json::from_str(&s.current_json(10.0 * MS_PER_DAY)).unwrap();
@@ -1791,7 +2249,7 @@ mod tests {
         // 历史数据把两个义项写在一行：应拆成名词、动词两块
         let mut c = card(1, "benefit");
         c.meaning = "n. 好处；益处 v. 有益于".to_string();
-        let s = session(Vec::new(), &[c], &[], 1);
+        let s = session(vec![fresh(c)], &[], &[], 1);
 
         let v: serde_json::Value = serde_json::from_str(&s.current_json(0.0)).unwrap();
         let senses = v["senses"].as_array().unwrap();
@@ -1824,7 +2282,7 @@ mod tests {
                 example_translation: String::new(),
             },
         ]);
-        let s = session(Vec::new(), &[c], &[], 1);
+        let s = session(vec![fresh(c)], &[], &[], 1);
 
         let v: serde_json::Value = serde_json::from_str(&s.current_json(0.0)).unwrap();
         let senses = v["senses"].as_array().unwrap();
@@ -1843,7 +2301,7 @@ mod tests {
         let mut c = card(1, "apply");
         c.meaning = "v. 申请；应用".to_string();
         c.senses = Some(vec![ApiSense::default(), ApiSense::default()]);
-        let s = session(Vec::new(), &[c], &[], 1);
+        let s = session(vec![fresh(c)], &[], &[], 1);
 
         let v: serde_json::Value = serde_json::from_str(&s.current_json(0.0)).unwrap();
         let senses = v["senses"].as_array().unwrap();
@@ -1906,8 +2364,7 @@ mod tests {
     #[test]
     fn new_word_uses_zero_days_elapsed() {
         // 新词没有 last_ms，days 一律按 0 处理；新卡 Good 的首个间隔等于初始稳定度 2.3065
-        let new = vec![card(1, "w")];
-        let mut s = session(Vec::new(), &new, &[], 1);
+        let mut s = session(vec![fresh(card(1, "w"))], &[], &[], 1);
         let payload = s.try_rate(3, 123456789.0).unwrap();
         let v: serde_json::Value = serde_json::from_str(&payload).unwrap();
         let interval = v["interval_days"].as_f64().unwrap();
@@ -1973,11 +2430,9 @@ mod tests {
         assert_eq!(added, 10, "复习区一页全量追加（不受新词批量限制）");
         assert_eq!(s.done(), 0, "追加不算已复习");
         assert_eq!(s.total(), 13, "池子应增长到 3 + 10");
-        // 池子仍按到期时间有序
-        let keys: Vec<f64> = s.pool.iter().map(sort_key).collect();
-        let mut sorted = keys.clone();
-        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        assert_eq!(keys, sorted);
+        // 池子仍整体有序
+        let keys: Vec<(u8, f64, u32)> = s.pool.iter().map(pool_key).collect();
+        assert!(keys.windows(2).all(|w| w[0] <= w[1]), "追加后池子必须有序，实际={keys:?}");
     }
 
     #[test]

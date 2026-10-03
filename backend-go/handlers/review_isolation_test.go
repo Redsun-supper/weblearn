@@ -118,30 +118,57 @@ func TestReviewStatsIsolatedPerUser(t *testing.T) {
 	assertInt(t, theirs, "streak_days", 1)
 }
 
-// TestNewWordsIsolatedPerUser 「新词」是按人算的：别人学过不代表我学过。
+// TestNewWordsIsolatedPerUser 单一循环池之后，「新词」这个概念没了：池子对每个人都是**整个词库**，
+// 区别只在**进度**归谁。这条用例钉住的就是这个语义（旧版这里比的是 new 池的条数）。
 func TestNewWordsIsolatedPerUser(t *testing.T) {
 	router, db := setupTestRouter(t)
 	learnedByOther := seedWord(t, db, "learned-by-other")
-	seedWord(t, db, "untouched")
+	untouched := seedWord(t, db, "untouched")
 
 	past := time.Now().Add(-time.Hour)
 	seedReviewFor(t, db, testOtherUserID, learnedByOther, 2, 5, &past, 1, 0)
 
-	mine := items(t, getDataAs(t, router, testUserID, "/api/reviews/new?limit=50"))
-	if len(mine) != 2 {
-		t.Fatalf("对第一个用户来说两个词都该是新词，实际拿到 %d 个：%v", len(mine), mine)
+	// 池子对两个用户都是 2 个词（词库共享、池子即全表）
+	for _, user := range []int64{testUserID, testOtherUserID} {
+		data := getDataAs(t, router, user, "/api/reviews/queue?limit=50")
+		if got := len(items(t, data)); got != 2 {
+			t.Fatalf("用户 %d 的池子应含全部 2 个词，实际 %d 个", user, got)
+		}
+		assertInt(t, data, "total", 2)
 	}
 
-	theirs := items(t, getDataAs(t, router, testOtherUserID, "/api/reviews/new?limit=50"))
-	if len(theirs) != 1 {
-		t.Fatalf("第二个用户只剩一个没学过的词，实际拿到 %d 个：%v", len(theirs), theirs)
+	// 但「谁有进度」是按人的：别人学过的词，我这里 has_review 必须是 false
+	cardOf := func(user int64, wordID uint) map[string]interface{} {
+		t.Helper()
+		for _, item := range items(t, getDataAs(t, router, user, "/api/reviews/queue?limit=50")) {
+			if uint(toInt64(t, item["id"])) == wordID {
+				return item
+			}
+		}
+		t.Fatalf("用户 %d 的池子里找不到词 %d", user, wordID)
+		return nil
 	}
-	if got := theirs[0]["word"]; got != "untouched" {
-		t.Fatalf("第二个用户的新词应为 untouched，实际 %v", got)
+	if cardOf(testUserID, learnedByOther)["has_review"] != false {
+		t.Fatalf("别人学过的词在我这里不该有进度（has_review 应为 false）")
+	}
+	if cardOf(testOtherUserID, learnedByOther)["has_review"] != true {
+		t.Fatalf("学过的人自己应当有进度（has_review 应为 true）")
+	}
+	if cardOf(testUserID, untouched)["has_review"] != false {
+		t.Fatalf("没人学过的词 has_review 应为 false")
+	}
+
+	// 已废弃的 new 接口对谁都不再返回候选
+	for _, user := range []int64{testUserID, testOtherUserID} {
+		if got := len(items(t, getDataAs(t, router, user, "/api/reviews/new?limit=50"))); got != 0 {
+			t.Fatalf("new 接口在新模型下应为空，用户 %d 拿到 %d 条", user, got)
+		}
 	}
 }
 
 // TestDueQueueProbesIsolatedPerUser 到期卡、复习队列与抽查候选都只看自己的进度。
+// 注意：队列的 total 现在是**池子总词数**（对所有人一样），所以「隔离」要看
+// due / has_review / probes，而不是看 total 是否为 0。
 func TestDueQueueProbesIsolatedPerUser(t *testing.T) {
 	router, db := setupTestRouter(t)
 	wordID := seedWord(t, db, "due-for-me")
@@ -156,15 +183,24 @@ func TestDueQueueProbesIsolatedPerUser(t *testing.T) {
 		t.Fatalf("第二个用户没有任何进度，不该有到期卡，实际 %d 张", got)
 	}
 
-	// 队列的 total 也必须跟着人走（分页信息与实际结果同一口径）
-	data := getDataAs(t, router, testOtherUserID, "/api/reviews/queue?limit=100")
-	assertInt(t, data, "total", 0)
-	if got := len(items(t, data)); got != 0 {
-		t.Fatalf("第二个用户的队列应为空，实际 %d 张", got)
+	// 队列对两个人都给出同一个池子（total 相同），但进度标记按人区分
+	theirs := getDataAs(t, router, testOtherUserID, "/api/reviews/queue?limit=100")
+	mine := getDataAs(t, router, testUserID, "/api/reviews/queue?limit=100")
+	assertInt(t, theirs, "total", 1)
+	assertInt(t, mine, "total", 1)
+	if items(t, theirs)[0]["has_review"] != false {
+		t.Fatalf("第二个用户没学过这个词，has_review 应为 false")
+	}
+	if items(t, mine)[0]["has_review"] != true {
+		t.Fatalf("第一个用户学过这个词，has_review 应为 true")
 	}
 
+	// 抽查（池尾诊断）只给「有进度行」的词，所以第二个用户是空的
 	if got := len(items(t, getDataAs(t, router, testOtherUserID, "/api/reviews/probes"))); got != 0 {
 		t.Fatalf("第二个用户的抽查候选应为空，实际 %d 张", got)
+	}
+	if got := len(items(t, getDataAs(t, router, testUserID, "/api/reviews/probes"))); got != 1 {
+		t.Fatalf("第一个用户的抽查候选应有 1 张，实际 %d 张", got)
 	}
 }
 

@@ -25,7 +25,11 @@
              点击后 main.js 的 playAvatarZoom() 会让 .avatar-zoom 从头像位置扩散覆盖全屏，再跳转 account/ -->
         <button class="rounded-square" type="button" id="navAvatar"
                 title="个人中心" aria-label="进入个人中心">
-            <img src="image/avatar.png" alt="头像" class="avatar">
+            <!-- ⚠️ 临时：头像素材暂时置空（用 1×1 透明占位图），只换这里与 account/index.html
+                 的 src，**不要动** #navAvatar 的结构与 main.js 的过场 —— 扩散遮罩读的是按钮的
+                 getBoundingClientRect（main.js:298），与图片无关；恢复只需把 src 改回
+                 image/avatar.png（原图 2.6MB 一直留在 image/ 里没删）。 -->
+            <img src="image/avatar-blank.png" alt="头像" class="avatar">
             <!-- 过场里头像会长成「返回主页面」胶囊，这行字就是那时候露出来的内容。
                  ⚠️ 结构与字号必须与 account/index.html 的 .acc-home-btn 一致（那边是
                  「箭头 span + 文字」），否则换页那一帧会看到文字微跳。 -->

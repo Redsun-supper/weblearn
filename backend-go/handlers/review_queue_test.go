@@ -1,26 +1,36 @@
 package handlers
 
 import (
+	"net/http"
 	"testing"
 	"time"
 
 	"gorm.io/gorm"
 
+	"backend-go/internal/stablehash"
 	"backend-go/models"
 )
 
-// 本文件覆盖复习取数四个接口的「取数条件」：
-//   - GET /api/reviews/new    没有 word_reviews 行的词（= 尚未加入复习的新词），按 words.id 升序
-//   - GET /api/reviews/due    已学且 due_at <= now 的卡，按 due_at 升序
-//   - GET /api/reviews/queue  所有已学词（含未到期）按 due_at 升序，带 total 分页
-//   - GET /api/reviews/probes 已学词按 due_at 倒序（越轮不到复习的越靠前）
+// 本文件覆盖**单一循环池**（docs/review-pool-plan.md）的取数口径。
 //
-// 关于「每日 5 新词 + 5 抽查」的配额：配额是**客户端**按 localStorage 记账的
-// （docs/review-engine.md 有说明），服务端只提供候选池。所以这里测的是服务端这一侧的
-// 口径——把 limit 收到 5 时能拿到「最该出现的那 5 个」候选，以及 limit 的边界钳制。
-// 服务端一旦哪天开始按天限流，这些用例就是现成的回归锚点。
+// 与旧版的根本区别：池子 = `words` 全表，不再有「已学 / 未学」的身份差别。
+// 排序由服务端一次定死，四个优先级桶（用户决策 C10）：
+//
+//	0 = 今日随机抽出的 5 个（置顶，全天固定 —— 稳定哈希）
+//	1 = 已过期（due_at <= now，越久越靠前）
+//	2 = 从未复习过（没有进度行）
+//	3 = 未到期（due_at ASC）
+//
+// 桶内键：桶 1/3 用 due_at；桶 0/2 用按 (user, 当天, word) 的稳定哈希。
+//
+// ⚠️ 这里用的是真 HTTP + 真 SQLite（setupTestRouter），所以也顺带覆盖了
+// 「哈希表达式在 SQL 里能不能跑」——SQLite 的整数溢出陷阱就藏在这一层。
 
-// cardWordIDs 取出 dueCard 列表里的 word_id（响应里的字段名是 id，见 dueCard 结构）
+// poolTestDay 固定「今天」的种子，避免测试跨零点抖动。
+// 全部池用例都显式带 `?today=<这个值>`，与服务端的 Asia/Shanghai 回退解耦。
+const poolTestDay = "20260101"
+
+// cardWordIDs 取出卡片列表里的 word_id（响应里的字段名是 id，见 dueCard 结构）
 func cardWordIDs(t *testing.T, data map[string]interface{}) []uint {
 	t.Helper()
 	list := items(t, data)
@@ -28,32 +38,9 @@ func cardWordIDs(t *testing.T, data map[string]interface{}) []uint {
 	for _, item := range list {
 		raw, ok := item["id"]
 		if !ok {
-			t.Fatalf("到期卡缺少 id 字段，实际字段=%v", mapKeys(item))
+			t.Fatalf("卡片缺少 id 字段，实际字段=%v", mapKeys(item))
 		}
-		f, ok := raw.(float64)
-		if !ok {
-			t.Fatalf("到期卡 id 期望数字，实际类型=%T", raw)
-		}
-		out = append(out, uint(f))
-	}
-	return out
-}
-
-// wordIDs 取出完整 Word 列表里的 id（/api/reviews/new 返回的是 models.Word）
-func wordIDs(t *testing.T, data map[string]interface{}) []uint {
-	t.Helper()
-	list := items(t, data)
-	out := make([]uint, 0, len(list))
-	for _, item := range list {
-		raw, ok := item["id"]
-		if !ok {
-			t.Fatalf("词条缺少 id 字段，实际字段=%v", mapKeys(item))
-		}
-		f, ok := raw.(float64)
-		if !ok {
-			t.Fatalf("词条 id 期望数字，实际类型=%T", raw)
-		}
-		out = append(out, uint(f))
+		out = append(out, uint(toInt64(t, raw)))
 	}
 	return out
 }
@@ -71,233 +58,556 @@ func assertIDOrder(t *testing.T, got, want []uint, label string) {
 	}
 }
 
-// reviewsFixture 一套覆盖四种状态的词库 + 记忆状态：
-//
-//	newOnly      没有复习行          → 只进 new
-//	dueOld       到期最久（-3h）      → due / queue 最前，probes 最后
-//	dueRecent    刚到期的（-10m）     → due / queue 中间
-//	futureFar    远期未到期（+30d）   → 不进 due，queue 最后，probes 最前
-//	futureNear   近期未到期（+1h）    → 不进 due，queue 中间
-type reviewsFixture struct {
-	newOnly    uint
-	dueOld     uint
-	dueRecent  uint
-	futureNear uint
-	futureFar  uint
+// modelsWord 造一个字段齐全的词条（cardFields 用例用），避免测试里出现超长字面量
+func modelsWord() models.Word {
+	return models.Word{
+		Word:               "kernel",
+		Phonetic:           "/ˈkɜː.nəl/",
+		Meaning:            "n. 核心；内核",
+		Example:            "The kernel handles interrupts.",
+		ExampleTranslation: "内核负责处理中断。",
+		Book:               "必修一",
+		Unit:               "Unit 1",
+	}
 }
 
-// seedReviewsFixture 造出 reviewsFixture 描述的局面，返回各词的 id
-func seedReviewsFixture(t *testing.T, db *gorm.DB) reviewsFixture {
+// withDay 给路径拼上固定的 today 参数
+func withDay(path string) string {
+	if path == "" {
+		return path
+	}
+	if contains(path, "?") {
+		return path + "&today=" + poolTestDay
+	}
+	return path + "?today=" + poolTestDay
+}
+
+func contains(s, sub string) bool {
+	for i := 0; i+len(sub) <= len(s); i++ {
+		if s[i:i+len(sub)] == sub {
+			return true
+		}
+	}
+	return false
+}
+
+// wantedDailyIDs 用与 stablehash 相同的口径离线算出「今日 5 个」，用于断言。
+// 独立实现一遍（不是调服务端代码），这样服务端哪天换了排序键，测试就会红。
+func wantedDailyIDs(wordIDs []uint, userID uint, seed int64) []uint {
+	type kv struct {
+		id uint
+		h  int64
+	}
+	all := make([]kv, 0, len(wordIDs))
+	for _, id := range wordIDs {
+		all = append(all, kv{id, stablehash.Hash(int64(userID), int64(id), seed)})
+	}
+	n := dailyWordCount
+	if len(all) < n {
+		n = len(all)
+	}
+	for i := 0; i < n; i++ {
+		mi := i
+		for j := i + 1; j < len(all); j++ {
+			if all[j].h < all[mi].h {
+				mi = j
+			}
+		}
+		all[i], all[mi] = all[mi], all[i]
+	}
+	out := make([]uint, 0, n)
+	for i := 0; i < n; i++ {
+		out = append(out, all[i].id)
+	}
+	return out
+}
+
+func mustSeed(t *testing.T, seed string) int64 {
 	t.Helper()
-	f := reviewsFixture{
-		newOnly:    seedWord(t, db, "obsure"),
-		dueOld:     seedWord(t, db, "pursue"),
-		dueRecent:  seedWord(t, db, "quaint"),
-		futureNear: seedWord(t, db, "relent"),
-		futureFar:  seedWord(t, db, "soothe"),
+	var v int64
+	for i := 0; i < len(seed); i++ {
+		if seed[i] < '0' || seed[i] > '9' {
+			t.Fatalf("poolTestDay 必须是 8 位数字，实际 %q", seed)
+		}
+		v = v*10 + int64(seed[i]-'0')
 	}
-	now := time.Now()
-	old := now.Add(-3 * time.Hour)
-	recent := now.Add(-10 * time.Minute)
-	near := now.Add(time.Hour)
-	far := now.Add(30 * 24 * time.Hour)
-
-	// stability 用序号做区分，便于按字段核对顺序
-	seedReview(t, db, f.dueOld, 1, 5, &old, 1, 0)
-	seedReview(t, db, f.dueRecent, 2, 5, &recent, 2, 0)
-	seedReview(t, db, f.futureNear, 3, 5, &near, 3, 0)
-	seedReview(t, db, f.futureFar, 4, 5, &far, 4, 0)
-	return f
+	return v
 }
 
-// TestReviewsNewOnlyUnlearned new 池只放没有 word_reviews 行的词，且按 id 升序
-func TestReviewsNewOnlyUnlearned(t *testing.T) {
-	router, db := setupTestRouter(t)
-	f := seedReviewsFixture(t, db)
-
-	data, code := decodeData(t, doJSON(t, router, "GET", "/api/reviews/new", nil))
-	if code != 200 {
-		t.Fatalf("new 的 code 期望 200，实际 %d", code)
-	}
-	assertIDOrder(t, wordIDs(t, data), []uint{f.newOnly}, "new 池")
-
-	// 新词走完后（给它建一张复习行）它就离开 new 池，这是「懒创建」的另一面
-	submitReview(t, router, newReviewRequest(f.newOnly, 3, 1, 5, 1))
-	data2, _ := decodeData(t, doJSON(t, router, "GET", "/api/reviews/new", nil))
-	assertIDOrder(t, wordIDs(t, data2), nil, "提交复习后的 new 池")
-	if len(wordIDs(t, data2)) != 0 {
-		t.Fatalf("已学词不应再出现在 new 池")
-	}
+// queueCard 把响应里的一张卡读成好用的结构
+type queueCard struct {
+	ID        uint
+	Bucket    int
+	Daily     bool
+	HasReview bool
+	DueAt     *int64
 }
 
-// TestReviewsNewOrderAndLimit new 池按 words.id 升序，limit 生效
-func TestReviewsNewOrderAndLimit(t *testing.T) {
-	router, db := setupTestRouter(t)
-	first := seedWord(t, db, "thrive")
-	second := seedWord(t, db, "uphold")
-	third := seedWord(t, db, "vanish")
-
-	data, _ := decodeData(t, doJSON(t, router, "GET", "/api/reviews/new?limit=2", nil))
-	assertIDOrder(t, wordIDs(t, data), []uint{first, second}, "new limit=2")
-
-	dataAll, _ := decodeData(t, doJSON(t, router, "GET", "/api/reviews/new?limit=100", nil))
-	assertIDOrder(t, wordIDs(t, dataAll), []uint{first, second, third}, "new limit=100")
+func readQueueCards(t *testing.T, data map[string]interface{}) []queueCard {
+	t.Helper()
+	list := items(t, data)
+	out := make([]queueCard, 0, len(list))
+	for _, item := range list {
+		c := queueCard{
+			ID:        uint(toInt64(t, item["id"])),
+			Bucket:    toInt(t, item["bucket"]),
+			Daily:     item["daily"] == true,
+			HasReview: item["has_review"] == true,
+		}
+		if raw, ok := item["due_at"]; ok && raw != nil {
+			if s, ok := raw.(string); ok {
+				if ts, err := time.Parse(time.RFC3339, s); err == nil {
+					ms := ts.UnixMilli()
+					c.DueAt = &ms
+				}
+			}
+		}
+		out = append(out, c)
+	}
+	return out
 }
 
-// TestReviewsDueOnlyExpired due 池只放已到期的卡，按 due_at 升序（最旧的排最前）
-func TestReviewsDueOnlyExpired(t *testing.T) {
-	router, db := setupTestRouter(t)
-	f := seedReviewsFixture(t, db)
-
-	data, code := decodeData(t, doJSON(t, router, "GET", "/api/reviews/due", nil))
-	if code != 200 {
-		t.Fatalf("due 的 code 期望 200，实际 %d", code)
+func cardIDs(cards []queueCard) []uint {
+	out := make([]uint, 0, len(cards))
+	for _, c := range cards {
+		out = append(out, c.ID)
 	}
-	assertIDOrder(t, cardWordIDs(t, data), []uint{f.dueOld, f.dueRecent}, "due 池")
+	return out
+}
 
-	// 未到期的两个不能出现
-	for _, id := range cardWordIDs(t, data) {
-		if id == f.futureNear || id == f.futureFar {
-			t.Fatalf("未到期的词 %d 不应出现在 due 池", id)
+func findCard(t *testing.T, cards []queueCard, id uint) queueCard {
+	t.Helper()
+	for _, c := range cards {
+		if c.ID == id {
+			return c
 		}
 	}
-	// 没有复习行的新词也不能出现
-	for _, id := range cardWordIDs(t, data) {
-		if id == f.newOnly {
-			t.Fatalf("新词不应出现在 due 池")
+	t.Fatalf("池子里找不到词 %d（池子=%v）", id, cardIDs(cards))
+	return queueCard{}
+}
+
+// assertBucketOrder 断言四个桶按 0→1→2→3 的次序出现（桶内不做断言）
+func assertBucketOrder(t *testing.T, cards []queueCard, label string) {
+	t.Helper()
+	last := -1
+	for i, c := range cards {
+		if c.Bucket < last {
+			t.Fatalf("%s 的桶次序错了：第 %d 张 bucket=%d，但前面已经出现过 bucket=%d", label, i+1, c.Bucket, last)
+		}
+		last = c.Bucket
+	}
+}
+
+// assertPageNoOverlap 断言两页没有重复的词（分页必须稳定，否则用户会重复看到同一张卡）
+func assertPageNoOverlap(t *testing.T, a, b []queueCard) {
+	t.Helper()
+	seen := map[uint]bool{}
+	for _, c := range a {
+		seen[c.ID] = true
+	}
+	for _, c := range b {
+		if seen[c.ID] {
+			t.Fatalf("第 1 页与第 2 页出现重复的词 %d（第 1 页=%v，第 2 页=%v）",
+				c.ID, cardIDs(a), cardIDs(b))
 		}
 	}
-	// 响应里带 now（毫秒），前端用它做本地判定
-	if _, ok := data["now"]; !ok {
-		t.Fatalf("due 响应缺少 now 字段，实际字段=%v", mapKeys(data))
+}
+
+// ---------- 池子的基本形状 ----------
+
+// TestPoolContainsEveryWord 池子是全表：一个新用户也应该看到**所有**词，
+// 而不是旧模型那样「只有已学词」。
+func TestPoolContainsEveryWord(t *testing.T) {
+	router, db := setupTestRouter(t)
+	ids := []uint{
+		seedWord(t, db, "alpha"),
+		seedWord(t, db, "bravo"),
+		seedWord(t, db, "charlie"),
 	}
-}
+	// 只给其中一个建进度行，池子仍应是三个
+	due := time.Now().Add(-time.Hour)
+	seedReview(t, db, ids[0], 3, 5, &due, 1, 0)
 
-// TestReviewsDueNowOverride due 的 now 参数可覆盖「现在」：
-// 传一个更早的时刻，原本已到期的卡就不算到期了（客户端与服务端时间对齐用的口子）。
-func TestReviewsDueNowOverride(t *testing.T) {
-	router, db := setupTestRouter(t)
-	wordID := seedWord(t, db, "wander")
-	due := time.Now().Add(30 * time.Minute)
-	seedReview(t, db, wordID, 2, 5, &due, 1, 0)
-
-	// 不传 now：尚未到期，due 池为空
-	data, _ := decodeData(t, doJSON(t, router, "GET", "/api/reviews/due", nil))
-	assertIDOrder(t, cardWordIDs(t, data), nil, "未到期时的 due 池")
-
-	// now 传 1 小时后：这张卡算到期
-	futureMs := time.Now().Add(time.Hour).UnixMilli()
-	data2, _ := decodeData(t, doJSON(t, router, "GET", "/api/reviews/due?now="+itoa(futureMs), nil))
-	assertIDOrder(t, cardWordIDs(t, data2), []uint{wordID}, "now 覆盖后的 due 池")
-	assertInt(t, data2, "now", futureMs)
-}
-
-// TestReviewsQueueIncludesNotDue queue 给「整库已学词」——含未到期的，按 due_at 升序
-func TestReviewsQueueIncludesNotDue(t *testing.T) {
-	router, db := setupTestRouter(t)
-	f := seedReviewsFixture(t, db)
-
-	data, code := decodeData(t, doJSON(t, router, "GET", "/api/reviews/queue", nil))
-	if code != 200 {
+	data, code := decodeData(t, doJSON(t, router, "GET", withDay("/api/reviews/queue"), nil))
+	if code != http.StatusOK {
 		t.Fatalf("queue 的 code 期望 200，实际 %d", code)
 	}
-	assertIDOrder(t, cardWordIDs(t, data),
-		[]uint{f.dueOld, f.dueRecent, f.futureNear, f.futureFar}, "queue")
-	// total = 已学词总数（不含新词）
-	assertInt(t, data, "total", 4)
-	assertInt(t, data, "limit", 100)
-	assertInt(t, data, "offset", 0)
-	if _, ok := data["now"]; !ok {
-		t.Fatalf("queue 响应缺少 now 字段，实际字段=%v", mapKeys(data))
+	assertInt(t, data, "total", 3)
+	if got := cardIDs(readQueueCards(t, data)); len(got) != 3 {
+		t.Fatalf("池子应包含全部 3 个词，实际 %v", got)
 	}
 }
 
-// TestReviewsQueuePagination queue 的分页：total 是整库已学词数，翻页只改 items
-func TestReviewsQueuePagination(t *testing.T) {
+// TestPoolBucketOrderAndOverdueFirst 校验四个桶的次序与桶内规则：
+// 今日 5 个最前 → 已过期（越久越前）→ 从未复习 → 未到期（越近越前）。
+//
+// ⚠️ 两个必须遵守的约束（都实测踩过）：
+//  1. 池子里的词必须**多于 5 个**，否则「今日 5 个」把全池盖住，四个桶退化成只剩桶 0；
+//  2. 断言桶内次序时只能看**非置顶**卡 —— 置顶卡一律进桶 0，哪怕它已经过期
+//     （今天恰好抽到一张过期的卡时，它的 bucket 就是 0 而不是 1）。
+func TestPoolBucketOrderAndOverdueFirst(t *testing.T) {
 	router, db := setupTestRouter(t)
-	f := seedReviewsFixture(t, db)
+	now := time.Now()
+	overdue := seedWord(t, db, "overdue-one")
+	futureFar := seedWord(t, db, "future-far")
+	futureNear := seedWord(t, db, "future-near")
+	never := seedWord(t, db, "never-studied")
+	filler := make([]uint, 0, 8)
+	for i := 0; i < 8; i++ {
+		id := seedWord(t, db, "filler"+itoa(int64(i)))
+		due := now.Add(time.Duration(10+i) * time.Hour)
+		seedReview(t, db, id, 1, 5, &due, 1, 0)
+		filler = append(filler, id)
+	}
 
-	page1, _ := decodeData(t, doJSON(t, router, "GET", "/api/reviews/queue?limit=2&offset=0", nil))
-	assertIDOrder(t, cardWordIDs(t, page1), []uint{f.dueOld, f.dueRecent}, "queue 第 1 页")
-	assertInt(t, page1, "total", 4)
-	assertInt(t, page1, "limit", 2)
-	assertInt(t, page1, "offset", 0)
+	overdueAt := now.Add(-48 * time.Hour)
+	far := now.Add(72 * time.Hour)
+	near := now.Add(2 * time.Hour)
+	seedReview(t, db, overdue, 1, 5, &overdueAt, 1, 0)
+	seedReview(t, db, futureFar, 1, 5, &far, 1, 0)
+	seedReview(t, db, futureNear, 1, 5, &near, 1, 0)
 
-	page2, _ := decodeData(t, doJSON(t, router, "GET", "/api/reviews/queue?limit=2&offset=2", nil))
-	assertIDOrder(t, cardWordIDs(t, page2), []uint{f.futureNear, f.futureFar}, "queue 第 2 页")
-	assertInt(t, page2, "total", 4) // total 不随翻页变
-	assertInt(t, page2, "offset", 2)
+	all := append([]uint{overdue, futureFar, futureNear, never}, filler...)
+	daily := wantedDailyIDs(all, 1, mustSeed(t, poolTestDay))
 
-	// 翻到底之外返回空列表（前端据此判断「整库过了一遍」）
-	page3, _ := decodeData(t, doJSON(t, router, "GET", "/api/reviews/queue?limit=2&offset=4", nil))
-	assertIDOrder(t, cardWordIDs(t, page3), nil, "queue 越界页")
-	assertInt(t, page3, "total", 4)
+	data, _ := decodeData(t, doJSON(t, router, "GET", withDay("/api/reviews/queue?limit=100"), nil))
+	cards := readQueueCards(t, data)
+	if len(cards) != len(all) {
+		t.Fatalf("池子应返回全部 %d 个词，实际 %d（%v）", len(all), len(cards), cardIDs(cards))
+	}
+	assertBucketOrder(t, cards, "池子")
+
+	for _, id := range daily {
+		c := findCard(t, cards, id)
+		if c.Bucket != 0 || !c.Daily {
+			t.Fatalf("今日置顶词 %d 应当是 bucket=0 且 daily=true，实际 bucket=%d daily=%v", id, c.Bucket, c.Daily)
+		}
+	}
+	assertInt(t, data, "daily", int64(dailyWordCount))
+
+	// 桶 1 = 已过期且**不在今日置顶**的词。本夹具里只有 overdue 一个，
+	// 所以「桶 1 恰好是它」同时钉住了两件事：过期进桶 1、置顶优先级高于过期。
+	inBucket1 := []uint{}
+	for _, c := range cards {
+		if c.Bucket == 1 {
+			inBucket1 = append(inBucket1, c.ID)
+		}
+	}
+	assertIDOrder(t, inBucket1, []uint{overdue}, "桶 1（已过期）")
+	if c := findCard(t, cards, overdue); c.Daily {
+		t.Fatalf("本夹具故意让 %d 不在今日置顶里，但它被算成了置顶", overdue)
+	}
+
+	// 确定没有置顶的 8 个未来卡：按 due_at 升序（越近越前）
+	posFar, posNear := -1, -1
+	futureBucketOrder := []uint{}
+	for i, c := range cards {
+		if c.Bucket != 3 || c.Daily {
+			continue
+		}
+		futureBucketOrder = append(futureBucketOrder, c.ID)
+		if c.ID == futureFar {
+			posFar = i
+		}
+		if c.ID == futureNear {
+			posNear = i
+		}
+	}
+	if len(futureBucketOrder) == 0 {
+		t.Fatalf("桶 3 不应为空，实际顺序=%v", cardIDs(cards))
+	}
+	// 桶 3 内部按 due_at 升序：futureNear(+2h) 之后才是 futureFar(+72h)
+	if posFar >= 0 && posNear >= 0 && posNear > posFar {
+		t.Fatalf("未到期卡应按 due_at 升序（越近越前），实际顺序=%v", cardIDs(cards))
+	}
+
+	// 从没复习过的词带 has_review=false；有进度行的带 true
+	if c := findCard(t, cards, never); c.HasReview {
+		t.Fatalf("从未复习的词 %d 的 has_review 应为 false", never)
+	}
+	if c := findCard(t, cards, overdue); !c.HasReview {
+		t.Fatalf("有进度行的词 %d 的 has_review 应为 true", overdue)
+	}
 }
 
-// TestReviewsProbesFarthestFirst probes 是 queue 的另一端：按 due_at 倒序，越轮不到复习的越靠前
-func TestReviewsProbesFarthestFirst(t *testing.T) {
+// TestPoolOrderIsStableWithinDay 「今日 5 个」必须全天固定：
+// 同一用户同一天多次请求（刷新 / 翻页）不能换批，否则第 1 页和第 2 页会重叠或漏卡。
+func TestPoolOrderIsStableWithinDay(t *testing.T) {
 	router, db := setupTestRouter(t)
-	f := seedReviewsFixture(t, db)
-
-	data, code := decodeData(t, doJSON(t, router, "GET", "/api/reviews/probes", nil))
-	if code != 200 {
-		t.Fatalf("probes 的 code 期望 200，实际 %d", code)
+	now := time.Now()
+	ids := make([]uint, 0, 12)
+	for i := 0; i < 12; i++ {
+		id := seedWord(t, db, "stable"+itoa(int64(i)))
+		due := now.Add(time.Duration(i) * time.Hour)
+		seedReview(t, db, id, 1, 5, &due, 1, 0)
+		ids = append(ids, id)
 	}
-	assertIDOrder(t, cardWordIDs(t, data),
-		[]uint{f.futureFar, f.futureNear, f.dueRecent, f.dueOld}, "probes")
 
-	// probes 与 queue 是同一份数据的两端：集合相同、顺序相反
-	queueData, _ := decodeData(t, doJSON(t, router, "GET", "/api/reviews/queue", nil))
-	queueIDs := cardWordIDs(t, queueData)
-	probeIDs := cardWordIDs(t, data)
-	if len(queueIDs) != len(probeIDs) {
-		t.Fatalf("probes 与 queue 应当是同一份数据，长度 %d vs %d", len(probeIDs), len(queueIDs))
+	first, _ := decodeData(t, doJSON(t, router, "GET", withDay("/api/reviews/queue"), nil))
+	second, _ := decodeData(t, doJSON(t, router, "GET", withDay("/api/reviews/queue"), nil))
+	gotFirst, gotSecond := cardIDs(readQueueCards(t, first)), cardIDs(readQueueCards(t, second))
+
+	assertIDOrder(t, gotFirst, gotSecond, "同一天两次请求的池子顺序")
+	// 而且要与离线按哈希算出的「今日 5 个」一致
+	wantDaily := wantedDailyIDs(ids, 1, mustSeed(t, poolTestDay))
+	gotDaily := []uint{}
+	for _, c := range readQueueCards(t, first) {
+		if c.Daily {
+			gotDaily = append(gotDaily, c.ID)
+		}
 	}
-	for i := range queueIDs {
-		if queueIDs[i] != probeIDs[len(probeIDs)-1-i] {
-			t.Fatalf("probes 应当是 queue 的倒序，第 %d 位 %d vs %d（queue=%v probes=%v）",
-				i+1, queueIDs[i], probeIDs[len(probeIDs)-1-i], queueIDs, probeIDs)
+	if len(gotDaily) != len(wantDaily) {
+		t.Fatalf("今日置顶数期望 %d，实际 %d（%v）", len(wantDaily), len(gotDaily), gotDaily)
+	}
+	for _, id := range wantDaily {
+		found := false
+		for _, g := range gotDaily {
+			if g == id {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("今日置顶词 %d 不在结果里（实际 %v）", id, gotDaily)
 		}
 	}
 }
 
-// TestReviewsDailyQuotaCandidates 每日配额的取数侧：把 limit 收到 5，两个池各自给出
-// 「最该出现的 5 个」——new 池按 id 升序取前 5（前端再随机抽），probes 取 due_at 最远的 5 个。
-// 服务端不做每日记账（那是客户端 localStorage 的事），这里钉住的是候选池的取数与上限。
-func TestReviewsDailyQuotaCandidates(t *testing.T) {
+// TestPoolOrderChangesNextDay 跨天应当换一批置顶词（否则「每天抽 5 个」没意义）。
+func TestPoolOrderChangesNextDay(t *testing.T) {
 	router, db := setupTestRouter(t)
-	now := time.Now()
-
-	// 7 个新词
-	newIDs := make([]uint, 0, 7)
-	for i := 0; i < 7; i++ {
-		newIDs = append(newIDs, seedWord(t, db, "newbie"+itoa(int64(i))))
-	}
-	// 7 个已学词，到期时间从近到远
-	dueIDs := make([]uint, 0, 7)
-	for i := 0; i < 7; i++ {
-		id := seedWord(t, db, "veteran"+itoa(int64(i)))
-		due := now.Add(time.Duration(i) * 24 * time.Hour)
-		seedReview(t, db, id, float64(i+1), 5, &due, 1, 0)
-		dueIDs = append(dueIDs, id)
+	for i := 0; i < 20; i++ {
+		seedWord(t, db, "rota"+itoa(int64(i)))
 	}
 
-	newData, _ := decodeData(t, doJSON(t, router, "GET", "/api/reviews/new?limit=5", nil))
-	assertIDOrder(t, wordIDs(t, newData), newIDs[:5], "new limit=5")
+	day1, _ := decodeData(t, doJSON(t, router, "GET", "/api/reviews/queue?today=20260101", nil))
+	day2, _ := decodeData(t, doJSON(t, router, "GET", "/api/reviews/queue?today=20260102", nil))
 
-	probeData, _ := decodeData(t, doJSON(t, router, "GET", "/api/reviews/probes?limit=5", nil))
-	// due_at 倒序 → 最远的 5 个（dueIDs 是升序，末尾 5 个反过来）
-	wantProbes := []uint{dueIDs[6], dueIDs[5], dueIDs[4], dueIDs[3], dueIDs[2]}
-	assertIDOrder(t, cardWordIDs(t, probeData), wantProbes, "probes limit=5")
-
-	// 客户端「多给候选」的用法：limit 放大后能看到更多
-	bigProbe, _ := decodeData(t, doJSON(t, router, "GET", "/api/reviews/probes?limit=20", nil))
-	if n := len(cardWordIDs(t, bigProbe)); n != 7 {
-		t.Fatalf("limit=20 时 probes 应给全部 7 张已学卡，实际 %d", n)
+	daily1 := map[uint]bool{}
+	for _, c := range readQueueCards(t, day1) {
+		if c.Daily {
+			daily1[c.ID] = true
+		}
+	}
+	same := 0
+	for _, c := range readQueueCards(t, day2) {
+		if c.Daily && daily1[c.ID] {
+			same++
+		}
+	}
+	if same == dailyWordCount {
+		t.Fatalf("跨天后的置顶词完全没变（%d 个全相同），稳定哈希的日期维度没生效", same)
 	}
 }
 
-// TestReviewsLimitClamping limit 的边界钳制：0 / 负数 / 超大值都退回默认，防止一次拉全库。
+// TestPoolPaginationHasNoOverlap 分页不重叠：两页之间不能出现同一个词。
+func TestPoolPaginationHasNoOverlap(t *testing.T) {
+	router, db := setupTestRouter(t)
+	now := time.Now()
+	for i := 0; i < 15; i++ {
+		id := seedWord(t, db, "page"+itoa(int64(i)))
+		due := now.Add(time.Duration(i) * time.Hour)
+		seedReview(t, db, id, 1, 5, &due, 1, 0)
+	}
+
+	page1, _ := decodeData(t, doJSON(t, router, "GET", withDay("/api/reviews/queue?limit=7&offset=0"), nil))
+	page2, _ := decodeData(t, doJSON(t, router, "GET", withDay("/api/reviews/queue?limit=7&offset=7"), nil))
+	page3, _ := decodeData(t, doJSON(t, router, "GET", withDay("/api/reviews/queue?limit=7&offset=14"), nil))
+
+	c1, c2, c3 := readQueueCards(t, page1), readQueueCards(t, page2), readQueueCards(t, page3)
+	assertPageNoOverlap(t, c1, c2)
+	assertPageNoOverlap(t, c2, c3)
+	assertInt(t, page1, "total", 15)
+	assertInt(t, page2, "total", 15) // total 不随翻页变化
+	if len(c1) != 7 || len(c2) != 7 || len(c3) != 1 {
+		t.Fatalf("分页长度期望 7/7/1，实际 %d/%d/%d", len(c1), len(c2), len(c3))
+	}
+
+	// 拼起来应当正好是整池（顺序一致、不重不漏）
+	merged := append(append(append([]uint{}, cardIDs(c1)...), cardIDs(c2)...), cardIDs(c3)...)
+	full, _ := decodeData(t, doJSON(t, router, "GET", withDay("/api/reviews/queue?limit=100"), nil))
+	assertIDOrder(t, merged, cardIDs(readQueueCards(t, full)), "分页拼接结果与整页结果")
+}
+
+// TestPoolStillServesWhenEverythingIsFarFuture 用户决策 B9：
+// 整池都被推到未来时，队列**仍然不空**（想学就能一直往下翻）。
+func TestPoolStillServesWhenEverythingIsFarFuture(t *testing.T) {
+	router, db := setupTestRouter(t)
+	now := time.Now()
+	for i := 0; i < 6; i++ {
+		id := seedWord(t, db, "later"+itoa(int64(i)))
+		due := now.Add(time.Duration(200+i) * 24 * time.Hour)
+		seedReview(t, db, id, 30, 5, &due, 5, 0)
+	}
+
+	data, _ := decodeData(t, doJSON(t, router, "GET", withDay("/api/reviews/queue"), nil))
+	cards := readQueueCards(t, data)
+	if len(cards) != 6 {
+		t.Fatalf("整池都在未来时仍应返回全部 6 张，实际 %d", len(cards))
+	}
+	for _, c := range cards {
+		// 桶 0（今日置顶）优先于一切，所以命中置顶的卡不算违反「全部未到期 → 桶 3」
+		if c.Bucket == 0 {
+			continue
+		}
+		if c.Bucket != 3 {
+			t.Fatalf("全部未到期时非置顶卡都应是 bucket=3，实际词 %d bucket=%d", c.ID, c.Bucket)
+		}
+	}
+	// due 池仍只给「真正已过期」的
+	dueData, _ := decodeData(t, doJSON(t, router, "GET", withDay("/api/reviews/due"), nil))
+	assertIDOrder(t, cardIDs(readQueueCards(t, dueData)), nil, "全未到期时的 due 池")
+}
+
+// TestPoolNeverReviewedSortedByHash 从未复习的词之间按稳定哈希排队（不是按 id），
+// 而且同一天内稳定、翻页不重。
+func TestPoolNeverReviewedSortedByHash(t *testing.T) {
+	router, db := setupTestRouter(t)
+	ids := make([]uint, 0, 10)
+	for i := 0; i < 10; i++ {
+		ids = append(ids, seedWord(t, db, "fresh"+itoa(int64(i))))
+	}
+
+	data, _ := decodeData(t, doJSON(t, router, "GET", withDay("/api/reviews/queue?limit=100"), nil))
+	cards := readQueueCards(t, data)
+	if len(cards) != 10 {
+		t.Fatalf("期望 10 张，实际 %d", len(cards))
+	}
+
+	// 桶 0（今日 5 个）之外的桶 2 词，必须按哈希升序
+	seed := mustSeed(t, poolTestDay)
+	lastHash := int64(-1)
+	counted := 0
+	for _, c := range cards {
+		if c.Bucket != 2 {
+			continue
+		}
+		h := stablehash.Hash(1, int64(c.ID), seed)
+		if h < lastHash {
+			t.Fatalf("桶 2 的词没按哈希升序：词 %d 的哈希 %d 小于前一个 %d", c.ID, h, lastHash)
+		}
+		lastHash = h
+		counted++
+	}
+	if counted != 5 {
+		t.Fatalf("10 个未复习词里应有 5 个落在桶 2（另外 5 个是今日置顶），实际 %d", counted)
+	}
+}
+
+// ---------- 已废弃 / 只读诊断的接口 ----------
+
+// TestReviewsNewIsDeprecated 旧「新词池」接口在新模型下不再返回候选（池子即全表）。
+func TestReviewsNewIsDeprecated(t *testing.T) {
+	router, db := setupTestRouter(t)
+	seedWord(t, db, "legacy")
+	seedWord(t, db, "legacy2")
+
+	data, code := decodeData(t, doJSON(t, router, "GET", "/api/reviews/new?limit=20", nil))
+	if code != http.StatusOK {
+		t.Fatalf("new 的 code 期望 200（保留路由避免旧页面 404），实际 %d", code)
+	}
+	if list := items(t, data); len(list) != 0 {
+		t.Fatalf("已废弃的 new 接口应返回空列表，实际 %d 条", len(list))
+	}
+	if data["legacy"] != true {
+		t.Fatalf("new 接口应带 legacy=true 提示调用方改用 queue，实际字段=%v", mapKeys(data))
+	}
+}
+
+// TestReviewsProbesIsPoolTail probes 变成只读诊断：只给「有进度行且到期时间最远」的词。
+func TestReviewsProbesIsPoolTail(t *testing.T) {
+	router, db := setupTestRouter(t)
+	now := time.Now()
+	never := seedWord(t, db, "no-progress")
+	near := seedWord(t, db, "due-near")
+	far := seedWord(t, db, "due-far")
+	tNear := now.Add(time.Hour)
+	tFar := now.Add(30 * 24 * time.Hour)
+	seedReview(t, db, near, 1, 5, &tNear, 1, 0)
+	seedReview(t, db, far, 1, 5, &tFar, 1, 0)
+
+	data, _ := decodeData(t, doJSON(t, router, "GET", withDay("/api/reviews/probes"), nil))
+	got := cardIDs(readQueueCards(t, data))
+	assertIDOrder(t, got, []uint{far, near}, "probes 池尾")
+	for _, id := range got {
+		if id == never {
+			t.Fatalf("没有进度行的词不应出现在 probes（它没有 due_at）")
+		}
+	}
+}
+
+// ---------- 卡片字段 ----------
+
+// TestReviewsCardFields 三个取数接口复用同一套卡片字段。
+// ⚠️ 单一循环池之后 stability / difficulty 不再回给客户端（用户决策 E18），
+// 取而代之的是 has_review / daily / bucket 三个计算列。
+func TestReviewsCardFields(t *testing.T) {
+	router, db := setupTestRouter(t)
+	wordID := seedWordWith(t, db, modelsWord())
+	now := time.Now().Add(-time.Minute)
+	seedReview(t, db, wordID, 4.5, 6.5, &now, 7, 1)
+
+	data, _ := decodeData(t, doJSON(t, router, "GET", withDay("/api/reviews/queue"), nil))
+	list := items(t, data)
+	if len(list) != 1 {
+		t.Fatalf("queue 期望 1 张卡，实际 %d 张", len(list))
+	}
+	card := list[0]
+	wantKeys := []string{
+		"id", "word", "phonetic", "meaning", "example", "example_translation",
+		"senses", "subject", "due_at", "last_review_at",
+		"has_review", "daily", "bucket",
+	}
+	for _, key := range wantKeys {
+		if _, ok := card[key]; !ok {
+			t.Fatalf("卡片缺少字段 %q，实际字段=%v", key, mapKeys(card))
+		}
+	}
+	// 用户决策 E18：引擎一律按新卡口径重算，所以这两个字段不再下发
+	for _, key := range []string{"stability", "difficulty"} {
+		if _, ok := card[key]; ok {
+			t.Fatalf("字段 %q 不应再出现在响应里（用户决策 E18）", key)
+		}
+	}
+	if card["word"] != "kernel" {
+		t.Fatalf("卡片 word 期望 kernel，实际 %v", card["word"])
+	}
+	if card["has_review"] != true {
+		t.Fatalf("有进度行的卡 has_review 应为 true，实际 %v", card["has_review"])
+	}
+	// senses 为空时必须序列化成 []（不是 null）——前端 Rust 引擎按数组解析，遇 null 会报错
+	senses, ok := card["senses"].([]interface{})
+	if !ok {
+		t.Fatalf("senses 期望数组（空也必须是 []），实际 %T（值=%v）", card["senses"], card["senses"])
+	}
+	if len(senses) != 0 {
+		t.Fatalf("senses 期望空数组，实际 %v", senses)
+	}
+}
+
+// TestReviewsCardWithoutReviewHasNoState 没有进度行的卡不得下发状态字段，
+// 否则引擎会把「没学过」当成「稳定度 0」——这正是改用指针要解决的坑。
+func TestReviewsCardWithoutReviewHasNoState(t *testing.T) {
+	router, db := setupTestRouter(t)
+	seedWord(t, db, "virgin")
+
+	data, _ := decodeData(t, doJSON(t, router, "GET", withDay("/api/reviews/queue"), nil))
+	card := items(t, data)[0]
+	for _, key := range []string{"stability", "difficulty", "reps", "last_review_at"} {
+		if v, ok := card[key]; ok && v != nil {
+			t.Fatalf("没复习过的卡不应带 %q（实际 %v）", key, v)
+		}
+	}
+	if card["has_review"] != false {
+		t.Fatalf("没复习过的卡 has_review 应为 false，实际 %v", card["has_review"])
+	}
+	if card["due_at"] != nil {
+		t.Fatalf("没复习过的卡 due_at 应为 null，实际 %v", card["due_at"])
+	}
+}
+
+// ---------- 边界与钳制 ----------
+
+// TestReviewsLimitClamping limit 的边界钳制：0 / 负数 / 超大值都退回默认。
 func TestReviewsLimitClamping(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -324,8 +634,8 @@ func TestReviewsLimitClamping(t *testing.T) {
 			if tc.limitQ != "" {
 				path += "?limit=" + tc.limitQ
 			}
-			data, code := decodeData(t, doJSON(t, router, "GET", path, nil))
-			if code != 200 {
+			data, code := decodeData(t, doJSON(t, router, "GET", withDay(path), nil))
+			if code != http.StatusOK {
 				t.Fatalf("%s 的 code 期望 200，实际 %d", path, code)
 			}
 			if tc.wantLimit > 0 {
@@ -344,81 +654,94 @@ func TestReviewsQueueOffsetNegative(t *testing.T) {
 	seedReview(t, db, first, 1, 5, &now, 1, 0)
 	seedReview(t, db, second, 2, 5, &now, 2, 0)
 
-	data, _ := decodeData(t, doJSON(t, router, "GET", "/api/reviews/queue?offset=-3", nil))
+	data, _ := decodeData(t, doJSON(t, router, "GET", withDay("/api/reviews/queue?offset=-3"), nil))
 	assertInt(t, data, "offset", 0)
 	if n := len(cardWordIDs(t, data)); n != 2 {
 		t.Fatalf("负数 offset 应按 0 处理并返回全部 2 条，实际 %d 条", n)
 	}
 }
 
-// TestReviewsQueueAcceptsDueAtBeyondNow queue 的到期与否只影响顺序、不影响能否出现：
-// 全部卡都远未到期时，queue 仍要给出它们（这是「想多学就能一直往下翻」的前提）。
-func TestReviewsQueueAcceptsDueAtBeyondNow(t *testing.T) {
+// TestReviewsQueueTodayParamRejected 脏的 today 参数不能把种子带偏：
+// 非法值一律回落到服务端时区算出的当天。
+func TestReviewsQueueTodayParamRejected(t *testing.T) {
 	router, db := setupTestRouter(t)
-	wordID := seedWord(t, db, "brisk")
-	far := time.Now().Add(365 * 24 * time.Hour)
-	seedReview(t, db, wordID, 30, 5, &far, 10, 0)
+	seedWord(t, db, "sanity")
 
-	queueData, _ := decodeData(t, doJSON(t, router, "GET", "/api/reviews/queue", nil))
-	assertIDOrder(t, cardWordIDs(t, queueData), []uint{wordID}, "远未到期的 queue")
-
-	dueData, _ := decodeData(t, doJSON(t, router, "GET", "/api/reviews/due", nil))
-	assertIDOrder(t, cardWordIDs(t, dueData), nil, "远未到期的 due 池")
-}
-
-// TestReviewsCardFields 取数三个接口复用同一套 dueCard 字段，客户端解析代码不用区分。
-// 字段名一旦变更会同时打断 queue / probes / due 三处前端代码，所以逐个钉住。
-func TestReviewsCardFields(t *testing.T) {
-	router, db := setupTestRouter(t)
-	wordID := seedWordWith(t, db, modelsWord())
-	now := time.Now().Add(-time.Minute)
-	seedReview(t, db, wordID, 4.5, 6.5, &now, 7, 1)
-
-	for _, path := range []string{"/api/reviews/queue", "/api/reviews/probes", "/api/reviews/due"} {
-		data, _ := decodeData(t, doJSON(t, router, "GET", path, nil))
-		list := items(t, data)
-		if len(list) != 1 {
-			t.Fatalf("%s 期望 1 张卡，实际 %d 张", path, len(list))
+	for _, bad := range []string{"abc", "2026", "19990101", "99999999"} {
+		data, code := decodeData(t, doJSON(t, router, "GET", "/api/reviews/queue?today="+bad, nil))
+		if code != http.StatusOK {
+			t.Fatalf("today=%s 的 code 期望 200，实际 %d", bad, code)
 		}
-		card := list[0]
-		wantKeys := []string{
-			"id", "word", "phonetic", "meaning", "example", "example_translation",
-			"senses", "subject", "stability", "difficulty", "due_at", "last_review_at", "reps",
-		}
-		for _, key := range wantKeys {
-			if _, ok := card[key]; !ok {
-				t.Fatalf("%s 的卡片缺少字段 %q，实际字段=%v", path, key, mapKeys(card))
-			}
-		}
-		if card["word"] != "kernel" {
-			t.Fatalf("%s 的卡片 word 期望 kernel，实际 %v", path, card["word"])
-		}
-		if toFloat(t, card["stability"]) != 4.5 || toFloat(t, card["difficulty"]) != 6.5 {
-			t.Fatalf("%s 的记忆状态字段不对: stability=%v difficulty=%v", path, card["stability"], card["difficulty"])
-		}
-		if toInt64(t, card["reps"]) != 7 {
-			t.Fatalf("%s 的 reps 期望 7，实际 %v", path, card["reps"])
-		}
-		// senses 为空时必须序列化成 []（不是 null）——前端 Rust 引擎按数组解析，遇 null 会报错
-		senses, ok := card["senses"].([]interface{})
-		if !ok {
-			t.Fatalf("%s 的 senses 期望数组（空也必须是 []），实际 %T（值=%v）", path, card["senses"], card["senses"])
-		}
-		if len(senses) != 0 {
-			t.Fatalf("%s 的 senses 期望空数组，实际 %v", path, senses)
-		}
+		assertInt(t, data, "total", 1)
 	}
 }
 
-// modelsWord 造一个字段齐全的词条（cardFields 用例用），避免测试里出现超长字面量
-func modelsWord() models.Word {
-	return models.Word{
-		Word:               "kernel",
-		Phonetic:           "/ˈkɜː.nəl/",
-		Meaning:            "n. 核心；内核",
-		Example:            "The kernel handles interrupts.",
-		ExampleTranslation: "内核负责处理中断。",
-		Book:               "必修一",
-		Unit:               "Unit 1",
+// TestReviewsDueOnlyExpired due 池只放已到期的卡，按 due_at 升序（最旧的排最前）
+func TestReviewsDueOnlyExpired(t *testing.T) {
+	router, db := setupTestRouter(t)
+	now := time.Now()
+	oldest := seedWord(t, db, "expired-old")
+	recent := seedWord(t, db, "expired-recent")
+	future := seedWord(t, db, "future-one")
+	never := seedWord(t, db, "never-one")
+
+	t2 := now.Add(-3 * time.Hour)
+	t1 := now.Add(-10 * time.Minute)
+	tf := now.Add(time.Hour)
+	seedReview(t, db, oldest, 1, 5, &t2, 1, 0)
+	seedReview(t, db, recent, 1, 5, &t1, 1, 0)
+	seedReview(t, db, future, 1, 5, &tf, 1, 0)
+
+	data, code := decodeData(t, doJSON(t, router, "GET", withDay("/api/reviews/due"), nil))
+	if code != http.StatusOK {
+		t.Fatalf("due 的 code 期望 200，实际 %d", code)
+	}
+	assertIDOrder(t, cardWordIDs(t, data), []uint{oldest, recent}, "due 池")
+	for _, id := range cardWordIDs(t, data) {
+		if id == future || id == never {
+			t.Fatalf("未到期 / 没学过的词 %d 不应出现在 due 池", id)
+		}
+	}
+	if _, ok := data["now"]; !ok {
+		t.Fatalf("due 响应缺少 now 字段，实际字段=%v", mapKeys(data))
 	}
 }
+
+// TestReviewsDueNowOverride due 的 now 参数可覆盖「现在」：
+// 传一个更早的时刻，原本已到期的卡就不算到期了（客户端与服务端时间对齐用的口子）。
+func TestReviewsDueNowOverride(t *testing.T) {
+	router, db := setupTestRouter(t)
+	wordID := seedWord(t, db, "wander")
+	due := time.Now().Add(30 * time.Minute)
+	seedReview(t, db, wordID, 2, 5, &due, 1, 0)
+
+	data, _ := decodeData(t, doJSON(t, router, "GET", withDay("/api/reviews/due"), nil))
+	assertIDOrder(t, cardWordIDs(t, data), nil, "未到期时的 due 池")
+
+	futureMs := time.Now().Add(time.Hour).UnixMilli()
+	data2, _ := decodeData(t, doJSON(t, router, "GET", withDay("/api/reviews/due?now="+itoa(futureMs)), nil))
+	assertIDOrder(t, cardWordIDs(t, data2), []uint{wordID}, "now 覆盖后的 due 池")
+	assertInt(t, data2, "now", futureMs)
+}
+
+// TestSeedReviewHelperStillWorks 防止本文件重写后误删了其它测试依赖的夹具语义。
+func TestSeedReviewHelperStillWorks(t *testing.T) {
+	_, db := setupTestRouter(t)
+	id := seedWord(t, db, "helper")
+	now := time.Now()
+	seedReview(t, db, id, 2.5, 4.5, &now, 3, 1)
+
+	var row models.WordReview
+	if err := db.Where("word_id = ?", id).First(&row).Error; err != nil {
+		t.Fatalf("夹具没有写入进度行：%v", err)
+	}
+	if row.Stability != 2.5 || row.Difficulty != 4.5 || row.Reps != 3 || row.Lapses != 1 {
+		t.Fatalf("夹具写入的状态不对：%+v", row)
+	}
+}
+
+var _ = gorm.ErrRecordNotFound
+
+
+
+
