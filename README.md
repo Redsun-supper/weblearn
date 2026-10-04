@@ -963,7 +963,7 @@ AUTH_ADMIN_PASSWORD='管理员密码' \
 
 Copyright (C) 2026 HR_RedSun（大冬呱）
 
-本项目以 **GNU Affero 通用公共许可证第 3 版（AGPL-3.0）** 发布，全文见仓库根目录 [`LICENSE`](LICENSE)。
+本项目以 **GNU Affero 通用公共许可证第 3 版（AGPL-3.0）** 发布。仓库根目录 [`LICENSE`](LICENSE) 是 FSF 官方英文全文的**逐字副本**，只把附录「How to Apply These Terms」里的署名占位行填成了 `Copyright (C) 2026  HR_RedSun（大冬呱）`，其余一字未改，也没有塞进任何自定义声明（项目级的许可说明就是本节）。
 Cargo 清单（`backend-rust/Cargo.toml`、`modules/english/engine/Cargo.toml`）里的 SPDX 标识相应为 `AGPL-3.0-or-later`。
 
 - 你可以自由使用、修改、分发本项目；**分发（含把改过的版本挂到服务器上供人访问）时必须提供完整对应源码**，并保留版权声明与许可全文。
