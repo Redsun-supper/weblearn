@@ -34,9 +34,10 @@
             <span class="avatar-dot" id="navAvatarDot" aria-hidden="true"></span>
         </button>
         <!-- 站点名「广学」竖排，摆在头像**左侧**（2026-10 用户要求「在这里加上竖向的广学二字」，
-             随后指明是「头像框的左边！」）。
+             随后指明「头像框的左边！」、再要求「做好看点字大点」）。
+             两个 span 是为了分开给字重（见 main.css 的 .nav-logo）。
              窄屏（≤1200px）由 main.css 隐藏 —— 那时 9 个学科项要占满整行。 -->
-        <div class="nav-logo" aria-hidden="true">广<br>学</div>
+        <div class="nav-logo" aria-hidden="true"><span>广</span><span>学</span></div>
         <!-- 学科导航项：data-page 指向该学科的页面路径（有独立模块的写 modules/<学科>/，
              其余仍是 pages/ 下的占位页），点击由 main.js 加载并缓存 -->
         <div class="nav-items">
