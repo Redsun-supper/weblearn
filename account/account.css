@@ -463,21 +463,24 @@ body.acc-page {
 }
 
 /* 侧栏导航（条目由 account.js 渲染）：条目本身**整条通栏**（左右顶到侧栏边缘，选中/悬停的
-   底色铺满整条），条目里的文字**居中** —— `text-align: center` + 左右 30px 内边距，
-   文字中线与上面的头像、品牌两行是同一条（都是栏心 x=100）。
+   底色铺满整条），条目里的文字**左对齐、缩进 30px**（2026-10 用户要求「向左靠齐」）——
+   三条导航项的文字因此与上面「广学 / 个人中心」的左缘落在同一条竖线（x=30）上，
+   不再各自居中（居中时「账号信息」「登录过得设备」「可用操作」三个词长短不一，
+   左缘参差，看着就是各飘各的）。
    蓝色竖条仍然贴在侧栏最左缘（.acc-nav-item::before 的 left: 0，通栏才有意义）。
-   ⚠️ 居中用的是 text-align 而不是 flex：条目里有 .acc-nav-note 那个 float:right 的小字
-   （会话台数之类），换成 flex 就得连它一起重做。
+   ⚠️ 左对齐用的是 flex 而不是 `text-align: left` + 绝对定位小字：条目里有 .acc-nav-note
+   那个「会话台数」小字，flex 下它作为第二项自然靠右（margin-left: auto），
+   比原来的 float: right 更好控；右侧内边距留 20px 给小字。
    ⚠️ 这一列**不需要负外边距**去抵消侧栏内边距：侧栏「只留上下内边距、左右交给各区块」（见 .acc-sidebar）。 */
 .acc-nav {
     flex: 1;
 }
 
 .acc-nav-item {
-    display: block;
+    display: flex;
+    align-items: center;
     position: relative;
-    text-align: center;
-    padding: 10px 30px;
+    padding: 10px 20px 10px 30px;
     color: #cfd8dc;
     font-size: 14px;
     text-decoration: none;
@@ -512,9 +515,11 @@ body.acc-page {
     background-color: #64b5f6;
 }
 
-/* 导航项右侧的小字（会话台数之类） */
+/* 导航项右侧的小字（会话台数之类）。
+   ⚠️ 用 margin-left: auto 顶到右边，不用 float —— 条目已经是 flex（见 .acc-nav-item），
+   float 在 flex 容器里不参与布局，留着只会让人误以为它在起作用。 */
 .acc-nav-note {
-    float: right;
+    margin-left: auto;
     color: #90a4ae;
     font-size: 12px;
 }
@@ -966,9 +971,9 @@ body.acc-page {
     }
 
     .acc-nav-item {
-        /* 窄屏这条横排的导航**故意不居中**：整条是横向可滚的，居中一旦溢出还得回退成
-           靠左（safe center），不如一路靠左稳。左右 16px 比宽屏那 30px 紧 —— 一行要放
-           三个条目。宽屏那条才是居中的（见文件上方 .acc-nav-item）。 */
+        /* 窄屏横排：左右各 16px 比宽屏那 30px 紧 —— 一行要放三个条目；
+           宽屏那条的缩进 30px 是为了跟品牌文字左对齐，横排之后没这个诉求。
+           两档都是左对齐（宽屏也在 2026-10 从居中改成了左对齐，见文件上方 .acc-nav-item）。 */
         padding: 8px 16px;
         white-space: nowrap;
     }
