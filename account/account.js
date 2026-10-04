@@ -339,7 +339,7 @@
     // 加一个页面 = 这里加一项 + HTML 里加一个同 id 的 .acc-panel（顺序即侧栏顺序）
     var NAV_GROUPS = [
         { id: 'profile', name: '账号信息' },
-        { id: 'devices', name: '登录中的设备' },
+        { id: 'devices', name: '登录过得设备' },
         { id: 'actions', name: '可用操作' }
     ];
 
@@ -479,7 +479,7 @@
         });
     }
 
-    // 会话台数：侧栏导航上一个小数字 + 「登录中的设备」标题旁的括号。
+    // 会话台数：侧栏导航上一个小数字 + 「登录过得设备」标题旁的括号。
     // 列表超过可视高度时会滚动，不给个数字用户不知道自己还有几台。
     function renderSessionCount(n) {
         var label = n > 0 ? String(n) : '';

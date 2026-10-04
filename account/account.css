@@ -358,9 +358,15 @@ body.acc-page {
 
 /* ===================== 主布局（已登录） ===================== */
 
+/* ⚠️ 这里是**固定的整屏框架**：高度锁死成一屏（100vh）、自己不许滚 —— 滚动交给里面的
+   `.acc-content`（见下）。这样点开长列表（设备多了、操作面板长了）时，**左边的侧栏、
+   右上角的顶栏都钉在原地**，只有内容区滚，不会整页跟着往上跑。
+   `min-height: 100vh` 换成了 `height: 100vh` + `overflow: hidden` —— 少一个「谁在滚」
+   的出口，才不会出现「页面在滚、内容区也在滚」的双滚动条。 */
 .acc-layout {
     display: flex;
-    min-height: 100vh;
+    height: 100vh;
+    overflow: hidden;
 }
 
 /* 出现时配一段很短的淡入：门禁整屏盖着的时候布局就已经在它**下面**排好版了
@@ -548,10 +554,11 @@ body.acc-page {
     cursor: pointer;
 }
 
-/* 右侧主区 */
+/* 右侧主区：顶栏固定、只有下面的内容区滚（见 .acc-content） */
 .acc-main {
     flex: 1;
     min-width: 0; /* 允许内部内容横向滚动而不撑破布局 */
+    min-height: 0; /* flex 子项默认 min-height:auto 会被内容顶高，那样内容区就滚不起来了 */
     display: flex;
     flex-direction: column;
 }
@@ -592,8 +599,16 @@ body.acc-page {
     color: #eceff1;
 }
 
+/* 内容区：**唯一会滚的地方**（2026-10 用户要求「主窗口固定内容滚动不影响主窗口」）。
+   flex: 1 吃掉顶栏以下的高度，内容超出时自己出滚动条；`min-height: 0` 是配套的
+   （flex 子项的默认 min-height: auto 会让它被内容撑高、越过 .acc-layout 的 100vh）。
+   ⚠️ 别把 overflow 挪到 .acc-layout 或 body 上：那样顶栏与侧栏会跟着一起滚。
+   ⚠️ 滚动条出现时右侧 24px 内边距会被它吃掉一点，但因为滚动条贴着窗口右缘、
+   卡片右缘与顶栏右缘仍然对得上（顶栏与内容区之间没有横向分隔，看不出差）。 */
 .acc-content {
     flex: 1;
+    min-height: 0;
+    overflow-y: auto;
     padding: 20px 24px 40px;
 }
 
@@ -667,7 +682,7 @@ body.acc-page {
     color: #263238;
 }
 
-/* 登录中的设备列表 */
+/* 登录过得设备列表 */
 .acc-sessions {
     margin-top: 12px;
     list-style: none;
