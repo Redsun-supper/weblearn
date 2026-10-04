@@ -31,13 +31,16 @@
   （此前文档记的「WebP、199 KB」是读图工具生成的**归一化副本**格式，不是源文件，别照那个改文件扩展名）。
 - 内容：五人合影（特朗普 / 马斯克 / 中间戴墨镜穿灰夹克的男性 / 黄仁勋 / 库克，一起竖大拇指）。
 - 页面上的呈现：`index.html` 的 `.rounded-square`（`left: 30px`，垂直居中）内，**显示尺寸仅 64 × 64 px**，
-  圆角 12px、3px 白边、`object-fit: cover`（源图左右各裁掉约 7%，五个人的脸都在框内）。`main.css` 的 `.avatar` 只负责填满容器。
+  圆角 9px、3px 白边、`object-fit: cover`（源图左右各裁掉约 7%，五个人的脸都在框内）。`main.css` 的 `.avatar` 只负责填满容器。
+  ⚠️ 圆角是 `main.css` 里写死的 9px（曾经误改成正圆 `50%`，2026-10 已改回），
+  个人中心那颗 `.acc-sidebar-avatar` 取同一个比例（40×40 用 6px），两边不一致会在头像过场里看出来。
 - ⚠️ **为什么它偏重**：64×64 的显示尺寸在用 1330×1146 的原图。`dev-server.js` 已经给图片发
   `public, max-age=86400`（不再每次重下），但线上仍是 2.6MB 的首屏负担。优化方向是生成 128×128 缩略图
   给导航与个人中心用（原图保留），**涉及视觉素材，动手前必须先问用户** —— 详见根目录 `TODO.md` 第 2 条。
 - ✅ **当前状态（2026-10-02，用户要求「头像暂时设置成无」）**：页面不再引用本文件，两个 `<img>` 都指向
   `image/avatar-blank.png`（1×1 全透明、过滤字节 0、RGBA=0,0,0,0，**68 B**）——`index.html` 的
-  `#navAvatar` 与 `account/index.html` 的 `.acc-hero-avatar`。**原图未删未改**
+  `#navAvatar` 与 `account/index.html` 的 `.acc-sidebar-avatar`（2026-10 个人中心改成侧栏布局后
+  由 `.acc-hero-avatar` 改名而来，显示尺寸也从 72×72 变成 40×40）。**原图未删未改**
   （`E:\porject\4\image\avatar.png`，2,685,282 B，mtime 仍是 2026-08-29 21:15:34）。
   恢复方式：把这两处 `src` 改回 `image/avatar.png` / `../image/avatar.png` 即可，**不要**改按钮结构或
   `main.js` 的过场 —— 扩散遮罩读的是 `#navAvatar` 的 `getBoundingClientRect()`（`main.js:298`），与图片素材无关。

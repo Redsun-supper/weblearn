@@ -253,18 +253,160 @@ document.addEventListener('DOMContentLoaded', function() {
     var ZOOM_MS = 460;
     var zoomPlaying = false;
 
-    // 头像形变的目标几何 = 个人中心左上角那颗「返回主页面」胶囊。
-    // ⚠️ 必须与 account/account.css 的 .acc-topbar / .acc-home-btn 对得上：
-    //    顶栏左右内边距 30px、高 100px 且内容垂直居中，按钮高 36px
-    //    → 左 30px、上 (100 − 36) / 2 = 32px；宽 115px、高 36px 是实测值。
-    //    这样形变结束的那一帧，正好和跳过去之后那颗按钮**同一个位置、同一个大小**，
-    //    两段动画才是连成一片的（账号页那边也照这组数字摆位）。
-    //    改动这里或 account.css 的顶栏尺寸时，两边要一起改。
-    var MORPH_TARGET = { left: 30, top: 32, width: 115, height: 36 };
-
     // 是否应当减少动态效果（无障碍）：系统开启时不做任何过场，直接跳转
     function prefersReducedMotion() {
         return !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+    }
+
+    // 导航栏那颗头像当前的几何与外观（它本身是 :hover / :active 会缩放的按钮，
+    // 所以要把「正在缩放」那一下算进去，并顺手把 transform 折进宽高）。
+    // 返回的 width/height 是**含白边的外框尺寸**，与目标那颗的 offsetWidth 同一口径。
+    function navAvatarBox() {
+        var btn = document.getElementById('navAvatar');
+        if (!btn) return null;
+        var r = btn.getBoundingClientRect();
+        var sx = 1, sy = 1;
+        var m = /matrix\(([^)]+)\)/.exec(window.getComputedStyle(btn).transform || '');
+        if (m) {
+            var p = m[1].split(',');
+            sx = Math.abs(parseFloat(p[0])) || 1;
+            sy = Math.abs(parseFloat(p[3])) || 1;
+        }
+        return {
+            left: r.left, top: r.top,
+            width: r.width * sx, height: r.height * sy,
+            radius: window.getComputedStyle(btn).borderTopLeftRadius
+        };
+    }
+
+    // 头像形变的目标几何 = 个人中心侧栏顶部那颗头像（.acc-sidebar-avatar）。
+    //
+    // 早先这里是一组写死的数字（还配了一段「必须与 account.css 对得上」的注释）；
+    // 2026-10 个人中心改成侧栏布局时，顺手改成**从样式表里把规则读出来再算**：
+    //   ① 侧栏内边距（.acc-sidebar 的 padding，取上下左右里最小的那个当左/上内边距）
+    //   ② 那颗头像自己的尺寸、白边、圆角（.acc-sidebar-avatar）
+    // 为什么会需要它：窄屏（≤920px）下侧栏横过来、头像会缩到 36×36，写死的 40 会差 4px。
+    // 改 account.css 里的内边距或头像尺寸时**不用再来改这里**。
+    //
+    // 为什么用「临时元素 + cssRules」而不是 getComputedStyle：那个元素在另一个文档（account/）里，
+    // 这边取不到；而临时元素在本页只能拿到**本页样式表**算出来的值 —— 要量的是 account.css 那两条规则，
+    // 所以直接把规则文本读出来自己解析，反而更直接、也不受「探针元素继承了什么」影响。
+    // 元素拿完当帧就删，不会闪。
+    function morphTarget() {
+        var nav = navAvatarBox();
+        if (!nav) return null;
+
+        var probe = document.createElement('div');
+        try {
+            probe.style.cssText = 'position:fixed;left:-9999px;top:0;visibility:hidden;pointer-events:none;';
+            probe.innerHTML = '<div class="acc-sidebar" style="width:200px"></div>' +
+                '<div class="acc-sidebar-avatar"><img alt=""></div>';
+            document.body.appendChild(probe);
+
+            var chunks = collectStyleText();
+            var sidebar = ruleBody(chunks, '.acc-sidebar');
+            var avatar = ruleBody(chunks, '.acc-sidebar-avatar');
+            if (!sidebar || !avatar) return null;   // 样式表还没到（首页是预读的）→ 退化成直接跳转
+
+            // 侧栏是 flex 纵列、内边距对称：左右内边距就是头像的左边距
+            //（padding 简写：一个值 = 四边相同，两个值 = 上下、左右）
+            var pad = (/(?:^|;)\s*padding\s*:\s*([^;]+)/.exec(sidebar) || [])[1] || '';
+            var parts = pad.split(/\s+/).filter(function (s) { return s; });
+            var padY = parseFloat(parts[0]) || 0;
+            var padX = parts.length > 1 ? (parseFloat(parts[1]) || 0) : padY;
+
+            var border = parseFloat((/(?:^|;)\s*border(?:-top)?(?:-width)?\s*:\s*([\d.]+)px/.exec(avatar) || [])[1]) || 0;
+            // 外框尺寸：account.css 那边给 .acc-sidebar-avatar 写了 box-sizing: border-box，
+            // 所以读到的 width/height 就是**含白边**的外框尺寸，不用再加 border * 2
+            //（改那边 box-sizing 的话这里要跟着改）。
+            var w = parseFloat((/(?:^|;)\s*width\s*:\s*([\d.]+)px/.exec(avatar) || [])[1]) || 0;
+            var h = parseFloat((/(?:^|;)\s*height\s*:\s*([\d.]+)px/.exec(avatar) || [])[1]) || 0;
+            var radius = ((/(?:^|;)\s*border-radius\s*:\s*([^;]+)/.exec(avatar) || [])[1] || '').trim();
+
+            if (!w || !h) return null;
+            return normalizeTarget(nav, {
+                left: padX, top: padY, width: w, height: h, radius: radius
+            }, nav.radius);
+        } finally {
+            // 不管走哪条路（包括上面提前 return）都要把探针摘掉
+            if (probe.parentNode) probe.parentNode.removeChild(probe);
+        }
+    }
+
+    // 把本页所有样式表的文本拼起来（跨域表读 cssRules 会抛，跳过即可），
+    // 并带上宽度媒体查询的过滤 —— 只看**当前视口真的生效**的那些规则，
+    // 否则窄屏下会把桌面尺寸也读进来。
+    function collectStyleText() {
+        var out = [];
+        var innerWidth = window.innerWidth || document.documentElement.clientWidth || 0;
+        for (var i = 0; i < document.styleSheets.length; i++) {
+            var rules = null;
+            try {
+                rules = document.styleSheets[i].cssRules;
+            } catch (e) {
+                continue;   // 跨域样式表：读不了就跳过（首页那两张都是同源的）
+            }
+            if (!rules) continue;
+            for (var k = 0; k < rules.length; k++) {
+                var rule = rules[k];
+                if (rule.media) {
+                    // 只认「最大宽度」这一类（本项目的断点都是 max-width）；
+                    // 媒体文本里没写、或写了别的（如 prefers-reduced-motion）就跳过
+                    var m = /max-width\s*:\s*(\d+)px/.exec(rule.media.mediaText || '');
+                    if (!m || innerWidth > parseFloat(m[1])) continue;
+                    if (rule.cssRules) {
+                        for (var j = 0; j < rule.cssRules.length; j++) {
+                            out.push(rule.cssRules[j].cssText || '');
+                        }
+                    }
+                    continue;
+                }
+                out.push(rule.cssText || '');
+            }
+        }
+        return out;
+    }
+
+    // 从样式表文本里找出某条选择器所在的**规则体**（返回最后一个匹配的 ——
+    // 同优先级下后面写的赢，与浏览器的层叠一致）。
+    function ruleBody(chunks, selector) {
+        var body = null;
+        for (var i = 0; i < chunks.length; i++) {
+            var at = chunks[i].indexOf(selector);
+            if (at < 0) continue;
+            // 选择器后面必须紧跟 `{`（只隔空白），避免把 `.acc-sidebar-avatar img` 之类也算进来
+            var rest = chunks[i].slice(at + selector.length);
+            if (!/^\s*\{/.test(rest)) continue;
+            body = chunks[i].slice(chunks[i].indexOf('{', at) + 1).replace(/\}\s*$/, '');
+        }
+        return body;
+    }
+
+    // 把落点对齐到导航栏那颗头像的**实际外框**：
+    //   · 尺寸：**原样用 CSS 里的 40×40（含白边）**，一点不缩 —— 它就是侧栏那颗
+    //     头像真正的外框尺寸，人眼看过去要落在的位置
+    //   · 圆角：按起点那颗的比例换算（起点 64×64 用 9px → 圆角占外框 9/64；
+    //     落点 40×40 于是取 9 × 40/64 = 5.6px，与 CSS 里写的 6px 基本吻合）。
+    //     这样飞行途中圆角比例恒定，看不出「圆角自己化了一下」
+    //   · 位置：**横向**让两颗头像中心对齐（起点中心 x = 62，落点 12 + 20），
+    //     纵向**保持 CSS 给的 top**（= 侧栏内边距 20px，与 account 页里那颗头像逐像素同位）。
+    //     为什么纵向不居中：落点要盖住换页那一刻侧栏头像**真正**所在的位置，
+    //     不然跳过去会看到它往上挪十几像素（实测 12px）。
+    function normalizeTarget(nav, target, navRadius) {
+        var r1 = parseFloat(navRadius);
+        var navSide = Math.min(nav.width, nav.height);
+        var usable = !isNaN(r1) && r1 > 0 && navSide > 0;
+        var ratio = usable ? r1 / navSide : 0.5;   // 起点那颗的「圆角 / 外框」比例
+        var side = Math.min(target.width, target.height);
+
+        target.radius = usable ? (ratio * side) + 'px' : '0.5';
+        target.ratio = ratio;
+
+        // 横向按中心对齐（起点中心 62 = 落点 12 + 20）；纵向不动，保持 CSS 的位置
+        if (Math.abs(nav.width - target.width) > 2) {
+            target.left += (nav.width - target.width) / 2;
+        }
+        return target;
     }
 
     // clip-path 圆形裁剪是否可用；不可用（老浏览器）就退化成直接跳转
@@ -274,8 +416,8 @@ document.addEventListener('DOMContentLoaded', function() {
 
     // 点击头像 → 进入个人中心。整段是**一次连续的动作**，三件事同时发生：
     //   ① 遮罩（与个人中心同色）从头像正中扩散到盖满全屏
-    //   ② 头像飞到最上层，边扩散边长成个人中心左上角那颗「返回主页面」胶囊
-    //   ③ 460ms 后换页 —— 那时胶囊已在目标位置，新页面原样接着显示
+    //   ② 头像飞到最上层，边扩散边缩小 + 右移，落成个人中心侧栏顶部那颗头像
+    //   ③ 460ms 后换页 —— 那时头像已在目标位置，新页面原样接着显示
     //
     // 两个实现要点：
     //   · 头像必须**临时挪到 body 下**：它原本在 .rectangle（z-index:100）里，子元素的
@@ -288,9 +430,10 @@ document.addEventListener('DOMContentLoaded', function() {
         var btn = document.getElementById('navAvatar');
         var layer = document.getElementById('avatarZoom');
         var target = 'account/?from=avatar';
+        var morph = morphTarget();
 
         if (zoomPlaying) return;
-        if (!btn || !layer || !canZoom() || prefersReducedMotion()) {
+        if (!btn || !layer || !canZoom() || prefersReducedMotion() || !morph) {
             window.location.href = target; // 直接跳，别让人白等
             return;
         }
@@ -317,15 +460,18 @@ document.addEventListener('DOMContentLoaded', function() {
         layer.style.clipPath = 'circle(0px' + origin;
         void layer.offsetWidth;
 
-        // ---- ③ 形变：头像长成「返回主页面」胶囊（与遮罩扩散同时开始）----
-        // is-morphing 只提供过渡与裁剪、is-flying 提供胶囊外观（见 main.css 的注释）
+        // ---- ③ 形变：头像缩小并落进个人中心侧栏（与遮罩扩散同时开始）----
+        // is-morphing 只提供过渡、is-flying 提供过场期间的外观（见 main.css 的注释）
         btn.classList.add('is-morphing');
         btn.classList.add('is-flying');
         void btn.offsetWidth;
-        btn.style.left = MORPH_TARGET.left + 'px';
-        btn.style.top = MORPH_TARGET.top + 'px';
-        btn.style.width = MORPH_TARGET.width + 'px';
-        btn.style.height = MORPH_TARGET.height + 'px';
+        btn.style.left = morph.left + 'px';
+        btn.style.top = morph.top + 'px';
+        btn.style.width = morph.width + 'px';
+        btn.style.height = morph.height + 'px';
+        // 圆角也显式写：C 的圆角比例与起点**不是逐像素相等**（40 × 9/64 = 5.6 → 取了 6px），
+        // 不写死的话过渡结束时它会跳到 6px，中途看着像「圆角自己化了一下」。
+        btn.style.borderRadius = morph.radius;
 
         // ---- ④ 遮罩开始扩散 ----
         layer.style.transition = '';
@@ -333,7 +479,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
         // ---- ⑤ 等形变**真正结束**再换页 ----
         // 不能只靠 setTimeout：CSS 过渡与定时器同为 460ms，浏览器最后一次绘制大约在
-        // 450ms，那时宽/高/圆角/底色都还差一点点，换页后是 100% 状态 —— 那一点点就是
+        // 450ms，那时位置/尺寸/白边还差一点点，换页后是 100% 状态 —— 那一点点就是
         // 肉眼看到的「跳一下」。所以听过渡结束事件，定时器只作兜底。
         goWhenSettled(btn, function() {
             window.location.href = target;
@@ -385,8 +531,8 @@ document.addEventListener('DOMContentLoaded', function() {
     // ===================== 反向转场：从个人中心返回 =====================
     // 账号页那边先在本地把组件淡出，再带 ?from=account 跳回本页。
     // 本页要做的是「倒放」：一进来（第一帧之前）就把画面摆成**账号页最后一帧**的样子 ——
-    // 遮罩整屏盖住 + 头像已经是胶囊的形状和位置；等页面在遮罩下面画好，再同时
-    // ① 把圆圈缩回头像 ② 把胶囊变回头像。
+    // 遮罩整屏盖住 + 头像已经在侧栏那个位置；等页面在遮罩下面画好，再同时
+    // ① 把圆圈缩回导航栏的位置与大小 ② 把侧栏那颗外观还原成导航栏那颗。
     var FROM_ACCOUNT = /[?&]from=account(&|=|$)/.test(window.location.search);
 
     // 前置条件：导航栏必须可见（头像才有落点）。沉浸模式下导航栏会连头像一起隐藏，
@@ -419,6 +565,12 @@ document.addEventListener('DOMContentLoaded', function() {
             return false;
         }
 
+        // 倒放的起点 = 正向形变的落点，两者必须是同一组数字（都从现在的 CSS 算出来）。
+        // ⚠️ 必须在**挪动按钮之前**算：morphTarget() 量的是按钮在导航栏里的位置，
+        //    挪走之后它就在屏幕左上角了，再量会得到一份错得离谱的结果。
+        var morph = morphTarget();
+        if (!morph) return false;
+
         // 头像在导航栏里的位置（正向过场结束时它也是回到这里）
         var rect = btn.getBoundingClientRect();
         if (!rect.width) return false; // 导航栏没排上版 → 不播
@@ -434,9 +586,12 @@ document.addEventListener('DOMContentLoaded', function() {
         // ---- 第一帧：全部无过渡，直接摆成「账号页最后一帧」----
         btn.classList.add('is-morphing');
         btn.classList.add('is-flying');
-        btn.style.cssText = 'position:fixed;left:' + MORPH_TARGET.left + 'px;top:' + MORPH_TARGET.top +
-            'px;width:' + MORPH_TARGET.width + 'px;height:' + MORPH_TARGET.height +
-            'px;margin:0;transform:none;z-index:9001;transition:none;';
+        btn.style.cssText = 'position:fixed;left:' + morph.left + 'px;top:' + morph.top +
+            'px;width:' + morph.width + 'px;height:' + morph.height +
+            'px;margin:0;transform:none;z-index:9001;transition:none;' +
+            // 圆角也一起写：与正向的落点保持一致（否则第一帧会用样式表的 9px，
+            // 而 40×40 那颗实际是 6px，倒放刚开始会看到圆角「弹」一下）
+            'border-radius:' + morph.radius + ';';
         document.body.appendChild(btn);
 
         layer.style.transition = 'none';
@@ -448,10 +603,10 @@ document.addEventListener('DOMContentLoaded', function() {
         document.documentElement.classList.remove('is-returning');
 
         whenPageReady(function() {
-            // ---- 倒放开始：圆圈缩回头像 + 胶囊变回头像 ----
+            // ---- 倒放开始：圆圈缩回头像 + 侧栏头像变回导航栏那颗 ----
             btn.style.transition = '';
             void btn.offsetWidth;              // 让过渡重新生效，再改几何
-            btn.classList.remove('is-flying'); // 外观变回头像（边框/圆角/底色由 is-morphing 兜住过渡）
+            btn.classList.remove('is-flying'); // 外观变回头像（边框/底色由 is-morphing 兜住过渡）
             btn.style.left = rect.left + 'px';
             btn.style.top = rect.top + 'px';
             btn.style.width = rect.width + 'px';
@@ -573,5 +728,16 @@ document.addEventListener('DOMContentLoaded', function() {
         resetAvatarFlight();
         renderAvatarState();
     });
+
+    // 调试口（与 account/account.js 的 window.__guangxueAccount 同一个用意）：
+    // 形变落点是**从样式表算出来的**，出问题时需要能在控制台里逐项看它是怎么算的。
+    // 只读、无副作用，普通使用不会碰到。
+    window.__guangxue = {
+        morphTarget: morphTarget,
+        navAvatarBox: navAvatarBox,
+        playAvatarZoom: playAvatarZoom,
+        playReturnAnimation: playReturnAnimation,
+        resetAvatarFlight: resetAvatarFlight
+    };
 
 });

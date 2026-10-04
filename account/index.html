@@ -1,11 +1,19 @@
 <!DOCTYPE html>
 <!--
-  广学 · 个人中心（账号 / 设备 / 操作）
+  广学 · 个人中心（账号 / 登录设备 / 操作）
 
   入口：站点左上角的头像（index.html 的 #navAvatar）。
   点击头像时 main.js 会让首页的遮罩从头像位置扩散盖住整屏，再跳到本页并带上
-  ?from=avatar —— 本页据此跳过顶部身份卡的入场动画，让「遮罩铺满」与
-  「个人中心出现」在视觉上连成一件事（两边用的是同一串渐变，见 account.css）。
+  ?from=avatar —— 本页据此跳过入场动画，让「遮罩铺满」与「个人中心出现」
+  在视觉上连成一件事（两边的渐变是同一串，见 account.css 文首）。
+
+  ============================ 页面结构（与后台 admin/ 同一套） ============================
+  未登录：整屏只有 #accGate 那一个居中表单（没有侧栏可点，也就没有导航）。
+  已登录：#accLayout —— 左侧深色侧栏（头像 + 品牌 + 导航 + 页脚）+ 右侧主区
+          （顶栏 + 内容区），内容按 hash 路由切（#/profile、#/devices、#/actions）。
+
+  与后台的差异只有底色：后台是浅灰 #f5f6f8，本页保留整页深色渐变 ——
+  从首页头像扩散过来的那块遮罩就是这串渐变，接缝才看不出来。
 
   独立入口，与学生站（index.html）和后台（admin/）都互不影响：
     · 不走 main.js 的导航与 localStorage 缓存
@@ -26,99 +34,25 @@
     <link rel="stylesheet" href="account.css">
 </head>
 <body class="acc-page">
-    <!-- 顶栏：返回主页面 + 品牌（透明，压在整页渐变背景上） -->
-    <header class="acc-topbar">
-        <!-- ⚠️ 这颗按钮放在**最左**，几何是刻意固定的（左 30px、上 32px、高 36px）：
-             首页点头像时，那个头像会形变成长这样、并且落在同一个位置上（main.js 的
-             MORPH_TARGET 就是照这组数字算的），两段动画才是连成一片的。
-             动这几个数字时，另一处要一起改。 -->
-        <a class="acc-home-btn" id="accHome" href="../index.html" title="返回广学主页面">
-            <span class="acc-home-arrow" aria-hidden="true">←</span> 返回主页面
-        </a>
-        <!-- 品牌与徽章带 data-enter：由 account.js 的 playTopbarIn() 排在遮罩溶掉的那一刻
-             浮入（之前是凭空出现，很突兀）。返回按钮不参与动画 —— 它是正向形变的落点。 -->
-        <a class="acc-brand" href="../index.html" data-enter>广学</a>
-        <span class="acc-brand-sub" data-enter>个人中心</span>
-    </header>
 
-    <main class="acc-wrap">
-        <!-- ===================== 身份卡 ===================== -->
-        <!-- 三块都会在页面打开时依次浮入（data-enter 由 account.js 排延时） -->
-        <section class="acc-hero">
-            <div class="acc-hero-avatar" data-enter>
-                <!-- 与站点导航左上角同一张头像素材：从首页扩散过来的圆形正好落在它上面 -->
-                <!-- ⚠️ 临时：与首页同步置空（见 index.html 里的说明）。恢复时把 src 改回
-                     ../image/avatar.png；这一段的结构与 data-enter 动效不要动。 -->
-                <img src="../image/avatar-blank.png" alt="头像">
-            </div>
-            <div class="acc-hero-text" data-enter>
-                <p class="acc-hero-name" id="heroName">欢迎来到广学</p>
-                <p class="acc-hero-sub" id="heroSub">正在检查登录状态…</p>
-            </div>
-            <span class="acc-hero-role" id="heroRole" data-enter hidden>管理员</span>
-        </section>
-
-        <!-- 面板舞台：加载卡在这里是**绝对定位的浮层**，切换时它浮在新面板上面淡出，
-             不会把下面的内容顶下去（否则就是一次高度跳变）。 -->
-        <div class="acc-stage">
-
-        <!-- 未登录且正在检测时的占位。这一屏有**最短显示时长**（account.js 的
-             MIN_CHECK_MS）：本地 /me 只要几毫秒，一返回就切面板的话它会一闪而过，
-             后面的表单就像凭空冒出来。三个脉冲点让这段等待看起来是「在做事」。 -->
-        <section class="acc-card acc-loading" id="panelLoading" data-enter>
+    <!-- ===================== 登录门禁 ===================== -->
+    <!-- 默认可见：没确认登录态之前不渲染侧栏与内容，避免「先看到界面再被踢出去」。
+         门禁占满整屏（和后台的 .admin-gate 一样），所以登录态确认前后**没有布局位移** ——
+         这正是本页早先那个「加载屏文字位置不对」问题的根治办法：不再需要舞台高度那一套。 -->
+    <div class="acc-gate" id="accGate">
+        <!-- 检测中：只问一句 /api/auth/me，问完就地换成表单或侧栏布局 -->
+        <div class="acc-check" id="accCheck">
             <p class="acc-muted">正在检查登录状态…</p>
             <span class="acc-dots" aria-hidden="true"><i></i><i></i><i></i></span>
-        </section>
+        </div>
 
-        <!-- ===================== 已登录：账号信息 ===================== -->
-        <!-- 默认隐藏，由 account.js 问过 /api/auth/me 之后再决定显示哪一组 -->
-        <section class="acc-card" id="panelAccount" data-enter hidden>
-            <h1 class="acc-title" data-enter>账号信息</h1>
-            <dl class="acc-info">
-                <div class="acc-info-row" data-enter>
-                    <dt>邮箱</dt>
-                    <dd id="accEmail">—</dd>
-                </div>
-                <div class="acc-info-row" data-enter>
-                    <dt>昵称</dt>
-                    <dd id="accUsername">—</dd>
-                </div>
-                <div class="acc-info-row" data-enter>
-                    <dt>角色</dt>
-                    <dd id="accRole">—</dd>
-                </div>
-                <div class="acc-info-row" data-enter>
-                    <dt>注册时间</dt>
-                    <dd id="accCreated">—</dd>
-                </div>
-            </dl>
-        </section>
+        <!-- 登录 / 注册。两个标签页共用一张白卡，切标签时卡片高度过渡（account.js 的 switchTab） -->
+        <div class="acc-gate-box" id="accAuthBox" hidden>
+            <h1 class="acc-gate-title">广学 · 个人中心</h1>
+            <p class="acc-gate-tip">登录后可以查看账号信息、管理登录设备</p>
 
-        <!-- ===================== 已登录：登录中的设备 ===================== -->
-        <section class="acc-card" id="panelDevices" data-enter hidden>
-            <h2 class="acc-title" data-enter>登录中的设备<span class="acc-title-count" id="devicesCount" hidden></span></h2>
-            <p class="acc-hint" data-enter>同一个账号可以在多台设备上同时登录，互不影响；在别的设备上退出只影响那一台。</p>
-            <ul class="acc-sessions" id="accSessions">
-                <li class="acc-muted">正在读取…</li>
-            </ul>
-        </section>
-
-        <!-- ===================== 已登录：可用操作 ===================== -->
-        <section class="acc-card" id="panelActions" data-enter hidden>
-            <h2 class="acc-title" data-enter>可用操作</h2>
-            <div class="acc-actions">
-                <a class="acc-btn acc-btn-primary" id="accBack" href="../index.html">回到站点开始学习</a>
-                <a class="acc-btn" id="accAdmin" href="../admin/" hidden>进入管理后台</a>
-                <button class="acc-btn" type="button" id="btnLogoutOthers">登出其他设备</button>
-                <button class="acc-btn acc-btn-danger" type="button" id="btnLogout">退出登录</button>
-            </div>
-            <p class="acc-msg" id="accountMsg" role="status"></p>
-        </section>
-
-        <!-- ===================== 未登录：登录 / 注册 ===================== -->
-        <section class="acc-card" id="panelAuth" data-enter hidden>
-            <div class="acc-tabs" role="tablist" data-enter>
-                <!-- 滑动滑块：白底高亮不再挂在按钮上，而是这块底座按点击方向滑过去
+            <div class="acc-tabs" role="tablist">
+                <!-- 滑动滑块：白底高亮不挂在按钮上，而是这块底座按点击方向滑过去
                      （宽度用百分比算，两个按钮等宽，所以纯 CSS 就能对准，不依赖 JS 量尺寸） -->
                 <span class="acc-tabs-thumb" id="tabsThumb" aria-hidden="true"></span>
                 <button class="acc-tab is-active" type="button" id="tabLogin">登录</button>
@@ -187,14 +121,101 @@
                 <button class="acc-btn acc-btn-primary acc-btn-block" type="submit" id="regSubmit" data-enter>注册并登录</button>
                 <p class="acc-hint" data-enter>注册成功后会自动登录，可以直接回到站点开始学习。</p>
             </form>
-        </section>
-
         </div>
-    </main>
+    </div>
 
-    <footer class="acc-footer">
-        <span>广学 · 账号系统（Rust 认证服务）</span>
-    </footer>
+    <!-- ===================== 个人中心主布局（已登录才显示） ===================== -->
+    <div class="acc-layout" id="accLayout" hidden>
+        <!-- 左侧栏：头像 + 品牌 + 导航（导航项由 account.js 渲染进 #accNav） -->
+        <aside class="acc-sidebar">
+            <!-- ⚠️ 这一格是首页头像形变的**落点**：位置与尺寸写死在
+                 account.css 的 .acc-sidebar-avatar 里，必须与 main.js 的
+                 MORPH_TARGET 一致（左 20、上 20、40×40 的圆形）。
+                 动这里时另一处要一起改，否则点头像过来会「跳一下」。 -->
+            <div class="acc-sidebar-avatar" id="accAvatar">
+                <!-- 与站点导航左上角同一张头像素材：从首页扩散过来的圆形正好落在它上面 -->
+                <!-- ⚠️ 临时：与首页同步置空（见 index.html 里的说明）。恢复时把 src 改回
+                     ../image/avatar.png；这一段的结构不要动。 -->
+                <img src="../image/avatar-blank.png" alt="头像">
+            </div>
+            <a class="acc-brand" href="../index.html" data-enter>
+                <span class="acc-brand-name">广学</span>
+                <span class="acc-brand-sub">个人中心</span>
+            </a>
+            <nav class="acc-nav" id="accNav"></nav>
+            <div class="acc-sidebar-footer">
+                <!-- 返回站点。⚠️ 它**不参与**退场淡出：首页那边的反向形变要从这颗按钮
+                     的位置起飞，动了就接不上（见 main.js 的 reverseAvatarFlight）。 -->
+                <a class="acc-link" id="accHome" href="../index.html">← 返回主页面</a>
+                <button class="acc-link acc-link-btn-plain" type="button" id="accLogout">退出登录</button>
+            </div>
+        </aside>
+
+        <!-- 右侧主区：顶栏 + 内容区（内容按 hash 路由切换） -->
+        <main class="acc-main">
+            <header class="acc-topbar">
+                <h1 class="acc-page-title" id="accPageTitle">个人中心</h1>
+                <div class="acc-topbar-right">
+                    <!-- 服务端连通性：只调一次 /api/auth/me（与 admin.js 的 backendStatus 同款） -->
+                    <span class="acc-backend" id="backendStatus">检测服务…</span>
+                    <!-- 当前账号（由 account.js 填充） -->
+                    <span class="acc-user" id="topUserName">—</span>
+                    <a class="acc-btn acc-btn-sm" id="accAdmin" href="../admin/" hidden>管理后台</a>
+                </div>
+            </header>
+
+            <div class="acc-content">
+                <!-- ===================== 账号信息 ===================== -->
+                <section class="acc-panel" id="panelProfile">
+                    <div class="acc-card" data-enter>
+                        <h2 class="acc-card-title" data-enter>账号信息</h2>
+                        <dl class="acc-info">
+                            <div class="acc-info-row" data-enter>
+                                <dt>邮箱</dt>
+                                <dd id="accEmail">—</dd>
+                            </div>
+                            <div class="acc-info-row" data-enter>
+                                <dt>昵称</dt>
+                                <dd id="accUsername">—</dd>
+                            </div>
+                            <div class="acc-info-row" data-enter>
+                                <dt>角色</dt>
+                                <dd id="accRole">—</dd>
+                            </div>
+                            <div class="acc-info-row" data-enter>
+                                <dt>注册时间</dt>
+                                <dd id="accCreated">—</dd>
+                            </div>
+                        </dl>
+                    </div>
+                </section>
+
+                <!-- ===================== 登录中的设备 ===================== -->
+                <section class="acc-panel" id="panelDevices" hidden>
+                    <div class="acc-card" data-enter>
+                        <h2 class="acc-card-title" data-enter>登录中的设备<span class="acc-title-count" id="devicesCount" hidden></span></h2>
+                        <p class="acc-hint" data-enter>同一个账号可以在多台设备上同时登录，互不影响；在别的设备上退出只影响那一台。</p>
+                        <ul class="acc-sessions" id="accSessions">
+                            <li class="acc-muted">正在读取…</li>
+                        </ul>
+                    </div>
+                </section>
+
+                <!-- ===================== 可用操作 ===================== -->
+                <section class="acc-panel" id="panelActions" hidden>
+                    <div class="acc-card" data-enter>
+                        <h2 class="acc-card-title" data-enter>可用操作</h2>
+                        <div class="acc-actions">
+                            <a class="acc-btn acc-btn-primary" id="accBack" href="../index.html">回到站点开始学习</a>
+                            <button class="acc-btn" type="button" id="btnLogoutOthers">登出其他设备</button>
+                            <button class="acc-btn acc-btn-danger" type="button" id="btnLogout">退出登录</button>
+                        </div>
+                        <p class="acc-msg" id="accountMsg" role="status"></p>
+                    </div>
+                </section>
+            </div>
+        </main>
+    </div>
 
     <script src="account.js"></script>
 </body>

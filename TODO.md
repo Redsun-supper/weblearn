@@ -49,13 +49,18 @@
 
 ---
 
-## 3. 登录后的个人中心画面是临时的
+## 3. 登录后的个人中心画面 —— 已按「后台那种布局」改过一版
 
-用户原话：「若已登录先不管未来有其他的新的登录后画面，现在这个是零时的」。
+原先用户说「若已登录先不管未来有其他的新的登录后画面，现在这个是零时的」，
+所以那一版（居中白卡 + 身份卡）只保证了两件事：检测登录态的**最短显示时长**
+（`account.js` 的 `MIN_CHECK_MS = 600`）与面板之间的交叉淡出。
 
-这一版只保证两件事：检测登录态的**最短显示时长**（`account.js` 的 `MIN_CHECK_MS = 600`）
-以及与后续面板的**交叉淡出**。身份卡与三张卡的视觉没有按「新画面」重新设计，
-等用户给出新造型再动。
+**2026-10 用户给了新造型：「将个人中心设计成类似后台的那种设计布局」**，已实现 ——
+布局与 `admin/` 同一套（侧栏 + 顶栏 + 内容区 + hash 路由），底色保留整页深色渐变。
+细节见 [`docs/backend-auth.md`](docs/backend-auth.md) 的「个人中心」一节。
+
+这一段仍算「按用户给的造型做的第一版」：配色、导航项的顺序与命名、要不要给设备列表加
+「在那台设备上退出」之类的操作，都还没有被逐项确认过，用户随时可能再改。
 
 ---
 
@@ -65,11 +70,13 @@
 
 | 时长 | 参与方 |
 |------|--------|
-| 460ms（头像过场） | `main.js` 的 `ZOOM_MS`/`goWhenSettled`、`main.css` 的 `.avatar-zoom`/`.is-morphing`、`account.css` 的 `accFall`/`.is-loading` |
+| 460ms（头像过场） | `main.js` 的 `ZOOM_MS`/`goWhenSettled`、`main.css` 的 `.avatar-zoom`/`.is-morphing`、`account.css` 的 `accFall` |
+| 460ms（头像落进侧栏） | `main.js` 的 `MORPH` 那段（与上一条同一次 `is-morphing` 过渡，共用 `ZOOM_MS`）、`main.css` 的 `.rounded-square.is-flying`、`account.css` 的 `.acc-sidebar-avatar`（**几何**由 `morphTarget()` 从 CSS 里读出来，不再写死数字） |
 | 460ms（起始页过场） | `english.js` 的 `START_TOTAL_MS`、`english.css` 的 `startOut`/`startIn`、`main.css` 的 `.rectangle` + `body.is-immersive .rectangle` + `.content-container` |
 | 160ms（起始页退场） | `english.js` 的 `START_OUT_MS`、`english.css` 的 `startOut` |
 | 160 / 240ms（计划小字切换） | `english.js` 的 `PLAN_SWAP_OUT_MS`、`english.css` 的 `planOut` / `planIn` |
 | 150 / 240ms | `english.js` 的 `TRANSITION_MS`、`english.css` 的 `studyOut`/`studyIn` |
+| 60ms（个人中心检测屏淡出） | `account.js` 的 `TIMING.screenFade`、`account.css` 的 `.acc-check` 的 `transition` |
 
 改一处忘另一处就会出现「过渡没跑完就换页」「两层动画错位」这类微妙问题（已经踩过一次）。
 

@@ -2,10 +2,19 @@
  * 广学 · 个人中心样式
  * 只作用于 account/ 下的页面，与学生站 main.css、后台 admin.css 相互独立。
  *
- * 两条约定：
+ * 布局与后台 admin/ 同一套：未登录是整屏居中的门禁表单，登录后是
+ * 「左侧深色侧栏 + 右侧主区（顶栏 + 内容）」，内容按 hash 路由切换。
+ * 两者只有底色不同 —— 本页保留整页深色渐变（理由见下面 body.acc-page）。
+ *
+ * 三条约定，改之前先读：
  *   1. 背景渐变必须与 main.css 的 .avatar-zoom 完全一致 —— 首页点头像时那块
  *      遮罩是同一串渐变，扩散盖满之后跳到本页，接缝才看不出来。
- *   2. 入场动效的「动作」在这里（accRise / accPop），「什么时候开始」在
+ *   2. .acc-sidebar-avatar 的几何（内边距 + 40×40 + 3px 白边 + 6px 圆角）是首页头像形变的
+ *      **落点**：main.js 的 morphTarget() 会临时插一个同样的侧栏 + 头像探针，
+ *      把这组值从样式表里**量出来**（不是写死的），所以这里改了那边会自动跟上。
+ *      唯一不能改的是「两颗头像的圆角要同一个比例」（首页 64×64 用 9px）——
+ *      详见 main.js 那段注释。
+ *   3. 入场动效的「动作」在这里（accRise / accPop），「什么时候开始」在
  *      account.js（给元素写 animation-delay），两边只靠延时数字对齐。
  * ========================================================================== */
 
@@ -35,7 +44,17 @@ body.acc-page {
     color: #eceff1;
 }
 
-/* ===================== 入场动效 ===================== */
+/* 键盘可达性：深色底上默认的焦点圈几乎看不见，统一换成亮色 */
+.acc-page :focus-visible {
+    outline: 2px solid rgba(255, 255, 255, 0.75);
+    outline-offset: 2px;
+}
+
+[hidden] {
+    display: none !important;
+}
+
+/* ===================== 入场 / 退场动效 ===================== */
 
 /* 主入场：从下方 14px 处浮起并淡入。both 保证延时期间保持起始状态（不会先闪一下） */
 @keyframes accRise {
@@ -63,10 +82,6 @@ body.acc-page {
         opacity: 1;
         transform: scale(1);
     }
-}
-
-.is-enter {
-    animation: accRise 0.42s cubic-bezier(0.22, 0.61, 0.36, 1) both;
 }
 
 /* 切标签页时的入场：**短的淡入 + 一点点纵向浮起**（不再做横向滑动）。
@@ -108,8 +123,24 @@ body.acc-page {
     }
 }
 
-/* ⚠️ 必须写在所有 .is-enter* 之后（见下面 .acc-hero-avatar.is-enter 之后那条）：
-   同类选择器靠出现顺序决定胜负，退场时元素上万一还挂着入场类就输了。 */
+/* 检测中那三个脉冲点 */
+@keyframes accPulse {
+    0%, 80%, 100% {
+        opacity: 0.25;
+        transform: scale(0.8);
+    }
+    40% {
+        opacity: 1;
+        transform: scale(1);
+    }
+}
+
+.is-enter {
+    animation: accRise 0.42s cubic-bezier(0.22, 0.61, 0.36, 1) both;
+}
+
+/* ⚠️ 必须写在所有 .is-enter* 之后（见下面那条 .is-exit）：同类选择器靠出现顺序决定胜负，
+   退场时元素上万一还挂着入场类就输了。 */
 .is-enter-right {
     animation: accFadeFromDown 0.22s cubic-bezier(0.22, 0.61, 0.36, 1) both;
 }
@@ -119,17 +150,12 @@ body.acc-page {
 }
 
 /* 动画期间把组件提升成合成层（account.js 的 playEnter 挂 / 摘这个类）。
-   为什么需要：.acc-card 上那圈 0 10px 26px 的模糊阴影，一旦跟着 opacity 一起动，
-   浏览器每帧都要重绘整张卡的阴影；提升成层之后整段动画只做合成，不重绘。
-   代价是每层占一点显存，所以 playEnter 在动画跑完就把它摘掉，不做常驻。 */
+   为什么需要：卡片那圈模糊阴影一旦跟着 opacity 一起动，浏览器每帧都要重绘整张卡；
+   提升成层之后整段动画只做合成，不重绘。代价是每层占一点显存，
+   所以 playEnter 在动画跑完就把它摘掉，不做常驻。 */
 .is-animating {
     will-change: transform, opacity;
     backface-visibility: hidden;
-}
-
-/* 身份卡里的头像用回弹那套 */
-.acc-hero-avatar.is-enter {
-    animation: accPop 0.5s cubic-bezier(0.22, 0.61, 0.36, 1) both;
 }
 
 /* 退场：点返回时组件逆序落下去，再换页（动作见上面的 accFall）。
@@ -138,11 +164,12 @@ body.acc-page {
     animation: accFall 0.26s cubic-bezier(0.4, 0, 1, 1) both;
 }
 
-/* 从首页头像扩散进来时（?from=avatar）：身份卡已经在「遮罩下面」就位了，
-   此处不再播入场动画，否则会看到它从头像位置又跳一次 */
-.from-avatar .acc-hero [data-enter],
-.from-avatar .acc-hero.is-enter,
-.from-avatar .acc-hero .is-enter {
+/* 从首页头像扩散进来时（?from=avatar）：侧栏与内容已经在「遮罩下面」就位了，
+   此处不再播入场动画，否则会看到它们从头像位置又冒一次 */
+.from-avatar .acc-sidebar [data-enter],
+.from-avatar .acc-sidebar .is-enter,
+.from-avatar .acc-panel [data-enter],
+.from-avatar .acc-panel .is-enter {
     animation: none;
 }
 
@@ -151,8 +178,7 @@ body.acc-page {
     .is-enter,
     .is-enter-right,
     .is-enter-left,
-    .is-exit,
-    .acc-hero-avatar.is-enter {
+    .is-exit {
         animation: none;
     }
 
@@ -160,14 +186,15 @@ body.acc-page {
         transition: none;
     }
 
-    /* 加载卡的淡出也省掉，改成即时（account.js 里的 setTimeout 时长不变） */
-    .acc-loading {
+    /* 检测屏的淡出也省掉，改成即时（account.js 里的 setTimeout 时长不变） */
+    .acc-check {
         transition: none;
     }
 
-    /* 动画没了，但 account.js 排的 animation-delay 还在：真面板会先在原地「隐身」等
-       160ms 才出现。这里把延时清掉，换面板就是即时交接（接力改由「加载卡立刻消失」体现）。 */
-    .acc-wrap [data-enter] {
+    /* 动画没了，但 account.js 排的 animation-delay 还在：组件会先在原地「隐身」等
+       TIMING.screenFade 那么久才出现。这里把延时清掉，换屏就是即时交接。 */
+    .acc-gate [data-enter],
+    .acc-layout [data-enter] {
         animation-delay: 0s !important;
     }
 
@@ -178,363 +205,400 @@ body.acc-page {
     }
 }
 
-/* ===================== 顶栏 ===================== */
+/* ===================== 登录门禁 ===================== */
 
-.acc-topbar {
+/* 占满整屏：登录态确认前后**没有布局位移**（这就是本页不再需要「舞台高度」那套的原因）。
+   与后台的 .admin-gate 是同一个思路，只是底色沿用深色渐变。 */
+.acc-gate {
+    position: fixed;
+    inset: 0;
+    z-index: 200;
     display: flex;
     align-items: center;
-    gap: 10px;
-    /* 高 100px（与首页导航栏同高）+ 左右 30px 内边距：
-       这样「返回主页面」按钮正好落在 (30, 32)，也就是首页头像形变结束时的落点。
-       改高度/内边距时，main.js 的 MORPH_TARGET 要一起改。 */
-    height: 100px;
-    padding: 0 30px;
+    justify-content: center;
+    padding: 20px;
+    overflow-y: auto;
 }
 
-.acc-brand {
-    font-size: 18px;
-    font-weight: bold;
-    color: #ffffff;
-    text-decoration: none;
-}
-
-.acc-brand-sub {
-    padding: 2px 8px;
-    border-radius: 999px;
-    background-color: rgba(255, 255, 255, 0.16);
-    color: #e3f2fd;
-    font-size: 12px;
-}
-
-/* 左上角的「返回主页面」按钮：半透明胶囊，压在渐变底上（hover/按下都有反馈）。
-   高度固定 36px、宽度由文案撑开 —— 这两个数字要和首页头像形变的落点一致。 */
-.acc-home-btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    height: 36px;
-    padding: 0 14px;
-    border: 1px solid rgba(255, 255, 255, 0.32);
-    border-radius: 999px;
-    background-color: rgba(255, 255, 255, 0.12);
-    color: #ffffff;
-    font-size: 13px;
-    line-height: 1;
-    text-decoration: none;
-    white-space: nowrap;
-    transition: background-color 0.2s, border-color 0.2s, transform 0.12s;
-}
-
-.acc-home-btn:hover {
-    background-color: rgba(255, 255, 255, 0.22);
-    border-color: rgba(255, 255, 255, 0.5);
-}
-
-.acc-home-btn:active {
-    transform: scale(0.96);
-}
-
-.acc-home-btn:focus-visible {
-    outline: 2px solid rgba(255, 255, 255, 0.7);
-    outline-offset: 2px;
-}
-
-.acc-home-arrow {
-    font-size: 14px;
-    line-height: 1;
-}
-
-/* ===================== 主体 ===================== */
-
-.acc-wrap {
-    max-width: 560px;
-    margin: 0 auto;
-    padding: 12px 20px 60px;
-}
-
-/* ---------- 身份卡 ---------- */
-
-.acc-hero {
-    display: flex;
-    align-items: center;
-    gap: 16px;
-    padding: 8px 4px 26px;
-}
-
-.acc-hero-avatar {
-    flex: 0 0 auto;
-    width: 72px;
-    height: 72px;
-    border: 2px solid rgba(255, 255, 255, 0.75);
-    border-radius: 18px;
-    overflow: hidden;
-    box-shadow: 0 8px 22px rgba(0, 0, 0, 0.3);
-}
-
-.acc-hero-avatar img {
-    display: block;
-    width: 100%;
-    height: 100%;
-    object-fit: cover;
-}
-
-.acc-hero-text {
-    min-width: 0;
-}
-
-.acc-hero-name {
-    font-size: 20px;
-    font-weight: bold;
-    color: #ffffff;
-    /* 昵称/邮箱可能很长：一行省略，不要把身份卡撑破 */
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-.acc-hero-sub {
-    color: #b0bec5;
-    font-size: 13px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-.acc-hero-role {
-    margin-left: auto;
-    padding: 3px 10px;
-    border-radius: 999px;
-    background-color: rgba(255, 255, 255, 0.9);
-    color: #1565c0;
-    font-size: 12px;
-    font-weight: bold;
-    white-space: nowrap;
-}
-
-/* ---------- 卡片 ---------- */
-
-.acc-card {
-    margin-bottom: 16px;
-    padding: 20px 24px 22px;
-    border-radius: 14px;
-    background-color: #ffffff;
-    color: #333;
-    box-shadow: 0 10px 26px rgba(8, 20, 32, 0.18);
-}
-
-.acc-title {
-    margin-bottom: 14px;
-    font-size: 17px;
-    color: #263238;
-}
-
-.acc-subtitle {
-    margin: 22px 0 8px;
-    font-size: 15px;
-}
-
-/* 面板舞台：加载卡在这里是绝对定位的浮层（见 .acc-loading），
-   所以它在目标面板之上淡出时不会影响布局高度 */
-.acc-stage {
-    position: relative;
-    /* 切换面板时高度是**动出来**的（account.js 的 syncStageHeight 写具体像素）。
-       为什么不用 height:auto 直接过渡：CSS 无法在 auto 之间过渡 —— 不写死像素就只能是
-       一次跳变。这条 transition 只在高度真的变化时生效，入场那一次是「首次落位」，不参与。 */
-    transition: height 0.26s cubic-bezier(0.33, 0.86, 0.36, 1);
-}
-
-/* 加载卡：**绝对定位的浮层**，浮在新面板上面淡出（account.js 的 showOnly 挂 is-leaving）。
-   为什么不用「先藏旧的再显示新的」：那样两次布局高度不一样，会出现一次高度跳变。 */
-.acc-loading {
-    position: absolute;
-    left: 0;
-    right: 0;
-    top: 0;
-    /* 加载完之后它就被 hidden 掉了，所以这层阴影只存在于加载期间 */
-    box-shadow: 0 10px 26px rgba(8, 20, 32, 0.18);
-    /* 内容**贴顶居中**，不垂直居中：这张卡会被撑到整块舞台那么高（≈700px，
-       为的是让下一屏的高度提前占住），垂直居中会让这行字停在离屏幕中央很远、
-       离顶栏很空的位置。贴顶之后它就落在卡片原来的位置 ——
-       与「还没撑开时的那一帧」完全一致，整段加载期间一动不动。 */
+/* 检测中：与登录卡占同一块地方，所以「检测完换表单」看不出跳变 */
+.acc-check {
     display: flex;
     flex-direction: column;
     align-items: center;
-    justify-content: flex-start;
-    text-align: center;
-    /* 撑到舞台那么高是行内 min-height 干的（account.js 的 applyStageHeight）。
-       ⚠️ 这里**刻意不写 CSS min-height**：一写死，JS 想量它「本来多高」就永远量到那个下限。
-       没有下限时卡片自然高度 ≈ 81px，也就是「字 + 三个点 + 上下内边距」。 */
-    overflow: hidden;
-    transition: opacity 0.16s linear;
+    gap: 14px;
+    color: #cfd8dc;
+    opacity: 1;
+    /* 时长与 account.js 的 TIMING.screenFade 一致（那边用它当表单入场延时的参考） */
+    transition: opacity 0.06s linear;
 }
 
-.acc-loading.is-leaving {
+/* 淡出用（换屏时先加上这个类，60ms 后整块藏掉） */
+.acc-check.is-leaving {
     opacity: 0;
 }
 
-/* 加载指示：三个脉冲点（纯 CSS，让被刻意延长的等待看起来是「在做事」） */
 .acc-dots {
     display: inline-flex;
     gap: 6px;
-    margin-top: 12px;
 }
 
 .acc-dots i {
     width: 6px;
     height: 6px;
     border-radius: 50%;
-    background-color: #90a4ae;
-    animation: accPulse 1s infinite ease-in-out;
+    background-color: #cfd8dc;
+    animation: accPulse 1.1s ease-in-out infinite;
 }
 
-.acc-dots i:nth-child(2) {
-    animation-delay: 0.15s;
+.acc-dots i:nth-child(2) { animation-delay: 0.15s; }
+.acc-dots i:nth-child(3) { animation-delay: 0.3s; }
+
+/* 登录 / 注册那张白卡 */
+.acc-gate-box {
+    width: 100%;
+    max-width: 420px;
+    padding: 26px 24px 22px;
+    border-radius: 14px;
+    background-color: #ffffff;
+    color: #333;
+    box-shadow: 0 18px 40px rgba(0, 0, 0, 0.28);
 }
 
-.acc-dots i:nth-child(3) {
-    animation-delay: 0.3s;
+.acc-gate-title {
+    margin-bottom: 6px;
+    font-size: 20px;
+    font-weight: bold;
+    text-align: center;
 }
 
-@keyframes accPulse {
-    0%, 100% {
-        opacity: 0.25;
-        transform: scale(0.8);
-    }
-    40% {
-        opacity: 1;
-        transform: scale(1);
-    }
+.acc-gate-tip {
+    margin-bottom: 18px;
+    color: #78909c;
+    font-size: 13px;
+    text-align: center;
+}
+
+/* ===================== 主布局（已登录） ===================== */
+
+.acc-layout {
+    display: flex;
+    min-height: 100vh;
+}
+
+/* 左侧栏：半透明深色，让下面的渐变透出来（与后台那块实心 #263238 的差别就在这） */
+.acc-sidebar {
+    display: flex;
+    flex-direction: column;
+    width: 200px;
+    flex: 0 0 200px;
+    padding: 20px 0;
+    background-color: rgba(20, 30, 40, 0.55);
+    border-right: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+/* ⚠️ 首页头像形变的落点：侧栏内边距 + 40×40 的头像框（含 3px 白边）+ 6px 圆角。
+   桌面档：内边距 20px（写成 `0 20px` 的竖排值）→ 落点 (20, 20)；
+   窄屏档（≤920px）：内边距 `12px 16px` + 36×36 + 2px 白边 → 落点 (16, 12)。两档实测都逐像素吻合。
+   这组值由 main.js 的 morphTarget() **从本文件的规则里读出来再算**，
+   所以在这里改尺寸/内边距不用去改 JS —— 但外观必须与 main.css 的
+   .rounded-square.is-flying 保持一致（白边/白底/圆角矩形/无投影）。
+   ⚠️ border-radius 要与首页那颗**保持同一个比例**：首页 64×64 用 9px（= 9/64）。
+   40 × 9/64 = 5.6 → 取 6px；窄屏 36 × 9/64 = 5.06 → 沿用 6px（差 1px，肉眼看不出）。
+   main.js 按这个比例算出落点的圆角（约 5.6 / 5.1），过场途中不会有跳变。
+   ⚠️ 用 border-box 让 width/height 直接表示**外框**尺寸（40 就是 40）：
+   不是的话 main.js 那边的换算口径就要跟着改（它现在是「读到的 width + 左右白边」）。
+   为什么是 40×40 贴左上角：首页那颗是 64×64、定位 left:30px 垂直居中，
+   缩到侧栏这个位置时看起来就是「头像飞进来落进自己的位置」。 */
+.acc-sidebar-avatar {
+    box-sizing: border-box;
+    width: 40px;
+    height: 40px;
+    margin: 0 20px 12px;
+    border: 3px solid #ffffff;
+    border-radius: 6px;
+    background-color: #ffffff;
+    overflow: hidden;
+}
+
+.acc-sidebar-avatar img {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    /* 照片自己裁圆角：容器的 overflow 裁的是**圆角外**的方块，图片方角会在白边内侧露出来
+       （与首页 .avatar 同一个做法，圆角值也取同一个） */
+    border-radius: 6px;
+}
+
+.acc-brand {
+    display: flex;
+    flex-direction: column;
+    margin: 0 20px 16px;
+    padding-bottom: 14px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+    text-decoration: none;
+}
+
+.acc-brand-name {
+    font-size: 18px;
+    font-weight: bold;
+    color: #ffffff;
+}
+
+.acc-brand-sub {
+    font-size: 12px;
+    color: #90a4ae;
+}
+
+/* 侧栏导航（条目由 account.js 渲染） */
+.acc-nav {
+    flex: 1;
+}
+
+.acc-nav-item {
+    display: block;
+    padding: 10px 20px;
+    border-left: 3px solid transparent;
+    color: #cfd8dc;
+    font-size: 14px;
+    text-decoration: none;
+    cursor: pointer;
+    transition: background-color 0.2s, color 0.2s, border-color 0.2s;
+}
+
+.acc-nav-item:hover {
+    background-color: rgba(255, 255, 255, 0.09);
+    color: #ffffff;
+}
+
+.acc-nav-item.is-active {
+    background-color: rgba(255, 255, 255, 0.13);
+    border-left-color: #64b5f6;
+    color: #ffffff;
+}
+
+/* 导航项右侧的小字（会话台数之类） */
+.acc-nav-note {
+    float: right;
+    color: #90a4ae;
+    font-size: 12px;
+}
+
+.acc-nav-item.is-active .acc-nav-note {
+    color: #cfd8dc;
+}
+
+.acc-sidebar-footer {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-top: auto;
+    padding: 14px 20px 0;
+    border-top: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.acc-link {
+    color: #90a4ae;
+    font-size: 13px;
+    text-decoration: none;
+}
+
+.acc-link:hover {
+    color: #ffffff;
+}
+
+/* 「退出登录」长得像链接，但它是个按钮：清掉浏览器默认外观，对齐左边距 */
+.acc-link-btn-plain {
+    padding: 0;
+    border: none;
+    background: none;
+    text-align: left;
+    cursor: pointer;
+}
+
+/* 右侧主区 */
+.acc-main {
+    flex: 1;
+    min-width: 0; /* 允许内部内容横向滚动而不撑破布局 */
+    display: flex;
+    flex-direction: column;
+}
+
+.acc-topbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 14px 24px;
+    background-color: rgba(255, 255, 255, 0.06);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.acc-page-title {
+    font-size: 18px;
+    font-weight: bold;
+    color: #ffffff;
+}
+
+.acc-topbar-right {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    font-size: 13px;
+    color: #b0bec5;
+}
+
+/* 服务端连通性指示 */
+.acc-backend.is-ok { color: #81c784; }
+.acc-backend.is-bad { color: #ef9a9a; }
+
+.acc-user {
+    max-width: 240px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: #eceff1;
+}
+
+.acc-content {
+    flex: 1;
+    padding: 20px 24px 40px;
+}
+
+/* ===================== 卡片与内容 ===================== */
+
+/* 浅色卡片压在深色渐变上：与后台的 .admin-card 同一套观感，
+   只是底色带一点点透明，让渐变透上来一点（不然深色页面里贴一块纯白太硬） */
+.acc-card {
+    padding: 16px;
+    margin-bottom: 16px;
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    border-radius: 12px;
+    background-color: rgba(255, 255, 255, 0.97);
+    color: #333;
+    box-shadow: 0 10px 26px rgba(0, 0, 0, 0.18);
+}
+
+.acc-card-title {
+    margin-bottom: 12px;
+    font-size: 15px;
+    font-weight: bold;
+    color: #263238;
+}
+
+.acc-title-count {
+    margin-left: 6px;
+    font-size: 12px;
+    font-weight: normal;
+    color: #78909c;
+}
+
+.acc-hint {
+    margin-top: 6px;
+    color: #78909c;
+    font-size: 12px;
+}
+
+.acc-hint code {
+    padding: 1px 4px;
+    border-radius: 4px;
+    background-color: #eceff1;
+    font-size: 12px;
 }
 
 .acc-muted {
     color: #90a4ae;
-    font-size: 13px;
 }
 
-/* ===================== 标签页 ===================== */
-
-.acc-tabs {
+/* 账号信息：标签 + 值，一行一项 */
+.acc-info-row {
     display: flex;
-    gap: 8px;
-    margin-bottom: 18px;
-    padding: 4px;
-    border-radius: 10px;
-    background-color: #f1f3f5;
-    /* 绝对定位的滑块（.acc-tabs-thumb）要相对它定位，别删 */
-    position: relative;
+    gap: 12px;
+    padding: 9px 0;
+    border-bottom: 1px solid #eceff1;
 }
 
-/* 会滑动的白底高亮（分段控件的那块「滑块」）。
-   几何说明：容器的 100% 是它的 padding box（无边框），所以
-     · 每个按钮宽度 = (100% − 左右内边距 8px − 间距 8px) / 2 = (100% − 16px) / 2
-     · 第二个位置 = 自身宽度 + 间距 → translateX(calc(100% + 8px))
-   两个按钮是 flex:1 等宽的，所以用百分比就够，不需要 JS 去量像素。 */
-.acc-tabs-thumb {
-    position: absolute;
-    top: 4px;
-    left: 4px;
-    width: calc((100% - 16px) / 2);
-    height: calc(100% - 8px);
-    border-radius: 8px;
-    background-color: #ffffff;
-    box-shadow: 0 1px 4px rgba(38, 50, 56, 0.12);
-    pointer-events: none;
-    transition: transform 0.28s cubic-bezier(0.34, 0.86, 0.36, 1);
+.acc-info-row:last-child {
+    border-bottom: none;
 }
 
-/* 选中「注册」时滑块滑到右边（首屏默认是「登录」，所以初始就在左边、不会先滑一下） */
-.acc-tabs-thumb.is-second {
-    transform: translateX(calc(100% + 8px));
-}
-
-.acc-tab {
-    flex: 1;
-    padding: 8px 12px;
-    border: none;
-    border-radius: 8px;
-    background-color: transparent;
-    color: #607d8b;
-    font-family: inherit;
-    font-size: 14px;
-    cursor: pointer;
-    transition: color 0.2s;
-    /* 相对定位 + 在 DOM 里位于滑块之后：保证文字画在滑块上面 */
-    position: relative;
-}
-
-.acc-tab:hover {
-    color: #37474f;
-}
-
-/* 选中态只改文字（白底高亮由 .acc-tabs-thumb 提供，所以这里不能再加背景） */
-.acc-tab.is-active {
-    color: #263238;
-    font-weight: bold;
-}
-
-/* ===================== 表单 ===================== */
-
-.acc-field {
-    margin-bottom: 14px;
-}
-
-.acc-field label {
-    display: block;
-    margin-bottom: 4px;
+.acc-info-row dt {
+    flex: 0 0 88px;
     color: #546e7a;
     font-size: 13px;
 }
 
-.acc-field input {
-    width: 100%;
-    padding: 9px 11px;
-    border: 1px solid #cfd8dc;
-    border-radius: 8px;
-    font-family: inherit;
-    font-size: 14px;
-    color: #333;
-    background-color: #ffffff;
-}
-
-.acc-field input:focus {
-    outline: none;
-    border-color: #64b5f6;
-    box-shadow: 0 0 0 3px rgba(100, 181, 246, 0.16);
-}
-
-/* 验证码一行：输入框 + 按钮 */
-.acc-code-row {
-    display: flex;
-    gap: 8px;
-}
-
-.acc-code-row input {
+.acc-info-row dd {
     flex: 1;
+    min-width: 0;
+    overflow-wrap: anywhere;
+    color: #263238;
 }
 
-.acc-code-row .acc-btn {
-    flex: 0 0 auto;
-    white-space: nowrap;
+/* 登录中的设备列表 */
+.acc-sessions {
+    margin-top: 12px;
+    list-style: none;
+}
+
+.acc-session {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 0;
+    border-bottom: 1px solid #eceff1;
+}
+
+.acc-session:last-child {
+    border-bottom: none;
+}
+
+.acc-session-name {
+    font-weight: bold;
+    color: #263238;
+}
+
+.acc-session-meta {
+    flex: 1 1 100%;
+    color: #90a4ae;
+    font-size: 12px;
+}
+
+.acc-badge {
+    padding: 1px 8px;
+    border-radius: 10px;
+    background-color: #e3f2fd;
+    color: #1565c0;
+    font-size: 12px;
 }
 
 /* ===================== 按钮 ===================== */
 
 .acc-btn {
-    padding: 9px 16px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 7px 14px;
     border: 1px solid #d0d0d0;
-    border-radius: 8px;
+    border-radius: 6px;
     background-color: #ffffff;
     color: #37474f;
     font-family: inherit;
-    font-size: 14px;
-    cursor: pointer;
+    font-size: 13px;
+    line-height: 1.6;
     text-decoration: none;
-    text-align: center;
-    transition: background-color 0.2s, border-color 0.2s;
+    white-space: nowrap;
+    cursor: pointer;
+    transition: background-color 0.2s, border-color 0.2s, transform 0.12s;
 }
 
 .acc-btn:hover {
     background-color: #eceff1;
+}
+
+.acc-btn:active {
+    transform: scale(0.98);
 }
 
 .acc-btn:disabled {
@@ -553,7 +617,8 @@ body.acc-page {
 }
 
 .acc-btn-danger {
-    border-color: #ef9a9a;
+    border-color: #e57373;
+    background-color: #ffffff;
     color: #c62828;
 }
 
@@ -561,42 +626,24 @@ body.acc-page {
     background-color: #ffebee;
 }
 
+.acc-btn-sm {
+    padding: 3px 9px;
+    font-size: 12px;
+}
+
 .acc-btn-block {
-    display: block;
+    display: flex;
     width: 100%;
-    margin-top: 4px;
 }
 
 .acc-actions {
     display: flex;
     flex-wrap: wrap;
+    align-items: center;
     gap: 8px;
 }
 
-/* ===================== 提示与信息 ===================== */
-
-.acc-msg {
-    min-height: 20px;
-    margin: 8px 0 4px;
-    font-size: 13px;
-    color: #607d8b;
-}
-
-.acc-msg.is-error {
-    color: #c62828;
-}
-
-.acc-msg.is-ok {
-    color: #2e7d32;
-}
-
-.acc-hint {
-    margin-top: 8px;
-    color: #90a4ae;
-    font-size: 12px;
-}
-
-/* 说明文字里可点击的「注册」：看着像链接，其实是按钮（点了切标签页） */
+/* 长得像链接的按钮（「注册」那两个字） */
 .acc-link-btn {
     padding: 0;
     border: none;
@@ -604,120 +651,194 @@ body.acc-page {
     color: #1565c0;
     font-family: inherit;
     font-size: inherit;
-    line-height: inherit;
     text-decoration: underline;
     cursor: pointer;
 }
 
-.acc-link-btn:hover {
-    color: #0d47a1;
-}
+/* ===================== 表单 ===================== */
 
-/* 提示里出现的代码样式（例如邀请码里的 `-`） */
-.acc-hint code {
-    padding: 0 3px;
-    border-radius: 4px;
-    background-color: #eef2f5;
-    color: #546e7a;
-    font-family: Consolas, "Courier New", monospace;
-}
-
-.acc-info {
-    display: grid;
-    gap: 10px;
-}
-
-.acc-info-row {
+.acc-tabs {
+    position: relative;
     display: flex;
-    gap: 12px;
-    align-items: baseline;
+    margin-bottom: 18px;
+    padding: 3px;
+    border-radius: 8px;
+    background-color: #eceff1;
 }
 
-.acc-info-row dt {
-    flex: 0 0 76px;
-    color: #78909c;
-    font-size: 13px;
+/* 滑动滑块：白底高亮挂在这块底座上，按点击方向滑过去。
+   宽度用百分比算（两个按钮等宽），所以纯 CSS 就能对准，不依赖 JS 量尺寸 */
+.acc-tabs-thumb {
+    position: absolute;
+    top: 3px;
+    bottom: 3px;
+    left: 3px;
+    width: calc(50% - 3px);
+    border-radius: 6px;
+    background-color: #ffffff;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
+    transition: transform 0.22s cubic-bezier(0.22, 0.61, 0.36, 1);
 }
 
-.acc-info-row dd {
+.acc-tabs-thumb.is-second {
+    transform: translateX(100%);
+}
+
+.acc-tab {
+    position: relative;
     flex: 1;
-    word-break: break-all;
+    padding: 7px 0;
+    border: none;
+    background: none;
+    color: #607d8b;
+    font-family: inherit;
+    font-size: 14px;
+    cursor: pointer;
+    transition: color 0.2s;
 }
 
-/* 设备列表 */
-.acc-sessions {
-    list-style: none;
-    /* ⚠️ 这个列表**必须能滚动**：它是页面上唯一「行数由数据决定」的地方。
-       实测开发库里有 86 个活跃会话（反复联调登录攒下来的），不设上限时这一张卡
-       高 3496px、整页 4290px，「可用操作」卡被推到屏幕外，看着像页面坏了。
-       生产环境正常也就几台设备，滚动条根本不出现；一旦出现，反而说明该去清设备了。 */
-    max-height: 264px;
-    overflow-y: auto;
-    overscroll-behavior: contain;
-    /* 滚动条不占位，免得列表右边多出一条 15px 的空白 */
-    scrollbar-width: thin;
-}
-
-/* 标题里的会话计数：让「列表被截断了」这件事有解释。默认隐藏，有一台以上时才出现 */
-.acc-title-count {
-    margin-left: 8px;
-    color: #90a4ae;
-    font-size: 13px;
-    font-weight: normal;
-}
-
-.acc-session {
-    display: flex;
-    align-items: baseline;
-    gap: 10px;
-    padding: 9px 0;
-    border-bottom: 1px dashed #eceff1;
-}
-
-.acc-session:last-child {
-    border-bottom: none;
-}
-
-.acc-session-name {
+.acc-tab.is-active {
+    color: #1565c0;
     font-weight: bold;
 }
 
-.acc-session-meta {
-    color: #90a4ae;
-    font-size: 12px;
+.acc-form[hidden] {
+    display: none;
 }
 
-.acc-badge {
-    padding: 1px 8px;
-    border-radius: 999px;
-    background-color: #e8f5e9;
-    color: #2e7d32;
-    font-size: 12px;
+.acc-field {
+    margin-bottom: 12px;
 }
 
-/* ===================== 页脚 ===================== */
-
-.acc-footer {
-    padding: 20px;
-    color: rgba(236, 239, 241, 0.6);
-    font-size: 12px;
-    text-align: center;
+.acc-field label {
+    display: block;
+    margin-bottom: 4px;
+    color: #546e7a;
+    font-size: 13px;
 }
 
-/* 窄屏适配 */
+.acc-field input[type="text"],
+.acc-field input[type="email"],
+.acc-field input[type="password"] {
+    width: 100%;
+    padding: 8px 10px;
+    border: 1px solid #cfd8dc;
+    border-radius: 6px;
+    background-color: #ffffff;
+    font-family: inherit;
+    font-size: 13px;
+    color: #333;
+}
+
+.acc-field input:focus {
+    outline: none;
+    border-color: #64b5f6;
+}
+
+.acc-code-row {
+    display: flex;
+    gap: 8px;
+}
+
+.acc-code-row input {
+    flex: 1;
+    min-width: 0;
+}
+
+.acc-msg {
+    min-height: 20px;
+    margin-bottom: 8px;
+    color: #607d8b;
+    font-size: 13px;
+}
+
+.acc-msg.is-error { color: #c62828; }
+.acc-msg.is-ok { color: #2e7d32; }
+
+/* ===================== 窄屏 ===================== */
+
+/* 侧栏横过来放在顶部：导航变成一行可横向滚动的条目。
+   为什么不留着竖侧栏挤窄：主区会被压到 200px 出头，账号信息与设备列表都没法看。
+   920px 这个断点取得比较早 —— 侧栏 200 + 主区内容 560 + 两侧留白，再窄就该换了。 */
+@media (max-width: 920px) {
+    .acc-layout {
+        flex-direction: column;
+    }
+
+    .acc-sidebar {
+        width: 100%;
+        flex: 0 0 auto;
+        flex-direction: row;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 10px;
+        padding: 12px 16px;
+        border-right: none;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+    }
+
+    .acc-sidebar-avatar {
+        width: 36px;
+        height: 36px;
+        margin: 0;
+        border-width: 2px;
+    }
+
+    .acc-brand {
+        margin: 0;
+        padding: 0;
+        border-bottom: none;
+    }
+
+    .acc-brand-sub {
+        display: none;
+    }
+
+    /* 导航横向排列，超出就横滑 */
+    .acc-nav {
+        order: 3;
+        flex: 1 1 100%;
+        display: flex;
+        overflow-x: auto;
+    }
+
+    .acc-nav-item {
+        padding: 8px 14px;
+        border-left: none;
+        border-bottom: 2px solid transparent;
+        white-space: nowrap;
+    }
+
+    .acc-nav-item.is-active {
+        border-left-color: transparent;
+        border-bottom-color: #64b5f6;
+    }
+
+    .acc-nav-note {
+        float: none;
+        margin-left: 4px;
+    }
+
+    .acc-sidebar-footer {
+        flex-direction: row;
+        gap: 14px;
+        margin: 0 0 0 auto;
+        padding: 0;
+        border-top: none;
+    }
+
+    .acc-topbar {
+        padding: 12px 16px;
+    }
+
+    .acc-content {
+        padding: 16px 16px 32px;
+    }
+}
+
 @media (max-width: 520px) {
-    .acc-card {
-        padding: 18px 16px;
-    }
-
-    .acc-hero {
-        gap: 12px;
-    }
-
-    .acc-hero-avatar {
-        width: 60px;
-        height: 60px;
-        border-radius: 15px;
+    .acc-gate-box {
+        padding: 20px 16px 16px;
     }
 
     .acc-info-row {
@@ -726,5 +847,9 @@ body.acc-page {
 
     .acc-info-row dt {
         margin-bottom: 2px;
+    }
+
+    .acc-user {
+        display: none; /* 顶栏太挤时先让位给标题与按钮 */
     }
 }

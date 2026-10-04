@@ -44,13 +44,19 @@ body {
     width: 64px;
     height: 64px;
     transform: translateY(-50%);
-    border-radius: 12px;
+    /* 圆角矩形（9px）：原来就是这个形状，别改成正圆 ——
+       个人中心那颗（.acc-sidebar-avatar）也是圆角矩形，两者的圆角比例一致
+       （9/64 = 6/40），所以「飞进侧栏」那段只在位置与大小上过渡。
+       ⚠️ 改这里的值要同步改 account/account.css 的 .acc-sidebar-avatar：
+          main.js 的 morphTarget() 会读那边的 border-radius 并按半径比例缩放，
+          两边比例不一致的话，飞行途中会看到圆角自己「化」一下。 */
+    border-radius: 9px;
     border: 3px solid #ffffff;
     background-color: #ffffff;
     box-shadow: 4px 4px 10px rgba(0, 0, 0, 0.5),
                 0 0 8px rgba(0, 0, 0, 0.15);
     /* 登录态小圆点要挂在圆角外面，所以不能在容器上裁剪。
-       图片自己的圆角由 .avatar 的 border-radius 负责（62px 容器内径 + 边框=9px 圆角） */
+       图片自己的圆角由 .avatar 的 border-radius 负责（跟容器是同一个比例） */
     overflow: visible;
     z-index: 101;
     padding: 0;
@@ -98,75 +104,45 @@ body {
     display: block;
 }
 
-/* 过场期间（正反两个方向都用）：只提供「过渡」与「裁剪」，不改外观。
-   外观由 .is-flying（胶囊）或元素自身的样式（头像）决定 —— 拆成两个类是为了让
-   **反向**也能有过渡：反向时要摘掉 .is-flying 让外观变回头像，如果过渡挂在
-   .is-flying 上，摘掉的那一刻过渡就没了，边框/圆角/底色会硬切。
+/* 过场期间（正反两个方向都用）：只提供「过渡」，不改外观。
+   外观由元素自身的样式（头像：白边 + 白底 + 圆角矩形）决定，正反两个方向完全对称 ——
+   起点是导航栏那颗 64×64（圆角 9px），终点是个人中心侧栏那颗 40×40（圆角 6px），
+   中间改 left/top/宽/高，圆角按半径比例一起缩（比例一致，所以看不出「化」）。
    时长必须与 .avatar-zoom 的扩散一致（460ms），两件事是同时发生的。 */
 .rounded-square.is-morphing {
     transition: top 0.46s cubic-bezier(0.33, 0, 0.2, 1),
                 left 0.46s cubic-bezier(0.33, 0, 0.2, 1),
                 width 0.46s cubic-bezier(0.33, 0, 0.2, 1),
                 height 0.46s cubic-bezier(0.33, 0, 0.2, 1),
+                /* ⚠️ 圆角必须在这条过渡里：终点那颗的半径与起点不同（9px → 6px），
+                   不写的话它会**瞬间**跳到终值，看着像「起飞时抖了一下」。 */
                 border-radius 0.46s cubic-bezier(0.33, 0, 0.2, 1),
                 border-width 0.46s linear,
                 border-color 0.46s linear,
                 background-color 0.46s linear,
                 box-shadow 0.46s linear;
-    /* 形状与底色都在变，提升成独立合成层，否则每帧都要重绘 */
-    will-change: top, left, width, height, border-radius, background-color;
-    /* 变窄的那段时间会把文字裁掉，看起来像胶囊展开时把字「吐」出来；
-       反向缩回去时也靠它把字收掉（否则文字会露在胶囊外面） */
+    /* 位置与尺寸都在变，提升成独立合成层，否则每帧都要重绘 */
+    will-change: top, left, width, height, background-color;
+    /* 变小/变大的那段时间会把白边外的东西裁掉；过场里这个按钮不该再响应悬停 */
     overflow: hidden;
+    pointer-events: none;
 }
 
-/* 胶囊的样子：正向形变的目标 = 反向形变的起点。
-   ⚠️ 必须与 account.css 的 .acc-home-btn 完全一致，否则换页那一下会看到跳变。 */
+/* 过场期间的临时外观：与**终点**（个人中心侧栏那颗头像）一致，
+   区别只是导航栏那颗还带着投影，飞过去的一路上淡掉。
+   ⚠️ 必须与 account.css 的 .acc-sidebar-avatar 对应：3px 白边、白底、圆角矩形、无投影。
+   ⚠️ 这里**不写 border-radius** —— 圆角由起点/终点各自的规则决定、由 is-morphing 过渡；
+      写死一个值会在过场一开始就把圆角顶掉（原来写的是 50%，配合正圆头像看不出来，
+      改回圆角矩形之后就会当场「方一下再变圆角」）。 */
 .rounded-square.is-flying {
-    border-width: 1px;
-    border-color: rgba(255, 255, 255, 0.32);
-    border-radius: 999px;
-    background-color: rgba(255, 255, 255, 0.12);
+    border-width: 3px;
+    border-color: #ffffff;
+    background-color: #ffffff;
     box-shadow: none;
-}
-
-.rounded-square.is-flying .avatar {
-    opacity: 0;
 }
 
 .rounded-square.is-flying .avatar-dot {
     opacity: 0;
-}
-
-.rounded-square.is-flying .avatar-morph-label {
-    opacity: 1;
-}
-
-/* 形变后露出的文字。⚠️ 排版必须与 account.css 的 .acc-home-btn 一致：
-   都是 flex + gap 6px + 左右内边距 14px，箭头 14px、文字 13px ——
-   这样胶囊落地后文字停在同一个位置，换页看不出接缝。 */
-.avatar-morph-label {
-    position: absolute;
-    left: 0;
-    right: 0;
-    top: 0;
-    bottom: 0;
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    padding: 0 14px;
-    color: #ffffff;
-    font-size: 13px;
-    line-height: 1;
-    white-space: nowrap;
-    opacity: 0;
-    pointer-events: none;
-    transition: opacity 0.28s linear;
-}
-
-.avatar-morph-arrow {
-    font-size: 14px;
-    line-height: 1;
 }
 
 /* 导航项容器：绝对定位，左侧 144px = 头像左 30 + 宽 64 + 间距 50。
@@ -210,8 +186,9 @@ body {
 
 /* 头像照片：填满容器，object-fit: cover 保持比例裁切。
    圆角必须由图片自己裁：容器的 overflow 是 visible（要给登录态圆点留位置），
-   9px = 容器圆角 12px − 边框 3px，正好贴合容器内沿。
-   这里的 opacity 过渡是过场里照片的淡入淡出，与 .avatar-morph-label 时长一致 */
+   9px 与容器 .rounded-square 同款 —— 两边的圆角比例一致，所以过场里照片不用单独换。
+   这里的 opacity 过渡是过场里照片的淡入淡出（0.28s，比 460ms 的形变快一点，
+   看起来是「照片先到位、白边随后收拢」） */
 .avatar {
     width: 100%;
     height: 100%;

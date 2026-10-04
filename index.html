@@ -30,10 +30,6 @@
                  getBoundingClientRect（main.js:298），与图片无关；恢复只需把 src 改回
                  image/avatar.png（原图 2.6MB 一直留在 image/ 里没删）。 -->
             <img src="image/avatar-blank.png" alt="头像" class="avatar">
-            <!-- 过场里头像会长成「返回主页面」胶囊，这行字就是那时候露出来的内容。
-                 ⚠️ 结构与字号必须与 account/index.html 的 .acc-home-btn 一致（那边是
-                 「箭头 span + 文字」），否则换页那一帧会看到文字微跳。 -->
-            <span class="avatar-morph-label" aria-hidden="true"><span class="avatar-morph-arrow">←</span> 返回主页面</span>
             <!-- 登录态小圆点：已登录时由 main.js 给按钮挂 is-signed 类点亮 -->
             <span class="avatar-dot" id="navAvatarDot" aria-hidden="true"></span>
         </button>
@@ -59,6 +55,24 @@
         <p class="placeholder-text">请选择一个科目查看内容</p>
     </div>
     <!-- 放 body 末尾：脚本执行时上面的 DOM 已经就位 -->
+    <!-- 后台与个人中心的样式表（首页本身不用，读一遍只是为了「点头像」那一刻的形变）：
+         main.js 要量出个人中心侧栏那颗头像的尺寸与位置，靠的是**真样式表** +
+         临时插进来的两个探针元素。不预读的话那段会量到未经样式处理的值（回退是 40px 那颗），
+         窄屏下会差 4px。动态插入（而不是直接写 <link>）有两个理由：
+           · 不阻塞首页的首次渲染与 main.js 的执行（文件本身也只有 19KB）
+           · 万一加载失败，onerror 一吞即可，绝不影响首页 —— 形变会按兜底值走
+         两条路径都是相对于**文档**解析的，所以同一个相对地址在本页也有效。 -->
+    <script>
+        ['account/account.css'].forEach(function (href) {
+            window.addEventListener('load', function () {
+                var link = document.createElement('link');
+                link.rel = 'stylesheet';
+                link.href = href;
+                link.onerror = function () { /* 拿不到就按兜底值量，不打扰用户 */ };
+                document.head.appendChild(link);
+            });
+        });
+    </script>
     <script src="main.js"></script>
 </body>
 </html>
