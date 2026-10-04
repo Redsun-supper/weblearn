@@ -25,6 +25,11 @@ path = "src/bin/seed_admin.rs"
 name = "invite"
 path = "src/bin/invite.rs"
 
+# 发邮件验收（P0-3）：用与账号服务同一份配置真发一封测试邮件
+[[bin]]
+name = "mail-test"
+path = "src/bin/mail_test.rs"
+
 [dependencies]
 # HTTP 框架（0.8 起路径参数写作 {id}，不再是 :id）
 axum = "0.8"

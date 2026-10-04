@@ -52,6 +52,13 @@ async fn run() -> Result<(), String> {
 
     let state = AppState::init(cfg).await.map_err(|e| e.to_string())?;
 
+    // 发邮件的启动期自检：只连 TCP，不登录不发信。⚠️ 失败只告警 —— SMTP 挂了不该让
+    // 已经登录的用户也用不了站点（他们只是注册收不到码而已）。
+    let mail_check = match &state.cfg.mail.mode {
+        MailMode::Smtp => guangxue_auth::mail::preflight(&state.cfg).await,
+        MailMode::Log => None,
+    };
+
     // 初始管理员：幂等。
     // ⚠️ 用的是 `ensure_super_admin`：把 `AUTH_ADMIN_EMAIL` 那个账号**确保为超级管理员**
     // （账号不存在就建、是 admin 就提权、已经是超管就什么都不做）。
@@ -78,6 +85,15 @@ async fn run() -> Result<(), String> {
     println!("  监听地址    : http://{addr}");
     println!("  数据库      : {db_path}");
     println!("  邮件模式    : {mail_mode}");
+    match &mail_check {
+        // 连不上只是告警：服务照常起，用户照样能登录（发不出码另说）
+        Some(msg) if msg.starts_with("能连上") => println!("  邮件自检    : {msg}"),
+        Some(msg) => {
+            println!("  邮件自检    : ⚠️ {msg}");
+            tracing::warn!(detail = %msg, "SMTP 启动自检未通过");
+        }
+        None => {}
+    }
     println!("  会话有效期  : access {access_ttl} 秒 / refresh {refresh_days} 天");
     println!("  Cookie      : HttpOnly + SameSite=Lax{}", if cookie_secure { " + Secure" } else { "" });
     println!("  允许来源    : {}", state.cfg.allowed_origins.join(", "));

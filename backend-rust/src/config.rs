@@ -65,6 +65,48 @@ pub enum MailMode {
     Smtp,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SmtpTls {
+    /// 25 端口那种明文 SMTP（只在明确知道自己在做什么时用）
+    None,
+    /// 587 端口那种「先明文、再 STARTTLS 升级」
+    StartTls,
+    /// 465 端口那种「一连上就是 TLS」（QQ / 163 邮箱都是这个）
+    #[default]
+    Implicit,
+}
+
+impl SmtpTls {
+    /// 从配置值解析。`tls` 与 `implicit` 是同一个意思 —— 两种写法都在用
+    ///（`.env.example` 与上线计划里写的是 `implicit`，代码默认值写的是 `tls`），
+    /// 所以两个都收，其余一律报错：**未知值绝不能静默按「隐式 TLS」处理**，
+    /// 否则配错模式的表现会变成「连接超时」这种查不出原因的症状。
+    pub fn parse(raw: &str) -> Result<Self, String> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "" | "tls" | "implicit" | "implicit_tls" | "ssl" => Ok(SmtpTls::Implicit),
+            "starttls" | "start_tls" | "explicit" => Ok(SmtpTls::StartTls),
+            "none" | "plain" | "insecure" => Ok(SmtpTls::None),
+            other => Err(format!(
+                "AUTH_SMTP_TLS 只能是 tls（= implicit，465 用）/ starttls（587 用）/ none（25 用），收到：{other}"
+            )),
+        }
+    }
+
+    /// 给启动横幅与日志看的名字
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SmtpTls::None => "none",
+            SmtpTls::StartTls => "starttls",
+            SmtpTls::Implicit => "implicit",
+        }
+    }
+
+    /// 是否加密（选默认端口时用得上）
+    pub fn is_encrypted(self) -> bool {
+        !matches!(self, SmtpTls::None)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct SmtpConfig {
     pub host: String,
@@ -72,9 +114,33 @@ pub struct SmtpConfig {
     pub username: String,
     pub password: String,
     pub from: String,
-    /// tls / starttls / none
-    pub tls: String,
+    pub tls: SmtpTls,
     pub timeout: Duration,
+}
+
+impl SmtpConfig {
+    /// 校验 `AUTH_SMTP_FROM`。
+    ///
+    /// 为什么要在**启动时**查：`lettre` 要到「发第一封邮件」时才解析发件人，配错了的表现
+    /// 会是「服务正常启动、用户点了发送才报错」—— 上线最不想遇到的失败方式。
+    ///
+    /// 这里只做**拒绝**、不做任何「纠正」：把发件人悄悄改成别的地址，比直接报错难查得多。
+    /// 合法的两种写法都收：纯地址 `no-reply@example.com`，带显示名 `广学 <no-reply@example.com>`
+    ///（中文显示名由 `lettre` 按 RFC 2047 编码，实测可用）。
+    pub fn from_mailbox(raw: &str) -> Result<String, String> {
+        use lettre::message::Mailbox;
+        let raw = raw.trim();
+        if raw.is_empty() {
+            return Err("AUTH_SMTP_FROM 不能是空的".to_string());
+        }
+        if raw.parse::<Mailbox>().is_ok() {
+            return Ok(raw.to_string());
+        }
+        Err(format!(
+            "AUTH_SMTP_FROM 不是合法邮箱：{raw}。可以写纯地址 no-reply@example.com，\
+             或标准写法 广学 <no-reply@example.com>（显示名两侧要有 <>）"
+        ))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -191,26 +257,34 @@ impl Config {
     /// 从环境变量加载（会先读同目录 `.env`，方便本地开发）
     pub fn from_env() -> Result<Self, String> {
         let _ = dotenvy::dotenv();
+        Self::from_lookup(&|key| std::env::var(key).ok())
+    }
 
+    /// 真正的解析逻辑：环境变量从 `lookup` 里取。
+    /// 之所以把它与环境变量解耦，是为了**能测**——`std::env::set_var` 在 Rust 2024 起是
+    /// unsafe 的（多线程下改环境有数据竞争），测试里塞一张表进来就没这个问题。
+    pub fn from_lookup(lookup: &dyn Fn(&str) -> Option<String>) -> Result<Self, String> {
         let mut cfg = Config::development();
-        cfg.env = env_str("APP_ENV", &cfg.env);
-        cfg.host = env_str("AUTH_HOST", &cfg.host);
-        cfg.port = env_parse("AUTH_PORT", cfg.port)?;
-        cfg.db_path = env_str("AUTH_DB_PATH", &cfg.db_path);
-        cfg.access_ttl = Duration::from_secs(env_parse("AUTH_ACCESS_TTL_SECONDS", cfg.access_ttl.as_secs())?);
-        cfg.refresh_ttl =
-            Duration::from_secs(env_parse("AUTH_REFRESH_TTL_DAYS", cfg.refresh_ttl_days())? as u64 * 86400);
-        cfg.code_ttl = Duration::from_secs(env_parse("AUTH_CODE_TTL_SECONDS", cfg.code_ttl.as_secs())?);
+        cfg.env = env_str(lookup, "APP_ENV", &cfg.env);
+        cfg.host = env_str(lookup, "AUTH_HOST", &cfg.host);
+        cfg.port = env_parse(lookup, "AUTH_PORT", cfg.port)?;
+        cfg.db_path = env_str(lookup, "AUTH_DB_PATH", &cfg.db_path);
+        cfg.access_ttl =
+            Duration::from_secs(env_parse(lookup, "AUTH_ACCESS_TTL_SECONDS", cfg.access_ttl.as_secs())?);
+        cfg.refresh_ttl = Duration::from_secs(
+            env_parse(lookup, "AUTH_REFRESH_TTL_DAYS", cfg.refresh_ttl_days())? as u64 * 86400,
+        );
+        cfg.code_ttl = Duration::from_secs(env_parse(lookup, "AUTH_CODE_TTL_SECONDS", cfg.code_ttl.as_secs())?);
         cfg.argon2 = Argon2Config {
-            m_cost: env_parse("AUTH_ARGON2_M_COST", cfg.argon2.m_cost)?,
-            t_cost: env_parse("AUTH_ARGON2_T_COST", cfg.argon2.t_cost)?,
-            p_cost: env_parse("AUTH_ARGON2_P_COST", cfg.argon2.p_cost)?,
+            m_cost: env_parse(lookup, "AUTH_ARGON2_M_COST", cfg.argon2.m_cost)?,
+            t_cost: env_parse(lookup, "AUTH_ARGON2_T_COST", cfg.argon2.t_cost)?,
+            p_cost: env_parse(lookup, "AUTH_ARGON2_P_COST", cfg.argon2.p_cost)?,
         };
-        cfg.lock_threshold = env_parse_i64("AUTH_LOCK_THRESHOLD", cfg.lock_threshold)?;
-        cfg.lock_minutes = env_parse_i64("AUTH_LOCK_MINUTES", cfg.lock_minutes)?;
+        cfg.lock_threshold = env_parse_i64(lookup, "AUTH_LOCK_THRESHOLD", cfg.lock_threshold)?;
+        cfg.lock_minutes = env_parse_i64(lookup, "AUTH_LOCK_MINUTES", cfg.lock_minutes)?;
 
         // 密钥：生产必须显式提供；开发缺失则随机生成（重启后旧令牌失效，并打印告警）
-        match env_opt("AUTH_JWT_SECRET") {
+        match env_opt(lookup, "AUTH_JWT_SECRET") {
             Some(secret) => {
                 cfg.jwt_secret = secret.into_bytes();
                 cfg.jwt_secret_is_default = false;
@@ -225,16 +299,16 @@ impl Config {
                 cfg.jwt_secret_is_default = true;
             }
         }
-        cfg.code_pepper = match env_opt("AUTH_CODE_PEPPER") {
+        cfg.code_pepper = match env_opt(lookup, "AUTH_CODE_PEPPER") {
             Some(p) => p.into_bytes(),
             None => cfg.jwt_secret.clone(),
         };
 
         // Cookie
         let default_secure = cfg.is_production();
-        cfg.cookie_secure = env_parse_bool("AUTH_COOKIE_SECURE", default_secure)?;
-        cfg.cookie_domain = env_opt("AUTH_COOKIE_DOMAIN");
-        if let Some(list) = env_opt("AUTH_ALLOWED_ORIGINS") {
+        cfg.cookie_secure = env_parse_bool(lookup, "AUTH_COOKIE_SECURE", default_secure)?;
+        cfg.cookie_domain = env_opt(lookup, "AUTH_COOKIE_DOMAIN");
+        if let Some(list) = env_opt(lookup, "AUTH_ALLOWED_ORIGINS") {
             cfg.allowed_origins = list
                 .split(',')
                 .map(|s| s.trim().to_string())
@@ -243,34 +317,43 @@ impl Config {
         }
 
         // 邮件
-        let mode = env_str("AUTH_MAIL_MODE", "log").to_ascii_lowercase();
+        let mode = env_str(lookup, "AUTH_MAIL_MODE", "log").to_ascii_lowercase();
         cfg.mail = match mode.as_str() {
             "log" => MailConfig { mode: MailMode::Log, smtp: None },
             "smtp" => {
-                let host = env_opt("AUTH_SMTP_HOST")
+                // ⚠️ SMTP 这几项**只去两侧空白，不把「只有一个空格」当成没配**：
+                // 授权码有可能真的带空格，而被静默 trim 掉的密码会变成一个
+                // 完全误导人的「认证失败」。
+                let host = env_opt_keep_inner(lookup, "AUTH_SMTP_HOST")
                     .ok_or_else(|| "AUTH_MAIL_MODE=smtp 时必须提供 AUTH_SMTP_HOST".to_string())?;
-                let username = env_opt("AUTH_SMTP_USERNAME")
+                let username = env_opt_keep_inner(lookup, "AUTH_SMTP_USERNAME")
                     .ok_or_else(|| "AUTH_MAIL_MODE=smtp 时必须提供 AUTH_SMTP_USERNAME".to_string())?;
-                let password = env_opt("AUTH_SMTP_PASSWORD")
-                    .ok_or_else(|| "AUTH_MAIL_MODE=smtp 时必须提供 AUTH_SMTP_PASSWORD（邮箱 SMTP 授权码）".to_string())?;
-                let from = env_opt("AUTH_SMTP_FROM").unwrap_or_else(|| username.clone());
+                let password = env_opt_keep_inner(lookup, "AUTH_SMTP_PASSWORD").ok_or_else(|| {
+                    "AUTH_MAIL_MODE=smtp 时必须提供 AUTH_SMTP_PASSWORD（邮箱 SMTP 授权码）".to_string()
+                })?;
+                let from = env_opt(lookup, "AUTH_SMTP_FROM").unwrap_or_else(|| username.clone());
+                // 发件人地址在这里就验一遍：`lettre` 要到**发第一封邮件时**才会解析它，
+                // 那意味着哪怕配错了也是「服务正常启动、用户点发送才失败」——
+                // 这正是上线最不想遇到的失败方式（见 SmtpConfig::from_mailbox）。
+                let from = SmtpConfig::from_mailbox(&from)?;
+                let tls = SmtpTls::parse(&env_str(lookup, "AUTH_SMTP_TLS", "tls"))?;
                 MailConfig {
                     mode: MailMode::Smtp,
                     smtp: Some(SmtpConfig {
                         host,
-                        port: env_parse("AUTH_SMTP_PORT", 465u16)?,
+                        port: env_parse(lookup, "AUTH_SMTP_PORT", default_smtp_port(tls))?,
                         username,
                         password,
                         from,
-                        tls: env_str("AUTH_SMTP_TLS", "tls").to_ascii_lowercase(),
-                        timeout: Duration::from_secs(env_parse("AUTH_SMTP_TIMEOUT_SECONDS", 15u64)?),
+                        tls,
+                        timeout: Duration::from_secs(env_parse(lookup, "AUTH_SMTP_TIMEOUT_SECONDS", 15u64)?),
                     }),
                 }
             }
             other => return Err(format!("AUTH_MAIL_MODE 只能是 log 或 smtp，收到：{other}")),
         };
 
-        cfg.dev_endpoints = env_parse_bool("AUTH_DEV_ENDPOINTS", cfg.is_dev())?;
+        cfg.dev_endpoints = env_parse_bool(lookup, "AUTH_DEV_ENDPOINTS", cfg.is_dev())?;
         if cfg.is_production() && cfg.dev_endpoints {
             return Err("生产环境不允许开启 AUTH_DEV_ENDPOINTS（调试接口会泄露验证码）".to_string());
         }
@@ -278,11 +361,11 @@ impl Config {
         // P0-2：强制邀请码注册。默认 false（本地开发方便），生产用 AUTH_REQUIRE_INVITE=true 打开。
         // ⚠️ 刻意**不**做成「生产默认 true」：默认值必须是显式的，
         // 否则「忘了配」与「故意关掉」在配置里长得一模一样。
-        cfg.require_invite = env_parse_bool("AUTH_REQUIRE_INVITE", cfg.require_invite)?;
+        cfg.require_invite = env_parse_bool(lookup, "AUTH_REQUIRE_INVITE", cfg.require_invite)?;
 
         // 管理员
-        cfg.admin_email = env_str("AUTH_ADMIN_EMAIL", &cfg.admin_email);
-        cfg.admin_password = match env_opt("AUTH_ADMIN_PASSWORD") {
+        cfg.admin_email = env_str(lookup, "AUTH_ADMIN_EMAIL", &cfg.admin_email);
+        cfg.admin_password = match env_opt(lookup, "AUTH_ADMIN_PASSWORD") {
             Some(p) => {
                 cfg.admin_password_is_default = p == DEFAULT_ADMIN_PASSWORD;
                 if cfg.is_production() && cfg.admin_password_is_default {
@@ -301,7 +384,7 @@ impl Config {
                 }
             }
         };
-        cfg.seed_admin = env_parse_bool("AUTH_SEED_ADMIN", cfg.is_dev())?;
+        cfg.seed_admin = env_parse_bool(lookup, "AUTH_SEED_ADMIN", cfg.is_dev())?;
         if cfg.seed_admin && cfg.admin_password.is_none() {
             return Err("AUTH_SEED_ADMIN=true 时必须提供 AUTH_ADMIN_PASSWORD".to_string());
         }
@@ -310,19 +393,39 @@ impl Config {
     }
 }
 
-fn env_opt(key: &str) -> Option<String> {
-    std::env::var(key)
-        .ok()
+/// 没配 `AUTH_SMTP_PORT` 时按加密方式挑默认端口：隐式 TLS 用 465、STARTTLS 用 587、
+/// 明文用 25。按端口判据挑也行，但那样「465 + starttls」这种组合会被默默改成别的端口，
+/// 反而看不出配错。
+fn default_smtp_port(tls: SmtpTls) -> u16 {
+    match tls {
+        SmtpTls::Implicit => 465,
+        SmtpTls::StartTls => 587,
+        SmtpTls::None => 25,
+    }
+}
+
+fn env_opt(lookup: &dyn Fn(&str) -> Option<String>, key: &str) -> Option<String> {
+    lookup(key)
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty())
 }
 
-fn env_str(key: &str, default: &str) -> String {
-    env_opt(key).unwrap_or_else(|| default.to_string())
+/// 与 `env_opt` 的区别：**只去两侧空白，空串仍算「配了」**。
+/// 给 SMTP 凭据用 —— 见 `from_lookup` 里的说明。
+fn env_opt_keep_inner(lookup: &dyn Fn(&str) -> Option<String>, key: &str) -> Option<String> {
+    lookup(key).map(|v| v.trim().to_string())
 }
 
-fn env_parse<T: std::str::FromStr>(key: &str, default: T) -> Result<T, String> {
-    match env_opt(key) {
+fn env_str(lookup: &dyn Fn(&str) -> Option<String>, key: &str, default: &str) -> String {
+    env_opt(lookup, key).unwrap_or_else(|| default.to_string())
+}
+
+fn env_parse<T: std::str::FromStr>(
+    lookup: &dyn Fn(&str) -> Option<String>,
+    key: &str,
+    default: T,
+) -> Result<T, String> {
+    match env_opt(lookup, key) {
         None => Ok(default),
         Some(raw) => raw
             .parse::<T>()
@@ -330,17 +433,244 @@ fn env_parse<T: std::str::FromStr>(key: &str, default: T) -> Result<T, String> {
     }
 }
 
-fn env_parse_i64(key: &str, default: i64) -> Result<i64, String> {
-    env_parse(key, default)
+fn env_parse_i64(lookup: &dyn Fn(&str) -> Option<String>, key: &str, default: i64) -> Result<i64, String> {
+    env_parse(lookup, key, default)
 }
 
-fn env_parse_bool(key: &str, default: bool) -> Result<bool, String> {
-    match env_opt(key) {
+fn env_parse_bool(
+    lookup: &dyn Fn(&str) -> Option<String>,
+    key: &str,
+    default: bool,
+) -> Result<bool, String> {
+    match env_opt(lookup, key) {
         None => Ok(default),
         Some(raw) => match raw.to_ascii_lowercase().as_str() {
             "1" | "true" | "yes" | "on" => Ok(true),
             "0" | "false" | "no" | "off" => Ok(false),
             other => Err(format!("环境变量 {key} 只能是 true/false，收到：{other}")),
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 拿一张表当环境变量用：`from_lookup` 就是为这个解耦的
+    ///（`std::env::set_var` 在 Rust 2024 起是 unsafe 的，测试里改环境有数据竞争）。
+    /// ⚠️ 同名键**后写的赢**，这样用例可以先铺一份 smtp_base() 再逐项覆盖。
+    fn from_pairs(pairs: &[(&str, &str)]) -> Result<Config, String> {
+        let pairs: Vec<(String, String)> =
+            pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        Config::from_lookup(&move |key| {
+            pairs.iter().rev().find(|(k, _)| k == key).map(|(_, v)| v.clone())
+        })
+    }
+
+    /// 一份绕过邮件校验的最小 SMTP 配置（各用例在此基础上加变量）
+    fn smtp_base() -> Vec<(&'static str, &'static str)> {
+        vec![
+            ("AUTH_MAIL_MODE", "smtp"),
+            ("AUTH_SMTP_HOST", "smtp.qq.com"),
+            ("AUTH_SMTP_USERNAME", "no-reply@qq.com"),
+            ("AUTH_SMTP_PASSWORD", "授权码不是登录密码"),
+        ]
+    }
+
+    fn smtp_of(cfg: &Config) -> &SmtpConfig {
+        cfg.mail.smtp.as_ref().expect("smtp 模式下必然有配置")
+    }
+
+    #[test]
+    fn mail_mode_defaults_to_log() {
+        let cfg = from_pairs(&[]).expect("默认配置要能加载");
+        assert_eq!(cfg.mail.mode, MailMode::Log);
+        assert!(cfg.mail.smtp.is_none(), "log 模式不该带 SMTP 配置");
+    }
+
+    #[test]
+    fn smtp_mode_requires_host_username_password() {
+        // 三个必需项各缺一次，报错要点名是哪一项 —— 否则部署时只能靠猜
+        for (missing, expected) in [
+            ("AUTH_SMTP_HOST", "AUTH_SMTP_HOST"),
+            ("AUTH_SMTP_USERNAME", "AUTH_SMTP_USERNAME"),
+            ("AUTH_SMTP_PASSWORD", "AUTH_SMTP_PASSWORD"),
+        ] {
+            let pairs: Vec<(&str, &str)> =
+                smtp_base().into_iter().filter(|(k, _)| *k != missing).collect();
+            let err = from_pairs(&pairs).expect_err("缺 {missing} 时必须报错");
+            assert!(err.contains(expected), "报错要点名缺的是 {missing}，实际：{err}");
+        }
+    }
+
+    #[test]
+    fn smtp_from_defaults_to_username_and_accepts_display_name() {
+        // 不配 AUTH_SMTP_FROM 时用登录账号当发件人（多数邮箱只允许这样）
+        let cfg = from_pairs(&smtp_base()).expect("加载");
+        assert_eq!(smtp_of(&cfg).from, "no-reply@qq.com");
+
+        // 标准写法（纯地址）与带显示名的写法都要能用
+        for from in ["广学 <no-reply@qq.com>", "Guangxue <no-reply@qq.com>", "no-reply@qq.com"] {
+            let mut pairs = smtp_base();
+            pairs.push(("AUTH_SMTP_FROM", from));
+            let cfg = from_pairs(&pairs).unwrap_or_else(|e| panic!("{from} 应当合法，却报：{e}"));
+            assert_eq!(smtp_of(&cfg).from, from);
+        }
+    }
+
+    #[test]
+    fn smtp_from_rejects_bad_mailbox_at_startup() {
+        // ⚠️ 这条是重点：lettre 要到发第一封信时才解析发件人，配错了会变成
+        //「服务正常启动、用户点发送才失败」—— 所以必须在加载配置时就拦住
+        for bad in ["这不是邮箱", "no-reply@", "<no-reply@qq.com", "no-reply@qq.com>", "@qq.com"] {
+            let mut pairs = smtp_base();
+            pairs.push(("AUTH_SMTP_FROM", bad));
+            let err = from_pairs(&pairs)
+                .err()
+                .unwrap_or_else(|| panic!("{bad} 应当被判为非法发件人"));
+            assert!(err.contains("AUTH_SMTP_FROM"), "报错要点名配置项：{err}");
+        }
+    }
+
+    #[test]
+    fn smtp_tls_accepts_documented_spellings() {
+        for (raw, want) in [
+            ("tls", SmtpTls::Implicit),
+            ("implicit", SmtpTls::Implicit),      // 上线计划与 .env.example 里写的是这个
+            ("IMPLICIT", SmtpTls::Implicit),      // 大小写不敏感
+            (" starttls ", SmtpTls::StartTls),    // 两侧空格要容忍（.env 里很常见）
+            ("none", SmtpTls::None),
+        ] {
+            let mut pairs = smtp_base();
+            pairs.push(("AUTH_SMTP_TLS", raw));
+            let cfg = from_pairs(&pairs).unwrap_or_else(|e| panic!("{raw} 应当合法，却报：{e}"));
+            assert_eq!(smtp_of(&cfg).tls, want, "AUTH_SMTP_TLS={raw} 解析错了");
+        }
+    }
+
+    #[test]
+    fn smtp_tls_rejects_unknown_value_instead_of_guessing() {
+        // 未知值**不能**静默按隐式 TLS 处理：如果本意是 587 + starttls，
+        // 静默走隐式 TLS 的表现是「连接超时」，根本查不出配错了
+        let err = SmtpTls::parse("ssl-on").expect_err("未知值必须报错");
+        assert!(err.contains("starttls"), "报错要把可选项列出来：{err}");
+        assert!(err.contains("implicit"), "报错要把可选项列出来：{err}");
+
+        let mut pairs = smtp_base();
+        pairs.push(("AUTH_SMTP_TLS", "ssl-on"));
+        assert!(from_pairs(&pairs).is_err(), "非法 TLS 模式必须启动即失败");
+    }
+
+    #[test]
+    fn smtp_port_defaults_follow_the_tls_mode() {
+        // 465 隐式 TLS 是默认（QQ / 163 都是它）
+        let cfg = from_pairs(&smtp_base()).expect("加载");
+        assert_eq!(smtp_of(&cfg).port, 465);
+
+        // 换成 starttls / none 时默认端口跟着变 —— 但**显式写了端口就以显式为准**
+        for (raw, want) in [("starttls", 587u16), ("none", 25)] {
+            let mut pairs = smtp_base();
+            pairs.push(("AUTH_SMTP_TLS", raw));
+            let cfg = from_pairs(&pairs).expect("加载");
+            assert_eq!(smtp_of(&cfg).port, want, "AUTH_SMTP_TLS={raw} 的默认端口不对");
+        }
+
+        let mut pairs = smtp_base();
+        pairs.push(("AUTH_SMTP_TLS", "starttls"));
+        pairs.push(("AUTH_SMTP_PORT", "2525")); // 自建中继常用非标准端口
+        let cfg = from_pairs(&pairs).expect("加载");
+        assert_eq!(smtp_of(&cfg).port, 2525, "显式端口不该被默认值覆盖");
+    }
+
+    #[test]
+    fn smtp_port_and_timeout_must_be_numbers() {
+        let mut pairs = smtp_base();
+        pairs.push(("AUTH_SMTP_PORT", "465端口"));
+        let err = from_pairs(&pairs).expect_err("端口不是数字要报错");
+        assert!(err.contains("AUTH_SMTP_PORT"), "报错要点名配置项：{err}");
+
+        let mut pairs = smtp_base();
+        pairs.push(("AUTH_SMTP_TIMEOUT_SECONDS", "很快"));
+        let err = from_pairs(&pairs).expect_err("超时不是数字要报错");
+        assert!(err.contains("AUTH_SMTP_TIMEOUT_SECONDS"), "报错要点名配置项：{err}");
+    }
+
+    #[test]
+    fn mail_mode_typo_is_reported_with_the_received_value() {
+        let err = from_pairs(&[("AUTH_MAIL_MODE", "smtps")]).expect_err("拼错要报错");
+        assert!(err.contains("smtps"), "报错要带上收到的值，方便看出拼错在哪：{err}");
+    }
+
+    #[test]
+    fn smtp_credentials_are_trimmed_but_never_dropped() {
+        // 授权码是「配了就用」，两边空格去掉 —— 从 .env 复制粘贴时最容易带上空格，
+        // 而带空格的密码只会报「认证失败」，查起来毫无线索
+        let mut pairs = smtp_base();
+        pairs.push(("AUTH_SMTP_PASSWORD", "  授权码  "));
+        let cfg = from_pairs(&pairs).expect("加载");
+        assert_eq!(smtp_of(&cfg).password, "授权码");
+
+        // ⚠️ 但「只有一个空格」不会被当成没配 —— 那属于显式配置，静默替换成默认值
+        //    比让它去登录失败更难查
+        let mut pairs = smtp_base();
+        pairs.push(("AUTH_SMTP_PASSWORD", " "));
+        let cfg = from_pairs(&pairs).expect("显式给了值就不该报「没配」");
+        assert_eq!(smtp_of(&cfg).password, "");
+    }
+
+    /// **端到端地过一遍 `.env` 文件**（不是查表）：这条是给现场排查用的。
+    ///
+    /// `dotenvy` 对「值里带空格 / 引号 / `<` `>` / 非 ASCII」是自己一套解析规则，
+    /// 上面那些 `from_pairs` 用例全都绕过了它。真机上踩到的坑正在这里：
+    /// `AUTH_SMTP_FROM=广学 <no-reply@qq.com>` **不带引号**时，dotenvy 会把这一行整个丢掉
+    ///（**不报错**），于是发件人静默退化成登录账号 —— 「配置看起来生效了、其实没有」。
+    ///
+    /// ⚠️ 刻意用 `dotenvy::from_path_iter` 而**不是** `Config::from_env()`：
+    /// `dotenvy::dotenv()` 只把键写进进程环境、并且**不覆盖已存在的键**，
+    /// 于是「哪个测试先跑」会决定结果（`dotenvy` 是进程级全局状态，与其他用例并行时会互相干扰）。
+    /// `from_path_iter` 只解析文件、不碰环境变量，测的就是「dotenvy 怎么读这个文件」。
+    fn load_dotenv_file(text: &str) -> Config {
+        let dir = tempfile::tempdir().expect("建临时目录");
+        let path = dir.path().join(".env");
+        std::fs::write(&path, text).expect("写 .env");
+        let pairs: Vec<(String, String)> = dotenvy::from_path_iter(&path)
+            .expect("解析 .env")
+            .filter_map(|item| item.ok())
+            .collect();
+        Config::from_lookup(&|key| {
+            pairs.iter().rev().find(|(k, _)| k == key).map(|(_, v)| v.clone())
+        })
+        .expect("从 .env 加载")
+    }
+
+    #[test]
+    fn from_env_end_to_end_quoted_and_unquoted() {
+        let base = "AUTH_MAIL_MODE=smtp\n\
+                    AUTH_SMTP_HOST=smtp.qq.com\n\
+                    AUTH_SMTP_USERNAME=no-reply@qq.com\n";
+
+        // ① 按 `.env.example` 推荐的写法（带引号）：值要原样保留
+        let quoted = load_dotenv_file(&format!(
+            "{base}AUTH_SMTP_PASSWORD=\"授权码 带空格\"\n\
+             AUTH_SMTP_FROM=\"广学 <no-reply@qq.com>\"\n\
+             AUTH_SMTP_TIMEOUT_SECONDS=8\n"
+        ));
+        let smtp = smtp_of(&quoted);
+        assert_eq!(smtp.password, "授权码 带空格", "带引号的值被 dotenvy 解错了");
+        assert_eq!(smtp.from, "广学 <no-reply@qq.com>", "引号里的中文显示名不该丢");
+        assert_eq!(smtp.port, 465);
+        assert_eq!(smtp.timeout, Duration::from_secs(8), "数字项要能读到");
+
+        // ② 不带引号的显示名：断言的是「**丢了**」—— 这就是必须加引号的原因。
+        //    哪天 dotenvy 改成支持（或改成报错），这条会红：那时该更新 `.env.example`，而不是删用例。
+        let unquoted = load_dotenv_file(&format!(
+            "{base}AUTH_SMTP_PASSWORD=授权码\n\
+             AUTH_SMTP_FROM=广学 <no-reply@qq.com>\n"
+        ));
+        assert_eq!(
+            smtp_of(&unquoted).from,
+            "no-reply@qq.com",
+            "dotenvy 的行为变了：要么开始支持不带引号的显示名，要么改成报错"
+        );
     }
 }

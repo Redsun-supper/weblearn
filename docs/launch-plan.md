@@ -18,7 +18,7 @@
 |---|---------|------------|-----------|
 | P0-1 | **复习进度按人隔离** ✅ 已完成（2026-10） | 现在 `word_reviews` 的唯一索引是 `WordID`，**两个用户共用一份进度会互相覆盖**——这是数据正确性问题，不是体验问题 | 1~2 天（含测试） |
 | P0-2 | **强制邀请码注册** ✅ 服务端已完成（2026-10） | 你选的「暂时邀请制」；现在不填邀请码也能注册 | 半天 |
-| P0-3 | **打通真发邮件** | 现在 `AUTH_MAIL_MODE=log`，验证码只打进日志，**真实用户收不到码就注册不了** | 半天（SMTP 代码已写好，只差配置） |
+| P0-3 | **打通真发邮件** 🟡 代码侧已完成（2026-10），差发件邮箱的授权码 | 现在 `AUTH_MAIL_MODE=log`，验证码只打进日志，**真实用户收不到码就注册不了** | 半天（SMTP 代码早已写好；配置校验、自检与验收命令已补齐） |
 | P0-4 | **公网部署** | HTTPS、Cookie Secure、Nginx 分流、生产环境开关、每日备份 | 1 天 |
 | P0-5 | **三级角色（超管/管理员/用户）** ✅ 已完成（2026-10） | 你要的「超管发带等级的码」；改造前只有 `user`/`admin`，且**带邀请码注册会直接变管理员** | 1~2 天 |
 | P1 | 管理面板四个模块（邀请码/用户/审计/看板） | 现在邀请码只能跑 CLI，`/admin/` 里没有任何界面 | 2~3 天 |
@@ -146,11 +146,32 @@ review_logs:  加 user_id 列 + INDEX(user_id, reviewed_at) idx_review_logs_user
 
 ### P0-3 打通真发邮件
 
-**好消息**：SMTP 发信**代码已经写完了**（`backend-rust/src/mail/smtp.rs`，用 `lettre`），现在是「有实现、没配置」的状态。缺的只是：
+> **🟡 代码侧已完成（2026-10），就差一个授权码**：配置解析、TLS 模式、启动期自检、
+> 验收命令与测试都补齐了；**唯一没做的是真发一封到收件箱** —— 那需要发件邮箱的 SMTP
+> 授权码（本机上没人能替你做）。拿到之后按下面第 3 步填进 `.env`，跑一条命令即可验收。
+>
+> 已完成的代码侧改动（三条都是「配错了也看不出来」那类问题）：
+> | 改动 | 为什么 |
+> |---|---|
+> | `SmtpTls` 枚举 + 未知值报错 | 原来 `AUTH_SMTP_TLS` 是字符串，非 `starttls/none` 的值**一律静默当隐式 TLS**。本意若是 587 + starttls，表现是「连接超时」，根本查不出配错了。现在 `tls`/`implicit`/`starttls`/`none` 显式收，其余启动即报错并列出可选项 |
+> | `AUTH_SMTP_FROM` 启动期校验（`SmtpConfig::from_mailbox`） | `lettre` 要到**发第一封信**时才解析发件人，配错的表现是「服务正常启动、用户点发送才失败」。现在加载配置时就拦住 |
+> | `mail::preflight` + 启动横幅一行自检 | 只连 TCP、不登录不发信，能查出主机/端口写错、防火墙、DNS 问题。⚠️ **失败只告警不阻止启动** —— SMTP 挂了不该让已登录用户也用不了站点 |
+> | `cargo run --bin mail-test -- 邮箱` | 一条命令真发一封测试邮件，读的是与账号服务同一份配置；报错会把**具体 SMTP 错误**（认证失败 535 / 连不上）打到终端 |
+> | `Config::from_lookup`（可注入的环境读取） | 让配置解析能写单测：`std::env::set_var` 在 Rust 2024 起是 unsafe 的，测试里塞一张表进来即可。P0-3 新增 12 条用例 |
+>
+> 实测（不带凭据）：`smtp.qq.com:465` 出网可达；用**故意写错的密码**完整走一遍，
+> TLS 握手成功、服务器返回 `535 Login fail`，错误被正确翻译成「授权码不对」的提示。
+>
+> ⚠️ 踩到一个隐蔽的坑，**写配置时会遇到**：`AUTH_SMTP_FROM=广学 <no-reply@qq.com>`
+> **不加引号**时 `dotenvy` 会把整行丢掉**且不报错**，发件人静默退化成登录账号。
+> 带空格 / 尖括号的值**必须加双引号**：`AUTH_SMTP_FROM="广学 <no-reply@qq.com>"`
+>（`config.rs` 里有一条用例把这条行为钉住了）。
+
+**好消息**：SMTP 发信**代码早就写完了**（`backend-rust/src/mail/smtp.rs`，用 `lettre`），缺的只是配置：
 
 1. 选一个发件通道（见 [第 10 节](#10-邮件通道选型)）；
 2. 拿到 **SMTP 主机 / 端口 / 账号 / 授权码 / 发件人**；
-3. 在服务器 `.env` 里配上：
+3. 在服务器 `.env` 里配上（⚠️ 带空格或尖括号的值要加引号）：
 
 ```env
 AUTH_MAIL_MODE=smtp
@@ -158,8 +179,15 @@ AUTH_SMTP_HOST=smtp.example.com
 AUTH_SMTP_PORT=465
 AUTH_SMTP_USERNAME=no-reply@test.lovezmx.com
 AUTH_SMTP_PASSWORD=授权码
-AUTH_SMTP_FROM=广学 <no-reply@test.lovezmx.com>
-AUTH_SMTP_TLS=implicit      # 465 用 implicit；587 用 starttls；25 用 none
+AUTH_SMTP_FROM="广学 <no-reply@test.lovezmx.com>"
+AUTH_SMTP_TLS=implicit      # 465 用 implicit（= tls）；587 用 starttls；25 用 none（不填默认 implicit）
+```
+
+3b. **发一封验收**（不用等用户注册）：
+
+```bash
+cd backend-rust
+cargo run --bin mail-test -- 你的邮箱@example.com
 ```
 
 4. **做域名邮件的 SPF / DKIM / DMARC 解析记录**——不做这一步，验证码大概率进垃圾箱，用户收不到就注册不了（这是上线最常见的翻车点）；
@@ -505,7 +533,7 @@ DB_PATH=/var/lib/guangxue/guangxue.db
 |---|---|---|
 | **M0** | P0-1 进度按人隔离 | 新增多用户隔离测试通过；`pwsh scripts/verify.ps1` 全绿；`scripts/verify-auth.ps1` 加两条互不可见用例 |
 | **M1** | P0-5 + P0-2 角色与邀请制 | Rust/Go 两侧角色判定一致（联调脚本覆盖 `super_admin` 发码、`admin` 发码被拒、无码注册被拒） |
-| **M2** | P0-3 邮件 | 真实邮箱收到验证码并完成注册 |
+| **M2** | P0-3 邮件 | 真实邮箱收到验证码并完成注册（🟡 现在可先用 `cargo run --bin mail-test -- 邮箱` 验收到「服务器已接收」这一步；还差最后一封到收件箱） |
 | **M3** | P0-4 部署 | 公网 https 全链路可用；重启自愈；备份产物可恢复 |
 | **M4** | P1 管理面板 | 超管能在界面上发一批码、提升一个管理员、封一个号、查到对应审计 |
 | **M5** | 放人（10 → 50 → 上百） | 每批观察 3 天：注册转化、复习留存、错误日志、备份是否正常 |

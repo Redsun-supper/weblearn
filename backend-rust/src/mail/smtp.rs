@@ -9,7 +9,7 @@ use lettre::message::header::ContentType;
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::{Message, SmtpTransport, Transport};
 
-use crate::config::SmtpConfig;
+use crate::config::{SmtpConfig, SmtpTls};
 use crate::error::{AuthError, Result};
 use crate::mail::Mailer;
 
@@ -20,11 +20,11 @@ pub struct SmtpMailer {
 
 impl SmtpMailer {
     pub fn new(cfg: SmtpConfig) -> Result<Self> {
-        let builder = match cfg.tls.as_str() {
-            "none" | "plain" | "insecure" => SmtpTransport::builder_dangerous(cfg.host.clone()),
-            "starttls" => SmtpTransport::starttls_relay(&cfg.host)
+        let builder = match cfg.tls {
+            SmtpTls::None => SmtpTransport::builder_dangerous(cfg.host.clone()),
+            SmtpTls::StartTls => SmtpTransport::starttls_relay(&cfg.host)
                 .map_err(|e| AuthError::Internal(format!("SMTP 配置有误: {e}")))?,
-            _ => SmtpTransport::relay(&cfg.host)
+            SmtpTls::Implicit => SmtpTransport::relay(&cfg.host)
                 .map_err(|e| AuthError::Internal(format!("SMTP 配置有误: {e}")))?,
         };
         let transport = builder
