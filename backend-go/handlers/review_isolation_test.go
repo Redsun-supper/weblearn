@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026  HR_RedSun (大冬呱)
 package handlers
 
 // P0-1「复习进度按人隔离」的回归测试。

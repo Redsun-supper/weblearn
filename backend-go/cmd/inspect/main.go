@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026  HR_RedSun (大冬呱)
 // 临时工具：直接读取 SQLite 实际存储内容（用后端同款 glebarez/sqlite 驱动，纯 Go 无 CGO）
 package main
 

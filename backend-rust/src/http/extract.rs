@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026  HR_RedSun (大冬呱)
 //! 请求提取器：从 Cookie 里解析出已鉴权的用户
 
 use axum::extract::FromRequestParts;

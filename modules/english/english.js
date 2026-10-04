@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026  HR_RedSun (大冬呱)
 // 英语模块 · 单词间隔复习（FSRS）
 //
 // 本文件是 ES module，由 main.js 在**进入英语页时**动态 import() 加载：

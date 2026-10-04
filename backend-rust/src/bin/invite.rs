@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026  HR_RedSun (大冬呱)
 //! 邀请码 CLI：创建 / 列表 / 停用
 //!
 //! 用法（在 `backend-rust/` 目录下执行）：

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026  HR_RedSun (大冬呱)
 //! HTTP 处理器：注册 / 登录 / 刷新 / 登出 / 会话
 
 use axum::extract::State;

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026  HR_RedSun (大冬呱)
 //! 时钟：核心逻辑一律通过 `Clock` 取时间，测试注入 `FakeClock` 就能精确控制
 //! 「验证码过期 / 令牌过期 / 账号锁定」这些与时间强相关的分支。
 

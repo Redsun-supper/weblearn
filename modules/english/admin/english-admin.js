@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026  HR_RedSun (大冬呱)
 // 英语后台 · 词条管理
 //
 // 由通用后台框架（admin/admin.js）按需动态 import，并调用本模块的 mount(container, ctx)。

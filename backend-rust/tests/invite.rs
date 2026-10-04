@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026  HR_RedSun (大冬呱)
 //! 邀请码：状态机（有效/用尽/过期/停用）、单次使用、并发占用、管理接口
 
 mod common;

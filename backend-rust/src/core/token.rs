@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026  HR_RedSun (大冬呱)
 //! 令牌：access token（HS256 JWT）+ refresh token（不透明随机串）
 //!
 //! 设计取舍：

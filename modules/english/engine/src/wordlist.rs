@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026  HR_RedSun (大冬呱)
 //! 词表文本解析（后台「批量导入」用）
 //!
 //! 把用户粘贴进来的文本解析成结构化词条。之所以放在 Rust 而不是 JS：粘贴格式极其杂乱，

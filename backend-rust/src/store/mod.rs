@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026  HR_RedSun (大冬呱)
 //! 存储层：SQLite 连接 + 事务边界 + SQL 语句
 //!
 //! 为什么是「一个连接 + 互斥锁」而不是连接池：

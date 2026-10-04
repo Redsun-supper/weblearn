@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026  HR_RedSun (大冬呱)
 // 页面入口：DOMContentLoaded 在 DOM 树解析完、外部资源还没加载时就触发，比 load 早，
 // 能保证取元素 / 挂监听时节点都已就位。
 document.addEventListener('DOMContentLoaded', function() {

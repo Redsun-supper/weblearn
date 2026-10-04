@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026  HR_RedSun (大冬呱)
 //! 内存滑动窗口限流
 //!
 //! 为什么不做成数据库表：这些计数是**短命且高频**的，落库只会白白增加写压力。

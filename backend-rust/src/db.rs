@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026  HR_RedSun (大冬呱)
 //! SQLite 连接、PRAGMA 与迁移
 //!
 //! 时间列的口径（重要）：**UTC、秒精度、固定宽度的 RFC3339 文本**

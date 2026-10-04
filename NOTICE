@@ -1,0 +1,31 @@
+广学（Guangxue）
+Copyright (C) 2026  HR_RedSun (大冬呱)
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+---
+
+项目：广学（Guangxue）· 学科内容展示与英语复习平台
+作者：HR_RedSun（别名：大冬呱）
+许可：AGPL-3.0-or-later（附加条款见下）
+仓库：https://gitcode.com/HR_RedSun/weblearn
+
+许可全文见仓库根目录 LICENSE 文件（FSF 官方英文全文）。
+
+附加条款：暂无。日后若依 AGPL-3.0 第 7 条添加，将写入本文件并在此处列明。
+
+按第 7 条 (b) 项保留作者署名：源码文件头部的 SPDX 标识与版权行（本仓库每个源文件顶部两行）、
+本文件与 LICENSE 中的版权声明，均须在分发时原样保留。
+
+仓库结构与各模块说明见 README.md。

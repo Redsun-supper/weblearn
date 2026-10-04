@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026  HR_RedSun (大冬呱)
 //! P0-5：三级角色（user / admin / super_admin）与邀请码分级
 //!
 //! 这一组盯的是「权限边界」而不是功能本身，所以断言写得比较硬：

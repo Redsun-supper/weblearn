@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026  HR_RedSun (大冬呱)
 //! FSRS 间隔复习调度引擎（WASM 导出层）
 //!
 //! 基于 [fsrs]（open-spaced-repetition/fsrs-rs，v6）。引擎本身是纯算术：

@@ -1,3 +1,5 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+/* Copyright (C) 2026  HR_RedSun (大冬呱) */
 /* 全站重置：清掉浏览器给 h1 / p 等元素的默认 margin、padding，
    并统一成 border-box，让宽高都含内边距与边框，尺寸好算 */
 * {

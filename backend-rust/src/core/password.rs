@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026  HR_RedSun (大冬呱)
 //! 密码哈希：Argon2id（PHC 字符串）
 //!
 //! 要点：

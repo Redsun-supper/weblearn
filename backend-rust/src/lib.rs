@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026  HR_RedSun (大冬呱)
 //! 广学 · 账号系统（Rust 认证服务）
 //!
 //! 职责：注册（邮箱 + 管理员派发的邀请码 + 邮箱验证码）、多端同时登录、令牌轮换、

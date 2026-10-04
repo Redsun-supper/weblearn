@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026  HR_RedSun (大冬呱)
 //! `mail-test` —— 一条命令验收 P0-3「真发邮件」
 //!
 //! 用法（在 `backend-rust/` 目录下）：

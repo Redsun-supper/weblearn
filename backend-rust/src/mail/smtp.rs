@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026  HR_RedSun (大冬呱)
 //! SMTP 发送器（`lettre`）
 //!
 //! 本期默认不启用；配好 `AUTH_MAIL_MODE=smtp` 与 `AUTH_SMTP_*` 后即生效。

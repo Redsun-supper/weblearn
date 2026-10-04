@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026  HR_RedSun (大冬呱)
 //! 广学 · 英语模块引擎（Rust / WebAssembly）
 //!
 //! 编译目标：`wasm32-unknown-unknown`，通过 `wasm-bindgen` 导出给浏览器调用。

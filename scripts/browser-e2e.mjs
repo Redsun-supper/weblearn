@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026  HR_RedSun (大冬呱)
 // 浏览器端到端检查（由 scripts/verify-pool.ps1 -Browser 调用）
 //
 // 前置：Edge 已带 --remote-debugging-port=<port> 起好；Go(8080)/Rust(8081)/dev-server(8899) 都在跑；

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026  HR_RedSun (大冬呱)
 //! 邮箱验证码：生成、摘要与状态判定
 //!
 //! 为什么摘要要带上邮箱与 pepper：

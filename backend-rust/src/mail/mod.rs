@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026  HR_RedSun (大冬呱)
 //! 邮件发送：trait + 两种实现
 //!
 //! 本期默认走 `LogMailer`（只打日志、不发信），SMTP 实现已经写好，

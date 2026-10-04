@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026  HR_RedSun (大冬呱)
 //! 核心纯逻辑层：密码哈希、令牌、邀请码、邮箱验证码、入参校验
 //!
 //! 这一层**不碰数据库、不碰网络、不读系统时钟**（时间与随机都由调用方注入或

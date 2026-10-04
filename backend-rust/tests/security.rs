@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026  HR_RedSun (大冬呱)
 //! 安全相关：鉴权覆盖、CSRF、Cookie 属性、密码与令牌不泄露、账号锁定
 
 mod common;

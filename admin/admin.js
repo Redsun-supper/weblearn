@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026  HR_RedSun (大冬呱)
 // 广学 · 后台管理框架（通用骨架）
 //
 // 这是一个**独立入口**，与学生站互不影响：不走 main.js 的导航，也不使用学科页的

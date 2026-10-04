@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026  HR_RedSun (大冬呱)
 //! SQL 语句集合
 //!
 //! 所有函数都是「同步 + 收 `&Connection`」，读路径与 `SqliteStore::write`

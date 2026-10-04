@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026  HR_RedSun (大冬呱)
 //! 邀请码：生成、规范化与状态机
 //!
 //! 字符集用 Crockford Base32（去掉了容易看错的 I / L / O / U），默认 16 位 =

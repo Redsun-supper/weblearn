@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026  HR_RedSun (大冬呱)
 //! 邮箱验证码：错误次数、过期、一次性、发送限流、生产环境不暴露调试接口
 
 mod common;
