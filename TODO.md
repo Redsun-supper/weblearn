@@ -76,7 +76,7 @@
 | 160ms（起始页退场） | `english.js` 的 `START_OUT_MS`、`english.css` 的 `startOut` |
 | 160 / 240ms（计划小字切换） | `english.js` 的 `PLAN_SWAP_OUT_MS`、`english.css` 的 `planOut` / `planIn` |
 | 150 / 240ms | `english.js` 的 `TRANSITION_MS`、`english.css` 的 `studyOut`/`studyIn` |
-| 60ms（个人中心检测屏淡出） | `account.js` 的 `TIMING.screenFade`、`account.css` 的 `.acc-check` 的 `transition` |
+| 400 / 40 / 470ms（个人中心门禁换场） | `account.js` 的 `TIMING.screenFade` / `gateDelay` / `cardIn`、`account.css` 的 `accCheckOut` 与 `.acc-gate-box.is-arriving` 的 `accCardIn`（**三个数必须成组改**：`screenFade` 要明显大于 `gateDelay`，否则检测屏淡完白卡还没起手，中间会空一拍 = 「生硬弹出」） |
 
 改一处忘另一处就会出现「过渡没跑完就换页」「两层动画错位」这类微妙问题（已经踩过一次）。
 

@@ -135,6 +135,43 @@ body.acc-page {
     }
 }
 
+/* ===== 门禁那一小段换场：检测屏 → 白卡 =====
+ *
+ * 分成两条独立动画，由 account.js 的 showGate() 掐着表下达（延时差 TIMING.gateDelay）：
+ *   检测屏 accCheckOut：往远里淡出（缩小 + 轻微模糊，像被推走）
+ *   白卡   accCardIn  ：从 0.9 倍、下方 10px 弹出来，缓动 c5 带一点回弹 —— 「q 弹」那一下
+ * 两者中间有几十毫秒是**交叠**的，所以看上去是同一个东西变成了另一个。
+ *
+ * ⚠️ 这两条都必须同时写「时长」与「延时」，因为元素上还挂着入场类的 animation 简写
+ *    （.is-enter 会连 animation-delay 一起重置成 0s），只写延时会被它顶掉。
+ * ⚠️ 白卡那条的时长必须与 account.js 的 TIMING.cardIn 一致。 */
+@keyframes accCheckOut {
+    from {
+        opacity: 1;
+        /* ⚠️ -50% -50% 是 .acc-check 的居中位移，动画里必须原样带着 ——
+           keyframes 会整条覆盖 transform，漏了它就会在起手瞬间跳到右下角再飞回来 */
+        transform: translate(-50%, -50%) scale(1);
+        filter: blur(0);
+    }
+    to {
+        opacity: 0;
+        transform: translate(-50%, -50%) scale(0.94);
+        filter: blur(4px);
+    }
+}
+
+/* 缓动 c5 是「冲过头一点再收住」，也就是那点 q 弹的劲儿 */
+@keyframes accCardIn {
+    from {
+        opacity: 0;
+        transform: translateY(10px) scale(0.9);
+    }
+    to {
+        opacity: 1;
+        transform: none;
+    }
+}
+
 .is-enter {
     animation: accRise 0.42s cubic-bezier(0.22, 0.61, 0.36, 1) both;
 }
@@ -186,13 +223,20 @@ body.acc-page {
         transition: none;
     }
 
-    /* 检测屏的淡出也省掉，改成即时（account.js 里的 setTimeout 时长不变） */
-    .acc-check {
-        transition: none;
+    /* 检测屏的淡出、白卡的弹入都省掉，改成即时
+       （account.js 里的 setTimeout 时长不变，所以白卡照样是在 gateDelay 之后才出现 ——
+        只是这一出现不再有动画。注意这里**不能**写成 animation: none：
+        accCardIn 的 from 帧带着 opacity: 0，把动画整个撤掉的话得自己补一句 opacity: 1，
+        而且还得覆盖它上面那条 .acc-gate-box.is-arriving 的简写，不如直接给一条「跳到终帧」的动画。） */
+    .acc-check.is-leaving,
+    .acc-gate-box.is-arriving {
+        animation-duration: 0.01s;
+        animation-timing-function: linear;
     }
 
     /* 动画没了，但 account.js 排的 animation-delay 还在：组件会先在原地「隐身」等
-       TIMING.screenFade 那么久才出现。这里把延时清掉，换屏就是即时交接。 */
+       TIMING.screenFade 那么久才出现。这里把延时清掉，换屏就是即时交接
+       （只清 data-enter 那些字段：白卡的延时是「接力」用的，清了就会提前盖在检测屏上）。 */
     .acc-gate [data-enter],
     .acc-layout [data-enter] {
         animation-delay: 0s !important;
@@ -220,21 +264,34 @@ body.acc-page {
     overflow-y: auto;
 }
 
-/* 检测中：与登录卡占同一块地方，所以「检测完换表单」看不出跳变 */
+/* 检测中：绝对定位**叠在白卡应该在的地方**（水平居中、竖直居中）。
+   为什么不占着位置让它俩并排：那样接力的时候检测屏会被白卡挤到左边去 ——
+   也就是「左边为什么还会加载字符」那个观感（同一个 flex 行里一左一右两个焦点）。
+   叠在同一处之后，交叠那段看起来就是「检测屏原地变成了白卡」。
+   取消定位时记得把 accCheckOut 里的 scale 换回「会触发重排」的写法。 */
 .acc-check {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
     display: flex;
     flex-direction: column;
     align-items: center;
     gap: 14px;
     color: #cfd8dc;
     opacity: 1;
-    /* 时长与 account.js 的 TIMING.screenFade 一致（那边用它当表单入场延时的参考） */
-    transition: opacity 0.06s linear;
 }
 
-/* 淡出用（换屏时先加上这个类，60ms 后整块藏掉） */
+/* 换场时由 account.js 挂 is-leaving（动作见 accCheckOut）：
+   淡出**往远里**走（缩小 + 轻微模糊，像被推走），而不是原地淡掉 —— 原地淡会显得干巴巴的。
+   ⚠️ 时长与 account.js 的 TIMING.screenFade 一致（那边淡完才把它藏起来）。
+   缓动用 ease-in（先慢后快）：前半程还很清楚，等白卡浮上来时才迅速退掉 —— 交叠那段
+   看起来就是「检测屏退到后面去了」。
+   ⚠️ 必须写 animation 简写（它会把 animation-delay 一起重置成 0s）：元素上还挂着入场类的
+   animation-delay，只在下面写 animation-delay 会被那条简写顶掉（实测过，动画会等到入场
+   延时过去才开始，看上去像卡了一下）。 */
 .acc-check.is-leaving {
-    opacity: 0;
+    animation: accCheckOut 0.4s cubic-bezier(0.45, 0, 0.75, 0.4) 0s forwards;
 }
 
 .acc-dots {
@@ -262,6 +319,20 @@ body.acc-page {
     background-color: #ffffff;
     color: #333;
     box-shadow: 0 18px 40px rgba(0, 0, 0, 0.28);
+    /* 检测屏是绝对定位的，明确把白卡压在上层（两者交叠那段：白卡在下、检测屏退到上面去） */
+    position: relative;
+    z-index: 1;
+}
+
+/* 白卡的弹入：account.js 的 showGate() 解除 hidden 时挂上。
+   从 0.9 倍、下方 10px 弹出来，缓动 c5 有一点回弹 —— 也就是「q 弹」那一下。
+   ⚠️ 时长必须与 account.js 的 TIMING.cardIn 一致（那边用它算「摘合成层提示」的时刻）。
+   ⚠️ 起点必须带 opacity: 0：这条动画有延时（TIMING.gateDelay），延时期间靠 backwards
+   填充显示的是 from 那一帧，不写 opacity 的话白卡会先**满屏白**地闪一下再开始动。
+   ⚠️ 选择器写成 .acc-gate-box.is-arriving（两个类）是为了盖过后面那条 .is-enter 的
+   animation 简写 —— 换了元素形状，两套动画会打架。 */
+.acc-gate-box.is-arriving {
+    animation: accCardIn 0.47s cubic-bezier(0.34, 1.4, 0.44, 1) both;
 }
 
 .acc-gate-title {

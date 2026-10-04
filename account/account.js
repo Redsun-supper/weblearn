@@ -112,22 +112,35 @@
     // ===================== 过渡节奏 =====================
 
     // 想微调「检测屏 → 真界面」那一段的手感，改这里的数字就够了
-    // （一起对齐的还有 account.css 里 .acc-check 的 opacity 过渡时长）。
+    // （一起对齐的还有 account.css 里 .acc-check 的淡出、.acc-gate-box 的弹入、
+    //   .acc-sidebar 的浮起 —— 三处时长都在自己的规则旁边写了「与谁对齐」）。
     //   step          卡与卡之间的入场错开    innerStep  卡内组件的入场错开
-    //   screenFade    检测屏淡出时长（也是门禁表单入场延时的参考：两者接力，不重叠）
+    //   screenFade    检测屏淡出时长（动作是 account.css 的 accCheckOut）
+    //   gateDelay     白卡比检测屏晚多久起手（动作是 accCardIn，缓动带一点回弹）
+    //   cardIn        白卡弹入的时长（与 .acc-gate-box.is-arriving 的 animation 一致）
+    //   —— 这三个数的关系就是「接力」：screenFade 要明显长于 gateDelay，
+    //      白卡才会在检测屏还没淡完的时候就开始浮出来。实测过一次「生硬弹出」：
+    //      gateDelay 晚于 screenFade，检测屏已经淡到 0 而白卡还是 opacity: 0，
+    //      中间那几十毫秒屏幕是**空的**，看着就是「啪」地弹出一张卡。
+    //      现在 40ms 起手 / 150ms 淡完 / 470ms 落定，两段有三四百毫秒是交叠的。
+    //   gateFade      「检测完发现已登录」时整块门禁淡出、露出侧栏布局的时长
     //   cardHeight    切「登录 / 注册」标签时白卡长高 / 收短的时长
     var TIMING = {
         step: 30,
         innerStep: 12,
-        // ⚠️ 别调大：登录表单的入场延时是**从检测屏开始淡出的那一刻**算起的，
-        //    这个值越大，表单「该开始动却没动」的停顿越明显（160ms 那版试过，看着像卡了一下）。
-        screenFade: 60,
+        screenFade: 400,
+        gateDelay: 40,
+        cardIn: 470,
+        gateFade: 160,
         cardHeight: 380
     };
 
     var ENTER_STEP_MS = TIMING.step;
     var INNER_STEP_MS = TIMING.innerStep;
     var SCREEN_FADE_MS = TIMING.screenFade;
+    var GATE_DELAY_MS = TIMING.gateDelay;
+    var CARD_IN_MS = TIMING.cardIn;
+    var GATE_FADE_MS = TIMING.gateFade;
     var HEIGHT_MS = TIMING.cardHeight;
 
     // 入场动画里最长的那一个（accRise 0.42s —— 见 account.css）：动画结束后延迟摘
@@ -135,10 +148,16 @@
     var ANIM_LONGEST_MS = 420;
     var animatingTimer = null;
     var screenFadeTimer = null;
+    var gateCardTimer = null;
     var heightTimer = null;
 
     // 三种入场类：默认「浮起淡入」，切标签页时按方向「轻轻浮上来」（动作在 account.css）
     var ENTER_CLASSES = ['is-enter', 'is-enter-right', 'is-enter-left'];
+
+    // 白卡自己的弹入类（动作是 account.css 的 accCardIn，带一点回弹）
+    var ARRIVING_CLASS = 'is-arriving';
+    // 检测屏的淡出类（动作是 account.css 的 accCheckOut）
+    var CHECK_OUT_CLASS = 'is-leaving';
 
     // 动画期间挂这个类（CSS 里给它 will-change: transform, opacity）：
     // 让浏览器把组件提升成合成层，整段动画只做合成、不重绘。动画跑完就摘掉。
@@ -219,33 +238,58 @@
     // 当前登录用户（null = 未登录）；路由要靠它决定侧栏显示什么
     var currentUser = null;
 
-    // 检测屏 → 门禁：淡出时长与 account.css 的 .acc-check 一致。
-    // 门禁表单自己就是整屏居中的，所以这里没有「高度跳变」可担心 —— 淡出只是过渡手感。
+    // 检测屏 → 门禁白卡。这一段的要点是「**接力**」，不是一个消失再一个冒出来：
+    //   0ms        给检测屏挂 is-leaving（account.css 的 accCheckOut：淡出 + 缩到 0.94 + 模糊，
+    //              像被推走；时长 TIMING.screenFade）
+    //   gateDelay  白卡解除 hidden 并挂 is-arriving（accCardIn：从 0.9 倍 + 下移 10px 弹出来，
+    //              缓动 c5 带一点回弹 —— 也就是「q 弹」那一下）
+    //   两者交叠三四百毫秒：白卡浮到可见的时候检测屏还留着大半，看着像检测屏**变成了**白卡，
+    //   而不是换了一张脸（早先的版本两段不交叠，中间那几十毫秒屏幕是空的 = 「生硬地弹出来」）
     //
-    // ⚠️ 传入的是**卡片里的表单**而不是卡片本身：卡片的入场由 switchTab 把字段排成
-    //    「一个一个浮出来」，如果这里再把整张卡当成一个块去播 accRise，两套动画会打架
+    // ⚠️ 传入的是**卡片里的表单**而不是卡片本身：卡片自己已经由 is-arriving 弹入了，
+    //    这里再把整张卡当成一个块去播 accRise 会两套动画打架
     //    （早先的实测就是卡片整块浮、字段又各自浮，看着糊成一团）。
+    //    字段的起手排在 gateDelay + step 之后，即白卡浮到可见之后才开始「一个一个浮出来」。
     function showGate() {
         var check = $('accCheck');
         var box = $('accAuthBox');
         if (!check || !box) return;
 
-        box.removeAttribute('hidden');
         var form = $('formLogin');
-        if (form && !form.hidden) playEnter([form]);
-        else {
-            var reg = $('formRegister');
-            if (reg && !reg.hidden) playEnter([reg]);
+        if (!form || form.hidden) form = $('formRegister');
+
+        // 检测屏已经在淡出了就别重复排（refreshState 重试时会再调一次）
+        var checkVisible = !check.hasAttribute('hidden') && !check.classList.contains(CHECK_OUT_CLASS);
+        clearTimeout(screenFadeTimer);
+        clearTimeout(gateCardTimer);
+
+        // 白卡登场（两条路都要走这一段）
+        var arrive = function () {
+            box.removeAttribute('hidden');
+            box.classList.add(ARRIVING_CLASS, ANIMATING_CLASS);
+            if (form) playEnter([form], 'rise', GATE_DELAY_MS + ENTER_STEP_MS);
+            // 弹入跑完把合成层提示摘掉（元素还留着 is-arriving，它没有 transition，
+            // 留着不影响；真正让它「定格」的是 keyframes 的 forwards / backwards 填充）
+            gateCardTimer = window.setTimeout(function () {
+                gateCardTimer = null;
+                box.classList.remove(ANIMATING_CLASS);
+            }, GATE_DELAY_MS + CARD_IN_MS + 120);
+        };
+
+        if (checkVisible) {
+            check.classList.add(CHECK_OUT_CLASS);
+            // 淡完才藏：藏早了会在淡到一半时「啪」地消失，那正是要修掉的手感
+            screenFadeTimer = window.setTimeout(function () {
+                screenFadeTimer = null;
+                check.setAttribute('hidden', 'hidden');
+                check.classList.remove(CHECK_OUT_CLASS);
+            }, SCREEN_FADE_MS);
+            gateCardTimer = window.setTimeout(arrive, GATE_DELAY_MS);
+            return;
         }
 
-        if (check.hasAttribute('hidden')) return;
-        check.classList.add('is-leaving');
-        clearTimeout(screenFadeTimer);
-        screenFadeTimer = window.setTimeout(function () {
-            screenFadeTimer = null;
-            check.setAttribute('hidden', 'hidden');
-            check.classList.remove('is-leaving');
-        }, SCREEN_FADE_MS);
+        // 检测屏早就没了（比如登录态重试）→ 白卡直接出现，不排队
+        arrive();
     }
 
     // 显示主布局（侧栏 + 主区），并把路由挂上
@@ -260,7 +304,7 @@
 
         // 门禁整块淡出（它只在「检测完发现已登录」这条路上会可见）
         gate.classList.add('is-animating');
-        gate.style.transition = 'opacity ' + SCREEN_FADE_MS + 'ms linear';
+        gate.style.transition = 'opacity ' + GATE_FADE_MS + 'ms linear';
         gate.style.opacity = '0';
         clearTimeout(screenFadeTimer);
         screenFadeTimer = window.setTimeout(function () {
@@ -269,7 +313,7 @@
             gate.style.transition = '';
             gate.style.opacity = '';
             gate.classList.remove('is-animating');
-        }, SCREEN_FADE_MS);
+        }, GATE_FADE_MS);
     }
 
     // ===================== 侧栏导航与路由 =====================
@@ -880,6 +924,9 @@
             step: ENTER_STEP_MS,
             innerStep: INNER_STEP_MS,
             screenFade: SCREEN_FADE_MS,
+            gateDelay: GATE_DELAY_MS,
+            cardIn: CARD_IN_MS,
+            gateFade: GATE_FADE_MS,
             cardHeight: HEIGHT_MS
         }
     };
