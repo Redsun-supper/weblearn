@@ -372,8 +372,8 @@ body.acc-page {
 
 /* 左侧栏：半透明深色，让下面的渐变透出来（与后台那块实心 #263238 的差别就在这）
    ⚠️ 这里是**只留上下内边距、左右交给各区块自己写**（后台 admin/ 的侧栏也是 0）：
-   这样导航那列能整条通栏、选中竖条贴在侧栏最左缘，而头像那一格又能用自己那 30px 左边距
-   对齐到屏幕上的 (30, 18) —— 与首页导航栏那颗逐像素重合（见 .acc-sidebar-avatar）。
+   这样导航那列能整条通栏、蓝色竖条贴在最左缘，而各区块又能把**文字左缘统一压到 x=30**
+   —— 头像那一格、品牌那两行、每一行导航文字全在同一条竖线上（牌子就压在那颗头像正下方）。
    一条 padding 管不住这两种诉求，所以分开写。 */
 .acc-sidebar {
     display: flex;
@@ -414,11 +414,12 @@ body.acc-page {
 .acc-brand {
     display: flex;
     flex-direction: column;
-    align-items: center;
-    /* 左右 20px 内边距：与导航项文字、页脚同一档（侧栏自己不写左右内边距，见 .acc-sidebar）。
-       ⚠️ 这下品牌文字比头像（30px）靠左 10px：那是没法避免的 —— 头像的 30px 是给
-       「首页那颗头像过场时不动」用的，而导航要通栏，品牌夹在中间只能二选一。 */
-    padding: 0 20px 14px;
+    /* 左对齐、左边 30px —— 与头像那条竖线（x=30）以及导航项文字**对齐到同一条线**：
+       「广学 / 个人中心」两行就压在那颗 64px 头像的正下方。
+       ⚠️ 原来是居中的（那时侧栏自带 30px 内边距，文字与头像同线是内边距的副作用）；
+       侧栏改成左右不留内边距之后，这条线得自己写。导航项、页脚同理（见各自规则）。 */
+    align-items: flex-start;
+    padding: 0 30px 14px;
     margin: 0 0 16px;
     border-bottom: 1px solid rgba(255, 255, 255, 0.12);
     text-decoration: none;
@@ -437,7 +438,8 @@ body.acc-page {
 
 /* 侧栏导航（条目由 account.js 渲染）：**通栏**，与后台 admin/ 的侧栏同一套 ——
    条目左右顶到侧栏边缘（所以选中/悬停的底色是整条铺满的，不会在左边留一块内缩的补丁），
-   文字与蓝色竖条分别靠内边距和绝对定位摆：竖条贴在侧栏最左缘，文字缩进 20px。
+   文字缩进 30px、蓝色竖条贴在最左缘，两者分别靠内边距和绝对定位摆。
+   ⚠️ 30px 不是随手取的：它让导航文字与头像、品牌名落在**同一条竖线**上（都从 x=30 起）。
    ⚠️ 这一列**不再需要负外边距**去抵消侧栏内边距了：侧栏改成「只留上下内边距、左右交给
    各个区块自己写」（见 .acc-sidebar），导航这块本来就是通的。 */
 .acc-nav {
@@ -447,7 +449,7 @@ body.acc-page {
 .acc-nav-item {
     display: block;
     position: relative;
-    padding: 10px 20px;
+    padding: 10px 30px;
     color: #cfd8dc;
     font-size: 14px;
     text-decoration: none;
@@ -496,11 +498,12 @@ body.acc-page {
 .acc-sidebar-footer {
     display: flex;
     flex-direction: column;
-    /* 与品牌那块一致：居中、左右 20px 内边距（侧栏自己不写左右内边距，见 .acc-sidebar） */
+    /* 与品牌那块一致：居中、左右 30px 内边距（侧栏自己不写左右内边距，见 .acc-sidebar）。
+       居中是这一块与品牌/导航的区别：它没有「和头像同一条线」的诉求，两条链接居中更稳。 */
     align-items: center;
     gap: 8px;
     margin-top: auto;
-    padding: 14px 20px 0;
+    padding: 14px 30px 0;
     border-top: 1px solid rgba(255, 255, 255, 0.12);
 }
 
@@ -917,7 +920,8 @@ body.acc-page {
     }
 
     .acc-nav-item {
-        padding: 8px 14px;
+        /* 左边 30px：横排档的侧栏同样左右不带内边距（见上），文字要跟头像、品牌名同一条线 */
+        padding: 8px 30px;
         white-space: nowrap;
     }
 
