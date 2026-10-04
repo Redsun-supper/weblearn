@@ -45,11 +45,11 @@ body {
     height: 64px;
     transform: translateY(-50%);
     /* 圆角矩形（9px）：原来就是这个形状，别改成正圆 ——
-       个人中心那颗（.acc-sidebar-avatar）也是圆角矩形，两者的圆角比例一致
-       （9/64 = 6/40），所以「飞进侧栏」那段只在位置与大小上过渡。
+       个人中心侧栏那颗（.acc-sidebar-avatar）跟它一模一样 —— 同一组数字、同一个位置：
+       （64×64、3px 白边、9px 圆角）落在 (30, 18)，两边逐像素重合，
+       所以过场里那颗头像**一个像素都不用动**，只剩「白底扩散 / 收圈」这一件事。
        ⚠️ 改这里的值要同步改 account/account.css 的 .acc-sidebar-avatar：
-          main.js 的 morphTarget() 会读那边的 border-radius 并按半径比例缩放，
-          两边比例不一致的话，飞行途中会看到圆角自己「化」一下。 */
+           两边一旦不一致，换页那一刻就会看到头像跳一下（已经没有形变兜着了）。 */
     border-radius: 9px;
     border: 3px solid #ffffff;
     background-color: #ffffff;
@@ -102,47 +102,6 @@ body {
 
 .rounded-square.is-signed .avatar-dot {
     display: block;
-}
-
-/* 过场期间（正反两个方向都用）：只提供「过渡」，不改外观。
-   外观由元素自身的样式（头像：白边 + 白底 + 圆角矩形）决定，正反两个方向完全对称 ——
-   起点是导航栏那颗 64×64（圆角 9px），终点是个人中心侧栏那颗 40×40（圆角 6px），
-   中间改 left/top/宽/高，圆角按半径比例一起缩（比例一致，所以看不出「化」）。
-   时长必须与 .avatar-zoom 的扩散一致（460ms），两件事是同时发生的。 */
-.rounded-square.is-morphing {
-    transition: top 0.46s cubic-bezier(0.33, 0, 0.2, 1),
-                left 0.46s cubic-bezier(0.33, 0, 0.2, 1),
-                width 0.46s cubic-bezier(0.33, 0, 0.2, 1),
-                height 0.46s cubic-bezier(0.33, 0, 0.2, 1),
-                /* ⚠️ 圆角必须在这条过渡里：终点那颗的半径与起点不同（9px → 6px），
-                   不写的话它会**瞬间**跳到终值，看着像「起飞时抖了一下」。 */
-                border-radius 0.46s cubic-bezier(0.33, 0, 0.2, 1),
-                border-width 0.46s linear,
-                border-color 0.46s linear,
-                background-color 0.46s linear,
-                box-shadow 0.46s linear;
-    /* 位置与尺寸都在变，提升成独立合成层，否则每帧都要重绘 */
-    will-change: top, left, width, height, background-color;
-    /* 变小/变大的那段时间会把白边外的东西裁掉；过场里这个按钮不该再响应悬停 */
-    overflow: hidden;
-    pointer-events: none;
-}
-
-/* 过场期间的临时外观：与**终点**（个人中心侧栏那颗头像）一致，
-   区别只是导航栏那颗还带着投影，飞过去的一路上淡掉。
-   ⚠️ 必须与 account.css 的 .acc-sidebar-avatar 对应：3px 白边、白底、圆角矩形、无投影。
-   ⚠️ 这里**不写 border-radius** —— 圆角由起点/终点各自的规则决定、由 is-morphing 过渡；
-      写死一个值会在过场一开始就把圆角顶掉（原来写的是 50%，配合正圆头像看不出来，
-      改回圆角矩形之后就会当场「方一下再变圆角」）。 */
-.rounded-square.is-flying {
-    border-width: 3px;
-    border-color: #ffffff;
-    background-color: #ffffff;
-    box-shadow: none;
-}
-
-.rounded-square.is-flying .avatar-dot {
-    opacity: 0;
 }
 
 /* 导航项容器：绝对定位，左侧 144px = 头像左 30 + 宽 64 + 间距 50。
@@ -239,7 +198,8 @@ body {
  * index.html 的 head 里那段内联脚本会在 ?from=account 时给 <html> 挂上 is-returning：
  * 遮罩还没就位之前先别把主界面画出来（只画一层底色），避免「先闪一下主界面再倒放」。
  * 底色与 .avatar-zoom 的渐变逐字一致，所以两者衔接看不出来。
- * main.js 一把遮罩摆好就会立刻摘下这个类，内容随即在遮罩下面正常渲染。 */
+ * main.js 一把遮罩摆好就会立刻摘下这个类，内容随即在遮罩下面正常渲染。
+ * ⚠️ 头像不用单独放行：它本来就在遮罩下面，收圈时它是**原地**露出来的（两边几何一致）。 */
 html.is-returning {
     background-image: linear-gradient(160deg, #1f2d3d 0%, #14507d 45%, #1565c0 100%);
     background-attachment: fixed;
@@ -249,11 +209,6 @@ html.is-returning {
 
 html.is-returning body > *:not(.avatar-zoom) {
     visibility: hidden;
-}
-
-/* 被 JS 搬到 body 上的头像（倒放的起点）要重新可见：visibility 允许被子元素改写 */
-html.is-returning .rounded-square.is-flying {
-    visibility: visible;
 }
 
 /* 无障碍：系统开启「减少动态效果」时不做任何过场（main.js 也会直接跳转，

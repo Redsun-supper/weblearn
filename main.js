@@ -249,164 +249,12 @@ document.addEventListener('DOMContentLoaded', function() {
     //
     // 注意：导航栏上的「退出登录」按钮随文字入口一起撤掉了，退出改在个人中心里做。
 
-    // 过场时长（毫秒）：与 main.css 的 .avatar-zoom / .rounded-square.is-flying 过渡一致
+    // 过场时长（毫秒）：与 main.css 的 .avatar-zoom 的过渡一致
     var ZOOM_MS = 460;
-    var zoomPlaying = false;
 
     // 是否应当减少动态效果（无障碍）：系统开启时不做任何过场，直接跳转
     function prefersReducedMotion() {
         return !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
-    }
-
-    // 导航栏那颗头像当前的几何与外观（它本身是 :hover / :active 会缩放的按钮，
-    // 所以要把「正在缩放」那一下算进去，并顺手把 transform 折进宽高）。
-    // 返回的 width/height 是**含白边的外框尺寸**，与目标那颗的 offsetWidth 同一口径。
-    function navAvatarBox() {
-        var btn = document.getElementById('navAvatar');
-        if (!btn) return null;
-        var r = btn.getBoundingClientRect();
-        var sx = 1, sy = 1;
-        var m = /matrix\(([^)]+)\)/.exec(window.getComputedStyle(btn).transform || '');
-        if (m) {
-            var p = m[1].split(',');
-            sx = Math.abs(parseFloat(p[0])) || 1;
-            sy = Math.abs(parseFloat(p[3])) || 1;
-        }
-        return {
-            left: r.left, top: r.top,
-            width: r.width * sx, height: r.height * sy,
-            radius: window.getComputedStyle(btn).borderTopLeftRadius
-        };
-    }
-
-    // 头像形变的目标几何 = 个人中心侧栏顶部那颗头像（.acc-sidebar-avatar）。
-    //
-    // 早先这里是一组写死的数字（还配了一段「必须与 account.css 对得上」的注释）；
-    // 2026-10 个人中心改成侧栏布局时，顺手改成**从样式表里把规则读出来再算**：
-    //   ① 侧栏内边距（.acc-sidebar 的 padding，取上下左右里最小的那个当左/上内边距）
-    //   ② 那颗头像自己的尺寸、白边、圆角（.acc-sidebar-avatar）
-    // 为什么会需要它：窄屏（≤920px）下侧栏横过来、头像会缩到 36×36，写死的 40 会差 4px。
-    // 改 account.css 里的内边距或头像尺寸时**不用再来改这里**。
-    //
-    // 为什么用「临时元素 + cssRules」而不是 getComputedStyle：那个元素在另一个文档（account/）里，
-    // 这边取不到；而临时元素在本页只能拿到**本页样式表**算出来的值 —— 要量的是 account.css 那两条规则，
-    // 所以直接把规则文本读出来自己解析，反而更直接、也不受「探针元素继承了什么」影响。
-    // 元素拿完当帧就删，不会闪。
-    function morphTarget() {
-        var nav = navAvatarBox();
-        if (!nav) return null;
-
-        var probe = document.createElement('div');
-        try {
-            probe.style.cssText = 'position:fixed;left:-9999px;top:0;visibility:hidden;pointer-events:none;';
-            probe.innerHTML = '<div class="acc-sidebar" style="width:200px"></div>' +
-                '<div class="acc-sidebar-avatar"><img alt=""></div>';
-            document.body.appendChild(probe);
-
-            var chunks = collectStyleText();
-            var sidebar = ruleBody(chunks, '.acc-sidebar');
-            var avatar = ruleBody(chunks, '.acc-sidebar-avatar');
-            if (!sidebar || !avatar) return null;   // 样式表还没到（首页是预读的）→ 退化成直接跳转
-
-            // 侧栏是 flex 纵列、内边距对称：左右内边距就是头像的左边距
-            //（padding 简写：一个值 = 四边相同，两个值 = 上下、左右）
-            var pad = (/(?:^|;)\s*padding\s*:\s*([^;]+)/.exec(sidebar) || [])[1] || '';
-            var parts = pad.split(/\s+/).filter(function (s) { return s; });
-            var padY = parseFloat(parts[0]) || 0;
-            var padX = parts.length > 1 ? (parseFloat(parts[1]) || 0) : padY;
-
-            var border = parseFloat((/(?:^|;)\s*border(?:-top)?(?:-width)?\s*:\s*([\d.]+)px/.exec(avatar) || [])[1]) || 0;
-            // 外框尺寸：account.css 那边给 .acc-sidebar-avatar 写了 box-sizing: border-box，
-            // 所以读到的 width/height 就是**含白边**的外框尺寸，不用再加 border * 2
-            //（改那边 box-sizing 的话这里要跟着改）。
-            var w = parseFloat((/(?:^|;)\s*width\s*:\s*([\d.]+)px/.exec(avatar) || [])[1]) || 0;
-            var h = parseFloat((/(?:^|;)\s*height\s*:\s*([\d.]+)px/.exec(avatar) || [])[1]) || 0;
-            var radius = ((/(?:^|;)\s*border-radius\s*:\s*([^;]+)/.exec(avatar) || [])[1] || '').trim();
-
-            if (!w || !h) return null;
-            return normalizeTarget(nav, {
-                left: padX, top: padY, width: w, height: h, radius: radius
-            }, nav.radius);
-        } finally {
-            // 不管走哪条路（包括上面提前 return）都要把探针摘掉
-            if (probe.parentNode) probe.parentNode.removeChild(probe);
-        }
-    }
-
-    // 把本页所有样式表的文本拼起来（跨域表读 cssRules 会抛，跳过即可），
-    // 并带上宽度媒体查询的过滤 —— 只看**当前视口真的生效**的那些规则，
-    // 否则窄屏下会把桌面尺寸也读进来。
-    function collectStyleText() {
-        var out = [];
-        var innerWidth = window.innerWidth || document.documentElement.clientWidth || 0;
-        for (var i = 0; i < document.styleSheets.length; i++) {
-            var rules = null;
-            try {
-                rules = document.styleSheets[i].cssRules;
-            } catch (e) {
-                continue;   // 跨域样式表：读不了就跳过（首页那两张都是同源的）
-            }
-            if (!rules) continue;
-            for (var k = 0; k < rules.length; k++) {
-                var rule = rules[k];
-                if (rule.media) {
-                    // 只认「最大宽度」这一类（本项目的断点都是 max-width）；
-                    // 媒体文本里没写、或写了别的（如 prefers-reduced-motion）就跳过
-                    var m = /max-width\s*:\s*(\d+)px/.exec(rule.media.mediaText || '');
-                    if (!m || innerWidth > parseFloat(m[1])) continue;
-                    if (rule.cssRules) {
-                        for (var j = 0; j < rule.cssRules.length; j++) {
-                            out.push(rule.cssRules[j].cssText || '');
-                        }
-                    }
-                    continue;
-                }
-                out.push(rule.cssText || '');
-            }
-        }
-        return out;
-    }
-
-    // 从样式表文本里找出某条选择器所在的**规则体**（返回最后一个匹配的 ——
-    // 同优先级下后面写的赢，与浏览器的层叠一致）。
-    function ruleBody(chunks, selector) {
-        var body = null;
-        for (var i = 0; i < chunks.length; i++) {
-            var at = chunks[i].indexOf(selector);
-            if (at < 0) continue;
-            // 选择器后面必须紧跟 `{`（只隔空白），避免把 `.acc-sidebar-avatar img` 之类也算进来
-            var rest = chunks[i].slice(at + selector.length);
-            if (!/^\s*\{/.test(rest)) continue;
-            body = chunks[i].slice(chunks[i].indexOf('{', at) + 1).replace(/\}\s*$/, '');
-        }
-        return body;
-    }
-
-    // 把落点对齐到导航栏那颗头像的**实际外框**：
-    //   · 尺寸：**原样用 CSS 里的 40×40（含白边）**，一点不缩 —— 它就是侧栏那颗
-    //     头像真正的外框尺寸，人眼看过去要落在的位置
-    //   · 圆角：按起点那颗的比例换算（起点 64×64 用 9px → 圆角占外框 9/64；
-    //     落点 40×40 于是取 9 × 40/64 = 5.6px，与 CSS 里写的 6px 基本吻合）。
-    //     这样飞行途中圆角比例恒定，看不出「圆角自己化了一下」
-    //   · 位置：**横向**让两颗头像中心对齐（起点中心 x = 62，落点 12 + 20），
-    //     纵向**保持 CSS 给的 top**（= 侧栏内边距 20px，与 account 页里那颗头像逐像素同位）。
-    //     为什么纵向不居中：落点要盖住换页那一刻侧栏头像**真正**所在的位置，
-    //     不然跳过去会看到它往上挪十几像素（实测 12px）。
-    function normalizeTarget(nav, target, navRadius) {
-        var r1 = parseFloat(navRadius);
-        var navSide = Math.min(nav.width, nav.height);
-        var usable = !isNaN(r1) && r1 > 0 && navSide > 0;
-        var ratio = usable ? r1 / navSide : 0.5;   // 起点那颗的「圆角 / 外框」比例
-        var side = Math.min(target.width, target.height);
-
-        target.radius = usable ? (ratio * side) + 'px' : '0.5';
-        target.ratio = ratio;
-
-        // 横向按中心对齐（起点中心 62 = 落点 12 + 20）；纵向不动，保持 CSS 的位置
-        if (Math.abs(nav.width - target.width) > 2) {
-            target.left += (nav.width - target.width) / 2;
-        }
-        return target;
     }
 
     // clip-path 圆形裁剪是否可用；不可用（老浏览器）就退化成直接跳转
@@ -414,26 +262,22 @@ document.addEventListener('DOMContentLoaded', function() {
         return !!(window.CSS && window.CSS.supports && window.CSS.supports('clip-path', 'circle(0px at 0px 0px)'));
     }
 
-    // 点击头像 → 进入个人中心。整段是**一次连续的动作**，三件事同时发生：
-    //   ① 遮罩（与个人中心同色）从头像正中扩散到盖满全屏
-    //   ② 头像飞到最上层，边扩散边缩小 + 右移，落成个人中心侧栏顶部那颗头像
-    //   ③ 460ms 后换页 —— 那时头像已在目标位置，新页面原样接着显示
+    // 点击头像 → 进入个人中心。整段只有一件事：**白底从头像正中扩散开**。
     //
-    // 两个实现要点：
-    //   · 头像必须**临时挪到 body 下**：它原本在 .rectangle（z-index:100）里，子元素的
-    //     z-index 越不过父级建立的层叠上下文，不挪就永远压在整屏遮罩（z-index:9000）下面，
-    //     也就没有「背景从头像底下长出来」的效果。挪的时候用 getBoundingClientRect 把
-    //     几何原样写死，所以看不出移动。
-    //   · 遮罩的第一帧要把过渡关掉：否则起点会落在样式表的兜底值（圆心在屏幕正中），
-    //     圆就从屏幕中心长出来了（实测踩过一次）。
-    function playAvatarZoom() {
+    // 头像自己**不动**：它在首页导航栏里是 64×64 @ (30, 18)，而个人中心侧栏那颗
+    // （account.css 的 .acc-sidebar，padding 18px 30px + 64×64）也是 64×64 @ (30, 18) ——
+    // 两边逐像素重合，所以换页时它就在原地，不需要任何形变或位移。
+    // 2026-10 之前这里还有一段「缩小飞进侧栏」的形变（morphTarget / normalizeTarget
+    // 那一整套，从 account.css 里读几何再折算），几何对齐之后整段都删了。
+    //
+    // ⚠️ 遮罩的第一帧要把过渡关掉：否则起点会落在样式表的兜底值（圆心在屏幕正中），
+    //    圆就从屏幕中心长出来了（实测踩过一次）。
+    function spreadOverlay() {
         var btn = document.getElementById('navAvatar');
         var layer = document.getElementById('avatarZoom');
         var target = 'account/?from=avatar';
-        var morph = morphTarget();
 
-        if (zoomPlaying) return;
-        if (!btn || !layer || !canZoom() || prefersReducedMotion() || !morph) {
+        if (!btn || !layer || !canZoom() || prefersReducedMotion()) {
             window.location.href = target; // 直接跳，别让人白等
             return;
         }
@@ -446,47 +290,23 @@ document.addEventListener('DOMContentLoaded', function() {
         var radius = Math.ceil(Math.sqrt(dx * dx + dy * dy)) + 32;
         var origin = ' at ' + cx + 'px ' + cy + 'px)';
 
-        zoomPlaying = true;
-
-        // ---- ① 把头像原样「钉」到 body 上（位置一个像素都不动）----
-        btn.style.cssText = 'position:fixed;left:' + rect.left + 'px;top:' + rect.top +
-            'px;width:' + rect.width + 'px;height:' + rect.height + 'px;margin:0;transform:none;z-index:9001;';
-        document.body.appendChild(btn);
-        void btn.offsetWidth; // 让「钉住」这一帧落定，别和下面的形变并成一次
-
-        // ---- ② 遮罩的起点：圆心落在头像正中、半径 0 ----
+        // 起点：圆心落在头像正中、半径 0（屏幕上看不到东西）
         layer.style.transition = 'none';
-        layer.classList.add('is-armed'); // 可见（半径 0，屏幕上看不到东西）
+        layer.classList.add('is-armed');
         layer.style.clipPath = 'circle(0px' + origin;
         void layer.offsetWidth;
 
-        // ---- ③ 形变：头像缩小并落进个人中心侧栏（与遮罩扩散同时开始）----
-        // is-morphing 只提供过渡、is-flying 提供过场期间的外观（见 main.css 的注释）
-        btn.classList.add('is-morphing');
-        btn.classList.add('is-flying');
-        void btn.offsetWidth;
-        btn.style.left = morph.left + 'px';
-        btn.style.top = morph.top + 'px';
-        btn.style.width = morph.width + 'px';
-        btn.style.height = morph.height + 'px';
-        // 圆角也显式写：C 的圆角比例与起点**不是逐像素相等**（40 × 9/64 = 5.6 → 取了 6px），
-        // 不写死的话过渡结束时它会跳到 6px，中途看着像「圆角自己化了一下」。
-        btn.style.borderRadius = morph.radius;
-
-        // ---- ④ 遮罩开始扩散 ----
+        // 扩散。换页等它的过渡**真正结束**（而不是掐个 460ms 的定时器）：
+        // 两者同为 ZOOM_MS，浏览器最后一次绘制大约在 450ms —— 那时还差一点点，
+        // 换页后是 100% 状态，那一点点就是肉眼看到的「跳一下」。
         layer.style.transition = '';
         layer.style.clipPath = 'circle(' + radius + 'px' + origin;
-
-        // ---- ⑤ 等形变**真正结束**再换页 ----
-        // 不能只靠 setTimeout：CSS 过渡与定时器同为 460ms，浏览器最后一次绘制大约在
-        // 450ms，那时位置/尺寸/白边还差一点点，换页后是 100% 状态 —— 那一点点就是
-        // 肉眼看到的「跳一下」。所以听过渡结束事件，定时器只作兜底。
-        goWhenSettled(btn, function() {
+        goWhenSettled(layer, function() {
             window.location.href = target;
         });
     }
 
-    // 等一个元素的过渡跑完再执行（只认 width：形变那几个属性的时长一致，等一个就够）。
+    // 等一个元素的过渡跑完再执行（只认一个属性名：那几条的时长一致，等一个就够）。
     // 兜底：过渡被跳过（元素被隐藏等）或事件丢失时，ZOOM_MS + 120 后照样执行。
     function goWhenSettled(el, done) {
         var settled = false;
@@ -496,57 +316,61 @@ document.addEventListener('DOMContentLoaded', function() {
             done();
         };
         el.addEventListener('transitionend', function onEnd(e) {
-            if (e.propertyName !== 'width') return;
+            if (e.propertyName !== 'clip-path') return;
             el.removeEventListener('transitionend', onEnd);
             fire();
         });
         window.setTimeout(fire, ZOOM_MS + 120);
     }
 
-    // 把飞出去的头像放回导航栏。正常流程用不到（换页后这份 DOM 就没了），
-    // 只有浏览器用「前进后退缓存」把首页整页恢复回来时才需要复位。
-    function resetAvatarFlight() {
+    // 只把遮罩复位（头像不参与过场，没什么要还原的）。
+    // 换页之后这份 DOM 就没了，所以只有浏览器用「前进后退缓存」（bfcache）把首页
+    // 整页恢复回来时才走得到这里 —— 那时遮罩还停在「盖满全屏」的状态上。
+    function resetAvatarOverlay() {
         var layer = document.getElementById('avatarZoom');
-        if (layer) {
-            layer.classList.remove('is-armed');
-            // 同 playReturnAnimation 的收尾：先关过渡再清几何，别让它朝兜底值再补一段
-            layer.style.transition = 'none';
-            layer.style.clipPath = '';
-            void layer.offsetWidth;
-            layer.style.transition = '';
-        }
-        var btn = document.getElementById('navAvatar');
-        if (btn) {
-            btn.classList.remove('is-flying');
-            btn.classList.remove('is-morphing');
-            btn.style.cssText = '';
-            var nav = document.querySelector('.rectangle');
-            if (nav && btn.parentNode !== nav) {
-                nav.insertBefore(btn, nav.firstChild);
-            }
-        }
-        zoomPlaying = false;
+        if (!layer) return;
+        layer.classList.remove('is-armed');
+        // 先关过渡再清几何：否则清除行内 clip-path 会朝样式表的兜底值再补一段过渡
+        layer.style.transition = 'none';
+        layer.style.clipPath = '';
+        void layer.offsetWidth;
+        layer.style.transition = '';
     }
 
     // ===================== 反向转场：从个人中心返回 =====================
     // 账号页那边先在本地把组件淡出，再带 ?from=account 跳回本页。
-    // 本页要做的是「倒放」：一进来（第一帧之前）就把画面摆成**账号页最后一帧**的样子 ——
-    // 遮罩整屏盖住 + 头像已经在侧栏那个位置；等页面在遮罩下面画好，再同时
-    // ① 把圆圈缩回导航栏的位置与大小 ② 把侧栏那颗外观还原成导航栏那颗。
+    // 本页要做的只是「倒放那块遮罩」：一进来（第一帧之前）就用它盖住整屏，等页面在
+    // 遮罩下面画好，再把圆圈从**首页头像那颗的位置**缩到 0、露出主界面。
+    //
+    // 为什么这里比原来短得多：头像在两边都是 64×64 @ (30, 18)，换页时它根本没动过，
+    // 所以不需要「把侧栏那颗还原成导航栏那颗」那一整套几何搬运（2026-10 随形变一起删了）。
     var FROM_ACCOUNT = /[?&]from=account(&|=|$)/.test(window.location.search);
 
-    // 前置条件：导航栏必须可见（头像才有落点）。沉浸模式下导航栏会连头像一起隐藏，
-    // 这种情况本轮先跳过反向动画（原因与候选方案记在根目录 TODO.md）。
-    // 判据用英语模块同一个键，同步可读，不会和它的异步初始化抢时序。
+    // 前置条件：导航栏得**真的**看得见（缩圈的圆心要落在头像上）。
+    //
+    // 判据不是「沉没沉浸」这个偏好本身，而是那份偏好**有没有被写下来过**：
+    // 英语模块只在「进过复习页」时才动 `reviewImmersive` 这个键（applyImmersive 挂
+    // body.is-immersive 的那一刻就带着这个偏好走，见 modules/english/english.js），
+    // 而导航栏藏不藏是**跟着这个键一起**发生的。所以：
+    //   · 键不存在（多数情况：没进过英语复习页）→ 导航栏就是显示着的 → 有落点；
+    //   · 键存在且不是 '1' → 用户自己关掉了沉浸 → 导航栏显示 → 有落点；
+    //   · 键就是 '1' → 沉浸开着 → 导航栏连头像一起隐藏 → 没落点，别播。
+    // ⚠️ 别再往「null 也算没有落点」那边写。上一版就是 `raw === null → false`，
+    //    注释里明写着「没有记录 = 默认开启沉浸」，可导航栏在没有记录时恰恰是**显示**的 ——
+    //    于是全新会话（localStorage 干净）点「返回主页面」永远退化成普通跳转
+    //    （实测：首页的遮罩始终没加过 is-armed）。空串同理：等于没记录。
+    //    真到了沉浸状态、导航栏没排上版时，下面那道 rect.width 的检查会兜住。
     function returnHasLandingSpot() {
+        var raw = null;
         try {
-            return window.localStorage.getItem('reviewImmersive') === '0';
+            raw = window.localStorage.getItem('reviewImmersive');
         } catch (e) {
-            return false; // 读不到 localStorage（隐私模式）→ 按「不安全」处理，退回普通跳转
+            raw = null; // 隐私模式下读不到 → 与「没有记录」同义：导航栏显示着
         }
+        return raw !== '1';
     }
 
-    // 等页面在遮罩下面画好（load + 两帧）再开始倒放，否则缩圈时露出的是还没画完的页面
+    // 等页面在遮罩下面画好（load + 两帧）再开始收圈，否则缩圈时露出的是还没画完的页面
     function whenPageReady(fn) {
         var run = function() {
             window.requestAnimationFrame(function() {
@@ -559,21 +383,15 @@ document.addEventListener('DOMContentLoaded', function() {
 
     // 返回 false 表示「这次不播倒放」（调用方负责把 is-returning 摘掉，恢复正常显示）
     function playReturnAnimation() {
-        var btn = document.getElementById('navAvatar');
         var layer = document.getElementById('avatarZoom');
-        if (!btn || !layer || !canZoom() || prefersReducedMotion() || !returnHasLandingSpot()) {
+        if (!layer || !canZoom() || prefersReducedMotion() || !returnHasLandingSpot()) {
             return false;
         }
 
-        // 倒放的起点 = 正向形变的落点，两者必须是同一组数字（都从现在的 CSS 算出来）。
-        // ⚠️ 必须在**挪动按钮之前**算：morphTarget() 量的是按钮在导航栏里的位置，
-        //    挪走之后它就在屏幕左上角了，再量会得到一份错得离谱的结果。
-        var morph = morphTarget();
-        if (!morph) return false;
-
-        // 头像在导航栏里的位置（正向过场结束时它也是回到这里）
-        var rect = btn.getBoundingClientRect();
-        if (!rect.width) return false; // 导航栏没排上版 → 不播
+        // 圆心 = 首页头像那颗的中心。取不到就说明导航栏还没排上版，不播。
+        var btn = document.getElementById('navAvatar');
+        var rect = btn ? btn.getBoundingClientRect() : null;
+        if (!rect || !rect.width) return false;
         var cx = rect.left + rect.width / 2;
         var cy = rect.top + rect.height / 2;
         var dx = Math.max(cx, window.innerWidth - cx);
@@ -581,19 +399,7 @@ document.addEventListener('DOMContentLoaded', function() {
         var radius = Math.ceil(Math.sqrt(dx * dx + dy * dy)) + 32;
         var origin = ' at ' + cx + 'px ' + cy + 'px)';
 
-        zoomPlaying = true; // 倒放期间头像不响应点击（它正被当作动画元素用）
-
-        // ---- 第一帧：全部无过渡，直接摆成「账号页最后一帧」----
-        btn.classList.add('is-morphing');
-        btn.classList.add('is-flying');
-        btn.style.cssText = 'position:fixed;left:' + morph.left + 'px;top:' + morph.top +
-            'px;width:' + morph.width + 'px;height:' + morph.height +
-            'px;margin:0;transform:none;z-index:9001;transition:none;' +
-            // 圆角也一起写：与正向的落点保持一致（否则第一帧会用样式表的 9px，
-            // 而 40×40 那颗实际是 6px，倒放刚开始会看到圆角「弹」一下）
-            'border-radius:' + morph.radius + ';';
-        document.body.appendChild(btn);
-
+        // ---- 第一帧：无过渡，直接摆成「账号页最后一帧」——遮罩整屏盖住 ----
         layer.style.transition = 'none';
         layer.classList.add('is-armed');
         layer.style.clipPath = 'circle(' + radius + 'px' + origin;
@@ -603,37 +409,12 @@ document.addEventListener('DOMContentLoaded', function() {
         document.documentElement.classList.remove('is-returning');
 
         whenPageReady(function() {
-            // ---- 倒放开始：圆圈缩回头像 + 侧栏头像变回导航栏那颗 ----
-            btn.style.transition = '';
-            void btn.offsetWidth;              // 让过渡重新生效，再改几何
-            btn.classList.remove('is-flying'); // 外观变回头像（边框/底色由 is-morphing 兜住过渡）
-            btn.style.left = rect.left + 'px';
-            btn.style.top = rect.top + 'px';
-            btn.style.width = rect.width + 'px';
-            btn.style.height = rect.height + 'px';
-
+            // ---- 收圈 ----
             layer.style.transition = '';
             layer.style.clipPath = 'circle(0px' + origin;
 
-            goWhenSettled(btn, function() {
-                // 先摘过渡再清行内几何：否则「top:18px → CSS 的 50% + translateY(-50%)」
-                // 会被当成一次新的过渡，头像会晃一下
-                btn.classList.remove('is-morphing');
-                btn.classList.remove('is-flying');
-                btn.style.cssText = '';
-                var nav = document.querySelector('.rectangle');
-                if (nav) nav.insertBefore(btn, nav.firstChild);
-
-                layer.classList.remove('is-armed');
-                // ⚠️ 先关过渡再清几何：否则清除行内 clip-path 会立刻朝样式表的兜底值
-                // （circle(0px at 50% 50%)）再补一段过渡 —— 圆心会从头像漂向屏幕正中
-                // （实测过一次：calc(5.69% + 54.94px)）。半径是 0 所以看不见，
-                // 但那是白白多跑一段合成，收尾就该干干净净。
-                layer.style.transition = 'none';
-                layer.style.clipPath = '';
-                void layer.offsetWidth;
-                layer.style.transition = '';
-                zoomPlaying = false;
+            goWhenSettled(layer, function() {
+                resetAvatarOverlay();
 
                 // 参数用完就抹掉：刷新时不会再播一遍（URL 也干净）
                 if (window.history && window.history.replaceState) {
@@ -683,7 +464,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
     var navAvatarEl = document.getElementById('navAvatar');
     if (navAvatarEl) {
-        navAvatarEl.addEventListener('click', playAvatarZoom);
+        navAvatarEl.addEventListener('click', spreadOverlay);
     }
 
     // 带着 ?from=account 回来（= 刚从个人中心点返回）→ 播反向过场（倒放）。
@@ -721,23 +502,20 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 
     // 从个人中心返回时浏览器可能直接用「前进后退缓存」（bfcache）恢复页面：
-    // 那时脚本不会重跑，飞出去的头像与展开的遮罩都停在原样 —— 恢复时复位，
+    // 那时脚本不会重跑，展开的遮罩还停在原样 —— 恢复时复位，
     // 并顺手重新问一次登录态（登录/退出后返回都可能变化）。
     window.addEventListener('pageshow', function(event) {
         if (!event.persisted) return;
-        resetAvatarFlight();
+        resetAvatarOverlay();
         renderAvatarState();
     });
 
     // 调试口（与 account/account.js 的 window.__guangxueAccount 同一个用意）：
-    // 形变落点是**从样式表算出来的**，出问题时需要能在控制台里逐项看它是怎么算的。
-    // 只读、无副作用，普通使用不会碰到。
+    // 过场只剩「遮罩扩散 / 收圈」这一步，出问题时需要能在控制台里手动播一遍看。只读、无副作用。
     window.__guangxue = {
-        morphTarget: morphTarget,
-        navAvatarBox: navAvatarBox,
-        playAvatarZoom: playAvatarZoom,
+        spreadOverlay: spreadOverlay,
         playReturnAnimation: playReturnAnimation,
-        resetAvatarFlight: resetAvatarFlight
+        resetAvatarOverlay: resetAvatarOverlay
     };
 
 });

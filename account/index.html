@@ -128,12 +128,12 @@
     <div class="acc-layout" id="accLayout" hidden>
         <!-- 左侧栏：头像 + 品牌 + 导航（导航项由 account.js 渲染进 #accNav） -->
         <aside class="acc-sidebar">
-            <!-- ⚠️ 这一格是首页头像形变的**落点**：位置与尺寸写死在
-                 account.css 的 .acc-sidebar-avatar 里，必须与 main.js 的
-                 MORPH_TARGET 一致（左 20、上 20、40×40 的圆形）。
-                 动这里时另一处要一起改，否则点头像过来会「跳一下」。 -->
+            <!-- ⚠️ 这一格同时是**首页头像的视觉落点**：尺寸、白边、圆角、以及由侧栏内边距
+                 决定的 (30, 18) 位置，全部写在 account.css 的 .acc-sidebar / .acc-sidebar-avatar 里，
+                 必须与 main.css 的 .rounded-square 一字不差 —— 两边一致，点头像进来时那颗头像
+                 就在原地，过场只剩「白底扩散」，不需要任何形变或位移。改一处就要改另一处。 -->
             <div class="acc-sidebar-avatar" id="accAvatar">
-                <!-- 与站点导航左上角同一张头像素材：从首页扩散过来的圆形正好落在它上面 -->
+                <!-- 与站点导航左上角同一张头像素材：两边同位同尺寸，扩散过来时正好对得上 -->
                 <!-- ⚠️ 临时：与首页同步置空（见 index.html 里的说明）。恢复时把 src 改回
                      ../image/avatar.png；这一段的结构不要动。 -->
                 <img src="../image/avatar-blank.png" alt="头像">
@@ -144,8 +144,8 @@
             </a>
             <nav class="acc-nav" id="accNav"></nav>
             <div class="acc-sidebar-footer">
-                <!-- 返回站点。⚠️ 它**不参与**退场淡出：首页那边的反向形变要从这颗按钮
-                     的位置起飞，动了就接不上（见 main.js 的 reverseAvatarFlight）。 -->
+                <!-- 返回站点：走 leaveToHome（本地先淡出再带 ?from=account 跳回首页，
+                     首页那边把遮罩从导航栏头像的位置收圈）。 -->
                 <a class="acc-link" id="accHome" href="../index.html">← 返回主页面</a>
                 <button class="acc-link acc-link-btn-plain" type="button" id="accLogout">退出登录</button>
             </div>

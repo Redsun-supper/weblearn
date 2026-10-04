@@ -22,7 +22,7 @@
     <div class="rectangle">
         <!-- 头像：暂时作为「个人中心」的唯一入口（原来是右上角的文字链接）。
              button而不是div，是为了键盘也能进入（Tab 聚焦 + 回车触发）。
-             点击后 main.js 的 playAvatarZoom() 会让 .avatar-zoom 从头像位置扩散覆盖全屏，再跳转 account/ -->
+             点击后 main.js 的 spreadOverlay() 会让 .avatar-zoom 从头像位置扩散覆盖全屏，再跳转 account/ -->
         <button class="rounded-square" type="button" id="navAvatar"
                 title="个人中心" aria-label="进入个人中心">
             <!-- ⚠️ 临时：头像素材暂时置空（用 1×1 透明占位图），只换这里与 account/index.html
@@ -55,24 +55,10 @@
         <p class="placeholder-text">请选择一个科目查看内容</p>
     </div>
     <!-- 放 body 末尾：脚本执行时上面的 DOM 已经就位 -->
-    <!-- 后台与个人中心的样式表（首页本身不用，读一遍只是为了「点头像」那一刻的形变）：
-         main.js 要量出个人中心侧栏那颗头像的尺寸与位置，靠的是**真样式表** +
-         临时插进来的两个探针元素。不预读的话那段会量到未经样式处理的值（回退是 40px 那颗），
-         窄屏下会差 4px。动态插入（而不是直接写 <link>）有两个理由：
-           · 不阻塞首页的首次渲染与 main.js 的执行（文件本身也只有 19KB）
-           · 万一加载失败，onerror 一吞即可，绝不影响首页 —— 形变会按兜底值走
-         两条路径都是相对于**文档**解析的，所以同一个相对地址在本页也有效。 -->
-    <script>
-        ['account/account.css'].forEach(function (href) {
-            window.addEventListener('load', function () {
-                var link = document.createElement('link');
-                link.rel = 'stylesheet';
-                link.href = href;
-                link.onerror = function () { /* 拿不到就按兜底值量，不打扰用户 */ };
-                document.head.appendChild(link);
-            });
-        });
-    </script>
+    <!-- 2026-10：这里原来还有一段「等 load 之后动态插入 account/account.css」的脚本，
+         用途是让 main.js 的 morphTarget() 能读到侧栏头像那条规则、算出形变落点。
+         头像改成两边同尺寸同位（首页与个人中心都是 64×64 @ (30, 18)）、形变整段删掉之后，
+         探针不再需要，首页也就不再预读个人中心的样式表 —— 那份表由 account/ 自己加载。 -->
     <script src="main.js"></script>
 </body>
 </html>

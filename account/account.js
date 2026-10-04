@@ -293,12 +293,28 @@
     }
 
     // 显示主布局（侧栏 + 主区），并把路由挂上
+    // 侧栏与主区（登录态已确认）：
+    //   · 布局淡入（accLayoutIn，很短）—— 门禁还整屏盖着，它在下面排好版了，淡进来不换脸
+    //   · 门禁整块淡出（GATE_FADE_MS）
+    //   · 检测屏**必须立刻藏**：它是绝对定位在 `.acc-gate`（整屏）正中的，而侧栏布局下
+    //     「正中」落在主区偏左的位置 —— 门禁淡出的那 160ms 里它会从侧栏旁边飘出来一次
+    //     （实测截图里看到过「正在检查登录状态…」出现在主区空白处）。已登录这条路上
+    //     它本来就没有交代，直接摘掉最干净。
     function showLayout(user) {
         var gate = $('accGate');
         var layout = $('accLayout');
         if (!gate || !layout) return;
 
+        var check = $('accCheck');
+        clearTimeout(screenFadeTimer);
+        screenFadeTimer = null;
+        if (check && !check.hasAttribute('hidden')) {
+            check.classList.remove(CHECK_OUT_CLASS);
+            check.setAttribute('hidden', 'hidden');
+        }
+
         layout.removeAttribute('hidden');
+        layout.classList.add(ANIMATING_CLASS, ARRIVING_CLASS);
         playSidebarIn();
         if (gate.hasAttribute('hidden')) return;
 
@@ -306,13 +322,13 @@
         gate.classList.add('is-animating');
         gate.style.transition = 'opacity ' + GATE_FADE_MS + 'ms linear';
         gate.style.opacity = '0';
-        clearTimeout(screenFadeTimer);
         screenFadeTimer = window.setTimeout(function () {
             screenFadeTimer = null;
             gate.setAttribute('hidden', 'hidden');
             gate.style.transition = '';
             gate.style.opacity = '';
             gate.classList.remove('is-animating');
+            layout.classList.remove(ANIMATING_CLASS, ARRIVING_CLASS);
         }, GATE_FADE_MS);
     }
 

@@ -9,11 +9,13 @@
  * 三条约定，改之前先读：
  *   1. 背景渐变必须与 main.css 的 .avatar-zoom 完全一致 —— 首页点头像时那块
  *      遮罩是同一串渐变，扩散盖满之后跳到本页，接缝才看不出来。
- *   2. .acc-sidebar-avatar 的几何（内边距 + 40×40 + 3px 白边 + 6px 圆角）是首页头像形变的
- *      **落点**：main.js 的 morphTarget() 会临时插一个同样的侧栏 + 头像探针，
- *      把这组值从样式表里**量出来**（不是写死的），所以这里改了那边会自动跟上。
- *      唯一不能改的是「两颗头像的圆角要同一个比例」（首页 64×64 用 9px）——
- *      详见 main.js 那段注释。
+ *   2. .acc-sidebar / .acc-sidebar-avatar 的几何（内边距 18px 30px + 64×64 + 3px 白边
+ *      + 9px 圆角）是「首页那颗头像过场后落到哪儿」的答案：两处必须**一字不差**地一样
+ *      （首页 .rounded-square 是 left:30px + 100px 导航栏里垂直居中 → (30, 18)）。
+ *      正因为逐像素重合，过场里那颗头像根本不用动，只剩「白底扩散 / 收圈」。
+ *      ⚠️ 原来是 40×40 + 6px 圆角、由 main.js 的 morphTarget() 从样式表里量出来再做形变，
+ *         2026-10 按用户要求改成「两边一样大」（这样切换时头像位置不动、不需要动画）。
+ *         所以**这里改了就必须同步改 main.css 的 .rounded-square**，没有探测兜底了。
  *   3. 入场动效的「动作」在这里（accRise / accPop），「什么时候开始」在
  *      account.js（给元素写 animation-delay），两边只靠延时数字对齐。
  * ========================================================================== */
@@ -356,37 +358,45 @@ body.acc-page {
     min-height: 100vh;
 }
 
-/* 左侧栏：半透明深色，让下面的渐变透出来（与后台那块实心 #263238 的差别就在这） */
+/* 出现时配一段很短的淡入：门禁整屏盖着的时候布局就已经在它**下面**排好版了
+   （侧栏、卡片的位置都不会动），淡进来只是让这一下不「啪」地换脸。
+   ⚠️ 时长与 account.js 的 GATE_FADE_MS 一致（门禁淡完它也该淡完了）。 */
+.acc-layout.is-arriving {
+    animation: accLayoutIn 0.16s linear both;
+}
+
+@keyframes accLayoutIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+/* 左侧栏：半透明深色，让下面的渐变透出来（与后台那块实心 #263238 的差别就在这）
+   ⚠️ 内边距是 18px 30px，不是后台那套 20px 0 —— 它要和首页导航栏那颗头像**逐像素对齐**：
+   首页 `.rounded-square` 是 left:30px + 导航栏 100px 高里垂直居中（64px 高 → top 18px）。
+   所以这里左右 30px、上下 18px，配上下面那个 64×64 的头像，两边都落在 (30, 18)。
+   这样点头像进个人中心时那颗头像**一个像素都不用动**，过场只剩「白底扩散」。 */
 .acc-sidebar {
     display: flex;
     flex-direction: column;
     width: 200px;
     flex: 0 0 200px;
-    padding: 20px 0;
+    padding: 18px 30px;
     background-color: rgba(20, 30, 40, 0.55);
     border-right: 1px solid rgba(255, 255, 255, 0.12);
 }
 
-/* ⚠️ 首页头像形变的落点：侧栏内边距 + 40×40 的头像框（含 3px 白边）+ 6px 圆角。
-   桌面档：内边距 20px（写成 `0 20px` 的竖排值）→ 落点 (20, 20)；
-   窄屏档（≤920px）：内边距 `12px 16px` + 36×36 + 2px 白边 → 落点 (16, 12)。两档实测都逐像素吻合。
-   这组值由 main.js 的 morphTarget() **从本文件的规则里读出来再算**，
-   所以在这里改尺寸/内边距不用去改 JS —— 但外观必须与 main.css 的
-   .rounded-square.is-flying 保持一致（白边/白底/圆角矩形/无投影）。
-   ⚠️ border-radius 要与首页那颗**保持同一个比例**：首页 64×64 用 9px（= 9/64）。
-   40 × 9/64 = 5.6 → 取 6px；窄屏 36 × 9/64 = 5.06 → 沿用 6px（差 1px，肉眼看不出）。
-   main.js 按这个比例算出落点的圆角（约 5.6 / 5.1），过场途中不会有跳变。
-   ⚠️ 用 border-box 让 width/height 直接表示**外框**尺寸（40 就是 40）：
-   不是的话 main.js 那边的换算口径就要跟着改（它现在是「读到的 width + 左右白边」）。
-   为什么是 40×40 贴左上角：首页那颗是 64×64、定位 left:30px 垂直居中，
-   缩到侧栏这个位置时看起来就是「头像飞进来落进自己的位置」。 */
+/* ⚠️ 首页头像过场的落点：与首页那颗**完全同款**（64×64、3px 白边、9px 圆角、白底），
+   位置也由上面的内边距对齐到 (30, 18)。
+   ⚠️ 这组数字必须与 main.css 的 .rounded-square 一字不差 —— 差一点就要在过场里补位移，
+   而「不补位移」正是不要那段形变动画的前提。改这里请同时改 main.css。
+   ⚠️ 用 border-box 让 width/height 直接表示**外框**尺寸（64 就是 64，含白边）。 */
 .acc-sidebar-avatar {
     box-sizing: border-box;
-    width: 40px;
-    height: 40px;
-    margin: 0 20px 12px;
+    width: 64px;
+    height: 64px;
+    margin: 0 0 12px;
     border: 3px solid #ffffff;
-    border-radius: 6px;
+    border-radius: 9px;
     background-color: #ffffff;
     overflow: hidden;
 }
@@ -398,13 +408,17 @@ body.acc-page {
     object-fit: cover;
     /* 照片自己裁圆角：容器的 overflow 裁的是**圆角外**的方块，图片方角会在白边内侧露出来
        （与首页 .avatar 同一个做法，圆角值也取同一个） */
-    border-radius: 6px;
+    border-radius: 9px;
 }
 
 .acc-brand {
     display: flex;
     flex-direction: column;
-    margin: 0 20px 16px;
+    align-items: center;
+    /* 左右不再各留 20px：侧栏自带 30px 内边距，文字与头像同一条竖线（见 .acc-sidebar）。
+       ⚠️ 居中而不是左对齐：左边那颗 64px 的头像占满了内容宽度（200 - 30×2 = 140），
+       品牌文字左对齐会显得偏在左边，居中才压得住。 */
+    margin: 0 0 16px;
     padding-bottom: 14px;
     border-bottom: 1px solid rgba(255, 255, 255, 0.12);
     text-decoration: none;
@@ -421,20 +435,36 @@ body.acc-page {
     color: #90a4ae;
 }
 
-/* 侧栏导航（条目由 account.js 渲染） */
+/* 侧栏导航（条目由 account.js 渲染）
+   ⚠️ 负外边距让这列导航**通栏**（左右都顶到侧栏边缘）、再用左右 30px 内边距把文字拉回
+   与头像同一条竖线；蓝色竖条则绝对定位在「内容左缘」= 距侧栏左边 30px 处 —— 既跟文字对齐，
+   又不会把选中底色截断成一块内缩的补丁（这是侧栏改成 30px 内边距之后必须做的抵消）。 */
 .acc-nav {
     flex: 1;
+    margin: 0 -30px;
 }
 
 .acc-nav-item {
     display: block;
-    padding: 10px 20px;
-    border-left: 3px solid transparent;
+    position: relative;
+    padding: 10px 30px;
     color: #cfd8dc;
     font-size: 14px;
     text-decoration: none;
     cursor: pointer;
-    transition: background-color 0.2s, color 0.2s, border-color 0.2s;
+    transition: background-color 0.2s, color 0.2s;
+}
+
+/* 选中 / 悬停时才出现的左侧竖条：绝对定位（不在文档流里，所以文字的左对齐不受影响） */
+.acc-nav-item::before {
+    content: '';
+    position: absolute;
+    left: 30px;
+    top: 0;
+    bottom: 0;
+    width: 3px;
+    background-color: transparent;
+    transition: background-color 0.2s;
 }
 
 .acc-nav-item:hover {
@@ -444,8 +474,11 @@ body.acc-page {
 
 .acc-nav-item.is-active {
     background-color: rgba(255, 255, 255, 0.13);
-    border-left-color: #64b5f6;
     color: #ffffff;
+}
+
+.acc-nav-item.is-active::before {
+    background-color: #64b5f6;
 }
 
 /* 导航项右侧的小字（会话台数之类） */
@@ -462,9 +495,11 @@ body.acc-page {
 .acc-sidebar-footer {
     display: flex;
     flex-direction: column;
+    /* 与品牌那块一致：居中（见 .acc-brand 的说明），左右留给侧栏自己的 30px 内边距 */
+    align-items: center;
     gap: 8px;
     margin-top: auto;
-    padding: 14px 20px 0;
+    padding: 14px 0 0;
     border-top: 1px solid rgba(255, 255, 255, 0.12);
 }
 
@@ -843,16 +878,16 @@ body.acc-page {
         flex-wrap: wrap;
         align-items: center;
         gap: 10px;
-        padding: 12px 16px;
+        /* 只把左右收到 16px：上下保持 18px，让 64×64 的头像竖直中心与首页导航栏那颗一致 */
+        padding: 18px 16px;
         border-right: none;
         border-bottom: 1px solid rgba(255, 255, 255, 0.12);
     }
 
+    /* ⚠️ 这里**不再缩小头像**：缩了就成了 36×36，与首页那颗（窄屏也不缩）不一致，
+       过场落地时会看到大小跳一下。窄屏横条里放得下 64×64，就让它保持一致。 */
     .acc-sidebar-avatar {
-        width: 36px;
-        height: 36px;
         margin: 0;
-        border-width: 2px;
     }
 
     .acc-brand {
@@ -871,18 +906,23 @@ body.acc-page {
         flex: 1 1 100%;
         display: flex;
         overflow-x: auto;
+        /* 横过来之后不再通栏：宽屏那条 -30px 的负外边距在这里会把导航横拉出侧栏 */
+        margin: 0;
     }
 
     .acc-nav-item {
         padding: 8px 14px;
-        border-left: none;
-        border-bottom: 2px solid transparent;
         white-space: nowrap;
     }
 
+    /* 横排档的选中标记改成**下划线**（宽屏那条是左侧竖条，横过来会变成一条突兀的竖线）。
+       直接用 inset 阴影，不再借 ::before —— 宽屏的 ::before 在这里要显式关掉。 */
+    .acc-nav-item::before {
+        display: none;
+    }
+
     .acc-nav-item.is-active {
-        border-left-color: transparent;
-        border-bottom-color: #64b5f6;
+        box-shadow: inset 0 -2px 0 #64b5f6;
     }
 
     .acc-nav-note {

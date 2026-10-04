@@ -70,8 +70,7 @@
 
 | 时长 | 参与方 |
 |------|--------|
-| 460ms（头像过场） | `main.js` 的 `ZOOM_MS`/`goWhenSettled`、`main.css` 的 `.avatar-zoom`/`.is-morphing`、`account.css` 的 `accFall` |
-| 460ms（头像落进侧栏） | `main.js` 的 `MORPH` 那段（与上一条同一次 `is-morphing` 过渡，共用 `ZOOM_MS`）、`main.css` 的 `.rounded-square.is-flying`、`account.css` 的 `.acc-sidebar-avatar`（**几何**由 `morphTarget()` 从 CSS 里读出来，不再写死数字） |
+| 460ms（头像过场） | `main.js` 的 `ZOOM_MS`/`goWhenSettled`、`main.css` 的 `.avatar-zoom`/`html.is-returning`、`account.css` 的 `accFall`（头像本身**不参与**过场：两边同尺寸同位，见 `docs/frontend.md`） |
 | 460ms（起始页过场） | `english.js` 的 `START_TOTAL_MS`、`english.css` 的 `startOut`/`startIn`、`main.css` 的 `.rectangle` + `body.is-immersive .rectangle` + `.content-container` |
 | 160ms（起始页退场） | `english.js` 的 `START_OUT_MS`、`english.css` 的 `startOut` |
 | 160 / 240ms（计划小字切换） | `english.js` 的 `PLAN_SWAP_OUT_MS`、`english.css` 的 `planOut` / `planIn` |
