@@ -1,0 +1,136 @@
+# ============================================================================
+# 广学 · Nginx 站点配置（P0-4 公网部署）
+#
+# 这是**模板**：把 @DOMAIN@ 换成你的域名后再交给 Nginx（runbook 里有一条 Replace 命令）。
+# 也可以直接改 deploy/nginx/guangxue.conf —— 那个文件已经被 .gitignore 排除，
+# 因为 certbot 会往里写它自己的续期配置。
+#
+# 分流规则（与账号服务的监听端口一一对应，别改错）：
+#   /api/auth/*  → 127.0.0.1:8081  Rust 账号服务
+#   /api/*       → 127.0.0.1:8080  Go 主后端
+#   其余         → 仓库根目录的静态文件
+#
+# ⚠️ 两个坑（都真实发生过，别再踩一遍）：
+#   ① `proxy_pass` 末尾**不要带 `/`**：带了会把 /api/xxx 改写成 /xxx，全线 404；
+#   ② `/api/auth/` 必须写在 `/api/` **前面**：Nginx 前缀匹配是「最长优先」没错，
+#      但两个 location 写反了之后，以后有人来加规则时极容易改错，顺序即文档。
+# ============================================================================
+
+# HTTP：只做两件事 —— 给 certbot 的验证留个口子，其余一律跳 HTTPS
+server {
+    listen 80;
+    listen [::]:80;
+    server_name @DOMAIN@;
+
+    # certbot 的 webroot 验证：**必须放在跳转之前**，否则续期会失败
+    location ^~ /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+        default_type "text/plain";
+    }
+
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
+
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    http2 on;
+    server_name @DOMAIN@;
+
+    # ---- 证书（certbot 会自动填这两行，见 runbook 第 5 步）----
+    ssl_certificate     /etc/letsencrypt/live/@DOMAIN@/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/@DOMAIN@/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers off;
+    ssl_session_cache   shared:SSL:10m;
+    ssl_session_timeout 1d;
+
+    # HSTS：先别加 includeSubDomains 与 preload —— 它们没法快速回滚。
+    # 确认整站（含所有子域）都上 HTTPS 之后，再改成
+    #   max-age=31536000; includeSubDomains
+    add_header Strict-Transport-Security "max-age=300" always;
+
+    # 站点自己不用被 iframe 套（后台/前台都没有这个需求）
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+
+    # 静态站是纯静态的：文件就放在这个目录（runbook 里用 rsync 推上去）
+    root /var/www/guangxue;
+    index index.html;
+    charset utf-8;
+
+    # 上传/接口体积：本项目没有文件上传，16m 只是给后台导词条留的余量
+    client_max_body_size 16m;
+
+    # 访问日志交给 journald 之外的普通文件；⚠️ 这两个文件里**不能出现**
+    # 验证码明文与密码 —— 验证码只在响应体里回给用户，请求体里的密码走 POST body，
+    # 默认的 combined 格式不记录 body，所以是安全的。
+    access_log /var/log/nginx/guangxue.access.log;
+    error_log  /var/log/nginx/guangxue.error.log warn;
+
+    # ---- 1) 账号服务（Rust）——⚠️ 必须写在 /api/ 之前 ----
+    location /api/auth/ {
+        # ⚠️ 末尾不带 `/`：带了就会把 /api/auth/me 改写成 /me
+        proxy_pass http://127.0.0.1:8081;
+        proxy_http_version 1.1;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Cookie            $http_cookie;
+        proxy_read_timeout 30s;
+    }
+
+    # ---- 2) 主后端（Go）----
+    location /api/ {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_http_version 1.1;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Cookie            $http_cookie;
+        proxy_read_timeout 30s;
+    }
+
+    # ---- 3) 探活（可选）：给运维直接 curl 用，不必翻两个服务的日志 ----
+    location = /healthz {
+        default_type "text/plain";
+        return 200 "ok\n";
+    }
+
+    # ---- 4) 不要把这些文件暴露出去 ----
+    # 仓库根目录里有 .env（密钥）、备份包、数据库快照……静态根指向仓库时它们是**真实可达**的。
+    # 下面这几条是兜底：真上线时请按 runbook 用 rsync 白名单只推前端文件，别整仓库推。
+    location ~ /\.(?!well-known) {
+        deny all;
+    }
+    location ~* \.(env|db|db-wal|db-shm|sqlite3?|zip|log|md|toml|yaml|yml|lock)$ {
+        deny all;
+    }
+    location ~ ^/(backend-go|backend-rust|scripts|docs|deploy)/ {
+        deny all;
+    }
+
+    # ---- 5) 静态文件 ----
+    location / {
+        # 目录 URL（/account/）内部补 index.html，但**不改变浏览器地址**。
+        # 不要用 index 指令完成这件事：那次内部跳转会变成一次 301，
+        # 把 /account/ 变成 /account/index.html（前端里的相对路径就全变了）。
+        try_files $uri $uri/index.html $uri/ =404;
+    }
+
+    # HTML 不缓存（改完立刻生效），带指纹的静态资源可以长缓存。
+    # ⚠️ 本项目文件名没有指纹，所以 js/css 也走「协商缓存」而不是长缓存，
+    #    否则改了样式用户要等缓存过期才看到。
+    location ~* \.(html|js|css)$ {
+        add_header Cache-Control "no-cache";
+    }
+
+    location ~* \.(png|jpe?g|gif|svg|webp|ico|woff2?|ttf)$ {
+        add_header Cache-Control "public, max-age=604800";
+    }
+}

@@ -673,4 +673,83 @@ mod tests {
             "dotenvy 的行为变了：要么开始支持不带引号的显示名，要么改成报错"
         );
     }
+
+    // ---------------------------------------------------------------- 生产环境开关（P0-4）
+
+    /// 生产配置的基底：显式密钥 + 强口令，再逐条加变量
+    fn prod_base() -> Vec<(&'static str, &'static str)> {
+        vec![
+            ("APP_ENV", "production"),
+            ("AUTH_JWT_SECRET", "生产用的足够长的随机密钥"),
+            ("AUTH_ADMIN_PASSWORD", "不是默认口令的强口令123"),
+        ]
+    }
+
+    #[test]
+    fn production_forces_cookie_secure() {
+        // 生产必须默认给 Cookie 加 Secure —— 忘了配的表现是「HTTPS 站点上登录态
+        // 在刷新后消失」，而且浏览器不会报任何错，只在控制台留一行警告
+        let cfg = from_pairs(&prod_base()).expect("生产配置要能加载");
+        assert!(cfg.is_production());
+        assert!(cfg.cookie_secure, "生产必须默认 AUTH_COOKIE_SECURE=true");
+    }
+
+    #[test]
+    fn production_without_explicit_config_still_enables_secure_cookie() {
+        // 不显式写 AUTH_COOKIE_SECURE 也一样（默认值跟着 APP_ENV 走）
+        let mut pairs = prod_base();
+        pairs.push(("AUTH_COOKIE_SECURE", "true")); // 显式写一遍也不该出错
+        let cfg = from_pairs(&pairs).expect("加载");
+        assert!(cfg.cookie_secure);
+    }
+
+    #[test]
+    fn production_rejects_dev_endpoints() {
+        // 调试接口会把验证码明文吐出来，生产开着等于把注册流程交出去
+        let mut pairs = prod_base();
+        pairs.push(("AUTH_DEV_ENDPOINTS", "true"));
+        let err = from_pairs(&pairs).expect_err("生产开 dev 接口必须启动即失败");
+        assert!(err.contains("AUTH_DEV_ENDPOINTS"), "报错要点名配置项：{err}");
+    }
+
+    #[test]
+    fn production_rejects_the_default_admin_password() {
+        // 默认口令写在仓库里、人人可见
+        let mut pairs = prod_base();
+        pairs.push(("AUTH_ADMIN_PASSWORD", "7289HR_RedSun")); // DEFAULT_ADMIN_PASSWORD
+        let err = from_pairs(&pairs).expect_err("生产用默认管理员口令必须启动即失败");
+        assert!(err.contains("AUTH_ADMIN_PASSWORD"), "报错要点名配置项：{err}");
+
+        // 同一份配置在开发环境是允许的（开箱即登录），否则本地开发会很烦
+        let dev = from_pairs(&[("AUTH_ADMIN_PASSWORD", "7289HR_RedSun")]).expect("开发环境允许默认口令");
+        assert!(dev.admin_password_is_default);
+    }
+
+    #[test]
+    fn production_requires_an_explicit_jwt_secret() {
+        // 随机生成的密钥重启就变，所有已发出的令牌当场失效（表现为「刚登录就被登出」）
+        let pairs: Vec<(&str, &str)> = prod_base()
+            .into_iter()
+            .filter(|(k, _)| *k != "AUTH_JWT_SECRET")
+            .collect();
+        let err = from_pairs(&pairs).expect_err("生产不给密钥必须启动即失败");
+        assert!(err.contains("AUTH_JWT_SECRET"), "报错要点名配置项：{err}");
+
+        // 开发环境不给也能起（随机生成 + 打告警）
+        let dev = from_pairs(&[]).expect("开发环境允许缺密钥");
+        assert!(dev.jwt_secret_is_default);
+    }
+
+    #[test]
+    fn production_keeps_seeding_off_unless_asked() {
+        // 种子账号只在明确要的时候建：生产默认 false（cfg.is_dev() 为假）
+        let cfg = from_pairs(&prod_base()).expect("加载");
+        assert!(!cfg.seed_admin, "生产不该默认建种子管理员");
+
+        // 但显式打开时**必须**同时给口令，否则会在生产里建出一个没有口令的管理员
+        let mut pairs = prod_base();
+        pairs.push(("AUTH_SEED_ADMIN", "true"));
+        pairs.push(("AUTH_ADMIN_PASSWORD", ""));
+        assert!(from_pairs(&pairs).is_err(), "开了种子账号却没给口令，必须报错");
+    }
 }

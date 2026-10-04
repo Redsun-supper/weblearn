@@ -1,0 +1,46 @@
+# ============================================================================
+# 广学 · 每日数据库快照（systemd oneshot）
+#
+# 用 `backend-go/cmd/backup` 编译出来的 **Linux 二进制**，不要用 scripts/backup.ps1
+# （那是 PowerShell，服务器上跑不了）。
+#
+# 为什么不能「直接复制 .db 文件」：两个库都跑在 WAL 模式下，最近的写入可能还在
+# -wal 文件里。auth.db 只有几 KB 而 auth.db-wal 有几 MB 是常态，复制主库等于丢数据。
+# 这个工具走 SQLite 的 `VACUUM INTO`，拿到的是**完整且一致**的快照。
+#
+# 安装：见 docs/deploy-runbook.md 第 7 步。
+# ============================================================================
+
+[Unit]
+Description=广学 · 数据库每日快照（VACUUM INTO）
+
+[Service]
+Type=oneshot
+User=guangxue
+Group=guangxue
+WorkingDirectory=/opt/guangxue/backend-go
+
+# ⚠️ 输出目录**不要和数据库放同一个目录**：同盘的备份挡不住「盘坏了」，
+# 也挡不住「rm -rf 搞错目录」。生产上把 BACKUP_ROOT 指到另一块盘 / 挂载点，
+# 再定期同步到对象存储（见 runbook 第 7 步的 rclone 备注）。
+Environment=BACKUP_ROOT=/srv/guangxue-backups
+
+# -keep 30：只保留最近 30 份（一天一份 = 一个月）。
+# 两个库路径都显式写出来，不依赖默认值 —— 默认值里的相对路径依赖工作目录，
+# 在 systemd 下出错会很难查。
+ExecStart=/opt/guangxue/backend-go/guangxue-backup \
+    -out ${BACKUP_ROOT} \
+    -keep 30 \
+    -db /opt/guangxue/backend-go/guangxue.db \
+    -db /opt/guangxue/backend-rust/auth.db
+
+# 快照目录必须可写（ProtectSystem=strict 下唯一放开的路径）
+ReadWritePaths=/srv/guangxue-backups
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+
+# 失败要能从 `systemctl --failed` 一眼看到
+[Install]
+WantedBy=multi-user.target

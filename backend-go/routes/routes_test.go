@@ -331,3 +331,73 @@ func assertErrorField(t *testing.T, rec *httptest.ResponseRecorder, want string)
 		t.Fatalf("error 字段期望 %q，实际 %v（响应体=%s）", want, body["error"], rec.Body.String())
 	}
 }
+
+// TestGinModeFollowsAppEnv 生产不能跑在 gin 的 debug 模式：
+// debug 会打印路由表、每个请求一行 [GIN]，日志量翻好几倍且会进 journald 长期留着。
+//
+// 口径与 Rust 侧的 is_production 一致：**只有小写 `production` 算生产**，
+// 其余（含大小写写错的值）一律当开发 —— 免得「本机调试时日志突然消失」查不出原因。
+func TestGinModeFollowsAppEnv(t *testing.T) {
+	cases := map[string]string{
+		"production":  gin.ReleaseMode,
+		"development": gin.DebugMode,
+		"Production":  gin.DebugMode, // 大小写写错 → 当开发，宁可多打日志
+		"prod":        gin.DebugMode,
+		"":            gin.DebugMode,
+	}
+	for env, want := range cases {
+		if got := ginMode(env); got != want {
+			t.Errorf("APP_ENV=%q 应当用 %s，实际 %s", env, want, got)
+		}
+	}
+}
+
+// TestRouterProductionModeStillServesHealth 生产模式（APP_ENV=production）下路由照常工作。
+// 这条盯的是「切 ReleaseMode 时把东西切坏了」——SetMode 是全局状态，最容易顺手改错。
+func TestRouterProductionModeStillServesHealth(t *testing.T) {
+	t.Cleanup(func() { gin.SetMode(gin.TestMode) })
+
+	dsn := fmt.Sprintf("file:guangxue_routes_prod_%d?mode=memory&cache=shared", testDBCounter.Add(1))
+	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	if err != nil {
+		t.Fatalf("打开内存数据库失败: %v", err)
+	}
+	sqlDB, _ := db.DB()
+	sqlDB.SetMaxOpenConns(1)
+	t.Cleanup(func() { _ = sqlDB.Close() })
+
+	cfg := testConfig()
+	cfg.Env = "production"
+	router := SetupRouter(db, cfg)
+
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/health", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("生产模式下 GET /api/health 期望 200，实际 %d，响应体=%s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestRouterPathPrefixBoundary 是给 Nginx 反代配错准备的护栏。
+//
+// 线上靠**路径前缀**分流：/api/auth/* 转给账号服务（8081）、/api/* 转给 Go（8080）。
+// 所以 Go 这边**绝不能**有「也能被 /api/auth 前缀匹配上」的路径 —— 一旦有，
+// 就会出现「本机一切正常、线上某几个接口 404 或 401」这种最难查的现象。
+// 这条用例把边界钉住：这些路径必须压根不存在（gin 默认 404 纯文本）。
+func TestRouterPathPrefixBoundary(t *testing.T) {
+	router := setupRoutesTest(t)
+
+	for _, path := range []string{"/api/auth/health", "/apiauth/health", "/api-auth/health", "/health"} {
+		t.Run(path, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+			if rec.Code != http.StatusNotFound {
+				t.Fatalf("%s 不该由 Go 处理（该由 Nginx 分流给账号服务，或根本不存在），实际 %d，响应体=%s",
+					path, rec.Code, rec.Body.String())
+			}
+			// 必须是 gin 自己的 404（纯文本），而不是某个业务处理器的 JSON 404
+			if ct := rec.Header().Get("Content-Type"); strings.HasPrefix(ct, "application/json") {
+				t.Fatalf("%s 被某个业务处理器接走了（Content-Type=%s），前缀边界被破坏", path, ct)
+			}
+		})
+	}
+}

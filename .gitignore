@@ -10,6 +10,14 @@ backups/
 # Go 编译产物
 backend-go/server
 backend-go/server.exe
+# P0-4 部署时在服务器上编译出来的二进制（生产机专用，不入库）
+backend-go/guangxue-api
+backend-go/guangxue-backup
+backend-rust/guangxue-auth
+
+# Nginx / certbot 改过的站点配置：里面有真实域名，且 certbot 会在续期时自动改写它
+#（模板是 deploy/nginx/*.conf.template，那个要入库）
+deploy/nginx/*.conf
 
 # Rust 编译产物（任何 crate 的 target/ 都算，含账号服务与 wasm 引擎）
 # ⚠️ 这些是可再生的调试/增量缓存，两个 crate 加起来能到 4.5 GB，永不入库

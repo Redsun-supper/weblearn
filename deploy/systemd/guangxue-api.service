@@ -1,0 +1,46 @@
+# ============================================================================
+# 广学 · Go 主后端（systemd）
+#
+# ⚠️ 这个服务的库（guangxue.db）**可以重建**（词条与复习进度），
+#    但它同样值得每天备份 —— 复习进度是用户攒下来的东西。
+#    见 deploy/systemd/guangxue-backup.timer。
+# ============================================================================
+
+[Unit]
+Description=广学 · 主后端（Go / 词条与间隔复习）
+Documentation=file:/opt/guangxue/docs/launch-plan.md
+After=network-online.target
+Wants=network-online.target
+# 账号服务先起：Go 侧只做本地验签、不依赖它，但两个服务一起拉起更整齐，
+# 排查时日志顺序也可读
+After=guangxue-auth.service
+
+[Service]
+Type=simple
+User=guangxue
+Group=guangxue
+WorkingDirectory=/opt/guangxue/backend-go
+
+EnvironmentFile=/opt/guangxue/backend-go/.env
+
+ExecStart=/opt/guangxue/backend-go/guangxue-api
+Restart=always
+RestartSec=3
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=guangxue-api
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+ReadWritePaths=/opt/guangxue/backend-go
+
+[Install]
+WantedBy=multi-user.target

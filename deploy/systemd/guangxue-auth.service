@@ -1,0 +1,54 @@
+# ============================================================================
+# 广学 · Rust 账号服务（systemd）
+#
+# 安装（runbook 第 3 步会自动做，这里说明它在做什么）：
+#   sudo cp deploy/systemd/guangxue-auth.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now guangxue-auth
+#
+# ⚠️ 账号库（auth.db）是**唯一不可丢**的数据：它存着所有人的账号与会话。
+#    WorkingDirectory 指向 /opt/guangxue/backend-rust，库就在那里（AUTH_DB_PATH=auth.db）。
+#    ReadWritePaths 只放开这一个目录 —— 别为了图省事写成 /opt/guangxue。
+# ============================================================================
+
+[Unit]
+Description=广学 · 账号服务（Rust / 注册、登录、会话、邀请码）
+Documentation=file:/opt/guangxue/docs/launch-plan.md
+# 数据库在本地文件系统，没别的依赖；等网络就绪即可（Nginx 反代需要它先起来）
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=guangxue
+Group=guangxue
+WorkingDirectory=/opt/guangxue/backend-rust
+
+# ---- 环境变量 ----
+# 密钥与 SMTP 授权码这类东西**只放在这个文件里**（权限 600、属主 guangxue），
+# 不要写进 unit（unit 里写了会进 journald，也容易被复制到别处）
+EnvironmentFile=/opt/guangxue/backend-rust/.env
+
+ExecStart=/opt/guangxue/backend-rust/guangxue-auth
+Restart=always
+RestartSec=3
+
+# ---- 日志 ----
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=guangxue-auth
+
+# ---- 加固（能用 systemd 挡住的就别指望应用自己）----
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+# 唯一的可写目录：数据库与 WAL 文件都在这里
+ReadWritePaths=/opt/guangxue/backend-rust
+
+[Install]
+WantedBy=multi-user.target

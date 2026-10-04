@@ -19,7 +19,7 @@
 | P0-1 | **复习进度按人隔离** ✅ 已完成（2026-10） | 现在 `word_reviews` 的唯一索引是 `WordID`，**两个用户共用一份进度会互相覆盖**——这是数据正确性问题，不是体验问题 | 1~2 天（含测试） |
 | P0-2 | **强制邀请码注册** ✅ 服务端已完成（2026-10） | 你选的「暂时邀请制」；现在不填邀请码也能注册 | 半天 |
 | P0-3 | **打通真发邮件** 🟡 代码侧已完成（2026-10），差发件邮箱的授权码 | 现在 `AUTH_MAIL_MODE=log`，验证码只打进日志，**真实用户收不到码就注册不了** | 半天（SMTP 代码早已写好；配置校验、自检与验收命令已补齐） |
-| P0-4 | **公网部署** | HTTPS、Cookie Secure、Nginx 分流、生产环境开关、每日备份 | 1 天 |
+| P0-4 | **公网部署** 🟡 代码侧与部署产物已完成（2026-10），差一台服务器 | HTTPS、Cookie Secure、Nginx 分流、生产环境开关、每日备份 | 1 天（照着 [`deploy-runbook.md`](deploy-runbook.md) 敲） |
 | P0-5 | **三级角色（超管/管理员/用户）** ✅ 已完成（2026-10） | 你要的「超管发带等级的码」；改造前只有 `user`/`admin`，且**带邀请码注册会直接变管理员** | 1~2 天 |
 | P1 | 管理面板四个模块（邀请码/用户/审计/看板） | 现在邀请码只能跑 CLI，`/admin/` 里没有任何界面 | 2~3 天 |
 | P2 | 每日配额服务端化、限流调参、监控 | 配额现在在浏览器 localStorage 里，多设备会翻倍；不影响数据正确性 | 1 天 |
@@ -198,6 +198,35 @@ cargo run --bin mail-test -- 你的邮箱@example.com
 ---
 
 ### P0-4 公网部署
+
+> **🟡 本机能做的都做完了（2026-10），剩下的必须在服务器上做**：完整的十步流程、
+> 每步的验证命令、以及「本机做不到的部分由谁补」现在都在
+> **[部署手册 `deploy-runbook.md`](deploy-runbook.md)** 里，照着敲即可。
+>
+> 已随本次改动落地的产物：
+> | 文件 | 作用 |
+> |---|---|
+> | `deploy/nginx/guangxue.conf.template` | 站点配置模板（HTTP→HTTPS 跳转、`/api/auth/`→8081、`/api/`→8080、静态托管、HSTS、敏感文件兜底拒绝、缓存策略） |
+> | `deploy/systemd/guangxue-auth.service` / `guangxue-api.service` | 两个后端进程守护（`Restart=always` + systemd 沙箱加固 + `EnvironmentFile` 注入密钥） |
+> | `deploy/systemd/guangxue-backup.service` / `.timer` | 每天 03:00 用 `backend-go/cmd/backup`（`VACUUM INTO`）快照两个库，保留 30 份 |
+> | `docs/deploy-runbook.md` | 十步部署手册（含恢复演练与上线前清单） |
+>
+> 同时修掉的代码问题：
+> - **`gin.ReleaseMode`（`routes.go`）**：原先生产也跑在 debug 模式，会打印路由表、每个请求一行
+>   `[GIN]`，日志量翻好几倍且会进 journald 长期留着。口径与 Rust 侧 `is_production` 一致：
+>   **只有小写 `production` 算生产**（大小写写错一律当开发，免得「本机调试日志突然消失」无从解释）。
+> - **Go 侧启动告警（`config.StartupWarnings`）**：把「配错但不至于起不来」的三项点出来 ——
+>   密钥为空（所有要登录的接口静默 401）、生产却监听 `0.0.0.0`（绕过 HTTPS 与限流）、
+>   白名单还带着本机地址（**所有写请求 403**）。
+> - **测试**：`backend-go/routes/routes_test.go` 新增 `ginMode`、生产模式仍能服务、以及
+>   **路径前缀边界**用例（`/api/auth/*` 绝不能由 Go 处理 —— 反代配错时就是它最先红）；
+>   `backend-go/config/config_test.go` 新增启动告警用例；`backend-rust/src/config.rs`
+>   新增 6 条生产开关用例（强制 Cookie Secure、拒绝 dev 接口、拒绝默认管理员口令、
+>   必须显式密钥、种子账号不默认开）。
+>
+> ⚠️ **两处 `.env` 的白名单与密钥都必须改**（`AUTH_ALLOWED_ORIGINS` / `AUTH_JWT_SECRET`）：
+> 只改一个的现象分别是「能登录但一提交就 403」与「登录成功但复习接口一直 401」。
+> 手册第 3 步把这两条写在显眼处。
 
 **目标架构**：
 
@@ -534,7 +563,7 @@ DB_PATH=/var/lib/guangxue/guangxue.db
 | **M0** | P0-1 进度按人隔离 | 新增多用户隔离测试通过；`pwsh scripts/verify.ps1` 全绿；`scripts/verify-auth.ps1` 加两条互不可见用例 |
 | **M1** | P0-5 + P0-2 角色与邀请制 | Rust/Go 两侧角色判定一致（联调脚本覆盖 `super_admin` 发码、`admin` 发码被拒、无码注册被拒） |
 | **M2** | P0-3 邮件 | 真实邮箱收到验证码并完成注册（🟡 现在可先用 `cargo run --bin mail-test -- 邮箱` 验收到「服务器已接收」这一步；还差最后一封到收件箱） |
-| **M3** | P0-4 部署 | 公网 https 全链路可用；重启自愈；备份产物可恢复 |
+| **M3** | P0-4 部署 | 公网 https 全链路可用；重启自愈；备份产物可恢复（🟡 代码侧与部署产物已就绪，见 [`deploy-runbook.md`](deploy-runbook.md) 第 9 步的上线清单） |
 | **M4** | P1 管理面板 | 超管能在界面上发一批码、提升一个管理员、封一个号、查到对应审计 |
 | **M5** | 放人（10 → 50 → 上百） | 每批观察 3 天：注册转化、复习留存、错误日志、备份是否正常 |
 | **M6** | P2 配额服务端化 + 限流调参 + 监控告警 | — |

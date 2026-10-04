@@ -52,6 +52,42 @@ func getEnv(key, defaultValue string) string {
 	return defaultValue
 }
 
+// IsProduction 是否生产环境。
+// 与 Rust 侧（`Config::is_production`）保持同一口径：**只有小写 `production` 算生产**，
+// 大小写写错的值一律当开发环境 —— 免得「本机调试时行为突然变了」变成查不出原因的问题。
+func (c *Config) IsProduction() bool {
+	return c.Env == "production"
+}
+
+// StartupWarnings 返回启动期该提醒的问题（空切片 = 没问题）。
+//
+// 为什么要有它：这几项配错**不会让服务起不来**，表现是「某类请求一直 401」
+// 或「加固措施其实没生效」，事后从日志里翻很难对上号。
+// 生产环境的每一项都会写成日志告警。
+func (c *Config) StartupWarnings() []string {
+	var warns []string
+	if c.JWTSecret == "" {
+		warns = append(warns, "AUTH_JWT_SECRET 未配置：所有需要登录的接口都会返回 401。"+
+			"请在 backend-go/.env 里填上与账号服务 backend-rust/.env 相同的密钥（模板见 .env.example）")
+	}
+	if c.IsProduction() {
+		// 生产应该只让 Nginx 访问，不该把 8080 暴露到公网
+		if c.Host != "127.0.0.1" && c.Host != "localhost" {
+			warns = append(warns, "生产环境建议把 SERVER_HOST 改成 127.0.0.1（只让 Nginx 访问），"+
+				"当前是 "+c.Host+"：8080 会直接暴露在公网上，绕过 HTTPS 与 Nginx 的限流")
+		}
+		// 白名单漏配的后果是**所有写请求 403**（它同时是 CSRF 白名单与 CORS 依据）
+		for _, origin := range c.AllowedOrigins {
+			if strings.HasPrefix(origin, "http://127.0.0.1") || strings.HasPrefix(origin, "http://localhost") {
+				warns = append(warns, "生产环境 AUTH_ALLOWED_ORIGINS 还带着本机地址（"+origin+"）："+
+					"站点域名的写请求会一律 403。两个后端（backend-rust/.env 与 backend-go/.env）都要改成线上域名")
+				break
+			}
+		}
+	}
+	return warns
+}
+
 // splitList 把 "a,b , c" 切成 ["a","b","c"]（跳过空项），用于逗号分隔的配置
 func splitList(raw string) []string {
 	parts := strings.Split(raw, ",")

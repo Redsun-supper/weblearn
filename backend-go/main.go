@@ -14,13 +14,12 @@ func main() {
 	db := database.Init(cfg.DBPath)
 	router := routes.SetupRouter(db, cfg)
 
-	// 密钥没配时把话说清楚：复习接口会一律 401，现象看着像「登录了却一直要登录」，
-	// 而真正的原因是 Go 与账号服务没拿到同一把 AUTH_JWT_SECRET
-	if cfg.JWTSecret == "" {
-		log.Printf("⚠️ AUTH_JWT_SECRET 未配置：所有需要登录的接口都会返回 401。" +
-			"请在 backend-go/.env 里填上与账号服务 backend-rust/.env 相同的密钥（模板见 .env.example）")
+	// 配错但**不至于起不来**的那几项在这里统一告警（密钥为空、生产却监听 0.0.0.0、
+	// 白名单还带着本机地址）。理由与每一条的后果见 Config.StartupWarnings 的注释。
+	for _, warn := range cfg.StartupWarnings() {
+		log.Printf("⚠️ %s", warn)
 	}
 
-	log.Printf("Go后端服务器启动在 %s:%s", cfg.Host, cfg.Port)
+	log.Printf("Go 后端启动：%s:%s（APP_ENV=%s）", cfg.Host, cfg.Port, cfg.Env)
 	log.Fatal(router.Run(cfg.Host + ":" + cfg.Port))
 }

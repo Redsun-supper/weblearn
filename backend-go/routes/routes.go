@@ -11,7 +11,11 @@ import (
 // SetupRouter 装配全部路由；db 与 cfg 由 main 注入
 // （db 供词汇复习接口用；cfg 提供登录令牌的验签密钥与 CSRF 白名单）。
 func SetupRouter(db *gorm.DB, cfg *config.Config) *gin.Engine {
-	// ⚠️ 没有按 APP_ENV 切到 gin.ReleaseMode，production 下同样会输出 gin 的调试日志
+	// 生产不能跑在 debug 模式：gin 在 debug 下会打印路由表、每次请求一行
+	// `[GIN] 200 | 1.2ms | 1.2.3.4 | GET /api/...`，日志量翻好几倍，
+	// 而且这些行会进 journald 长期留着。
+	gin.SetMode(ginMode(cfg.Env))
+
 	r := gin.Default()
 
 	api := r.Group("/api")
@@ -54,4 +58,17 @@ func SetupRouter(db *gorm.DB, cfg *config.Config) *gin.Engine {
 	}
 
 	return r
+}
+
+// ginMode 把 APP_ENV 映射成 gin 的运行模式。
+//
+// 映射规则与 Rust 侧（`Config::is_production`）保持一致：**只有小写 `production`
+// 算生产**，其余（development / 拼错的值）一律当开发环境。
+// 刻意不做「非 development 就算生产」：把 `APP_ENV=Production` 这种大小写写错的值
+// 当成生产，会让「本机调试时日志突然消失」变成一个查不出原因的问题。
+func ginMode(appEnv string) string {
+	if appEnv == "production" {
+		return gin.ReleaseMode
+	}
+	return gin.DebugMode
 }

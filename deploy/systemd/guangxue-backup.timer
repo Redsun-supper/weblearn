@@ -1,0 +1,23 @@
+# ============================================================================
+# 广学 · 每日 03:00 跑一次数据库快照
+#
+#   sudo systemctl enable --now guangxue-backup.timer
+#   systemctl list-timers guangxue-backup.timer     # 看下次触发时间
+#   sudo systemctl start guangxue-backup.service    # 手动跑一次（验收用）
+#   journalctl -u guangxue-backup -n 50             # 看上一次的结果
+#
+# ⚠️ 定时器不会补跑：如果 03:00 服务器是关着的，那天的备份就没有。
+#    验证方法见 docs/deploy-runbook.md 第 7 步的「怎么确认备份真的在跑」。
+# ============================================================================
+
+[Unit]
+Description=广学 · 每天 03:00 备份数据库
+
+[Timer]
+OnCalendar=*-*-* 03:00:00
+# 服务器重启后如果错过了当天的时间点，起来就补一次（最多补 1 小时内的）
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target
