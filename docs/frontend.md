@@ -3,7 +3,7 @@
 > 原先在 `CLAUDE.md`，2026-09 拆分。改 `index.html`、`main.js`、`main.css` 前读一遍。
 > 头像过场属于「页面切换动画」，动手前先看 `CLAUDE.md` 工作流程第 5 条（**先与用户商量**）。
 
-- 导航栏 `rectangle` 内含头像 + 9 个导航项，字段 `data-page="<学科页路径>"`。
+- 导航栏 `rectangle` 内含头像 + **竖排站点名「广学」** + 9 个导航项，字段 `data-page="<学科页面路径>"`。站点名是 `.nav-logo`（`index.html` 里 `<div class="nav-logo">广<br>学</div>`，**在 .rectangle 内部**，所以沉浸模式下跟着导航栏一起上滑隐藏）：2026-10 用户要求「加上竖向的广学二字」，它紧跟在头像右侧、垂直居中，两字上下叠（font-size 15px、line-height 1.05）。⚠️ `.nav-items` 的 `left` 因此从 144px 挪到 **186px**（= 头像左 65 + 宽 64 + 间隙 14 + 站名 34 + 间隙 9）；≤1200px 的窗口里站名整块 `display: none`（那时 9 个学科项要占满整行），覆盖规则在 `main.css` 末尾。
 - `main.js` 用 **localStorage 缓存**（键前缀 `pageCache_`，30 天过期、自动清理；`CACHE_VERSION` 在结构或路径变更时整体失效），点击导航用 `fetch` 加载并缓存，默认展示英语。
 - **学科页路径**：已有独立模块的学科写成 `modules/<学科>/<学科>.html`（当前仅英语）；其余 8 门仍是 `pages/<学科>.html` 占位（`<p>敬请期待</p>`）。
 - **学科模块约定**：放在 `modules/<学科>/` 下并导出初始化函数，`main.js` 的 `initSubjectModule()` 按需动态 `import()`；**学科逻辑不得回流到 `main.js`**。

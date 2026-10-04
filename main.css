@@ -112,13 +112,32 @@ body {
     display: block;
 }
 
-/* 导航项容器：绝对定位，左侧 144px = 头像左 30 + 宽 64 + 间距 50。
+/* 站点名「广学」竖排：紧跟在头像右侧（两字上下叠，字号比学科项小一号）。
+   ⚠️ 宽度是 34px，正好把「头像右缘 129 → 导航项起点」这 42px 的间隙用掉，
+   所以导航项容器从 144px 挪到了 186px（头像 65 + 64 + 间隙 14 + 站名 34 + 间隙 9）。
+   ⚠️ 窄屏（≤1200px）整块隐藏：那时 9 个学科项要占满整行，站名会挤掉它们。 */
+.nav-logo {
+    position: absolute;
+    top: 50%;
+    left: 143px;
+    transform: translateY(-50%);
+    font-size: 15px;
+    font-weight: bold;
+    line-height: 1.05;
+    letter-spacing: 1px;
+    text-align: center;
+    color: #333;
+    padding: 4px 0;
+    user-select: none;
+}
+
+/* 导航项容器：绝对定位，左侧 186px = 头像左 65 + 头像宽 64 + 间隙 14 + 站名 34 + 间隙 9。
    右侧 30px 与头像的左侧留白对称 —— 原先这里留 190px 是为了右上角的
    「登录 / 注册」文字入口，入口改到头像之后右侧不再有元素，导航项可以铺得更开 */
 .nav-items {
     position: absolute;
     top: 0;
-    left: 144px;
+    left: 186px;
     right: 30px;
     height: 100%;
     display: flex;
@@ -297,5 +316,13 @@ body.is-immersive .content-container {
 @media (max-width: 920px) {
     .rounded-square {
         left: 30px;
+    }
+}
+
+/* 窄一点的窗口（≤1200px）：9 个学科项要占满整行，右端的「广学」竖排就该让位 ——
+   不然它要么压住最后几个学科项，要么把导航项挤窄。 */
+@media (max-width: 1200px) {
+    .nav-logo {
+        display: none;
     }
 }
