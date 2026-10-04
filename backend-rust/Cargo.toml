@@ -3,7 +3,7 @@ name = "guangxue-auth"
 version = "0.1.0"
 edition = "2021"
 description = "广学 账号系统：Rust 认证服务（注册 / 多端登录 / 会话轮换 / 邀请码）"
-license = "MIT"
+license = "AGPL-3.0-or-later"
 publish = false
 
 [lib]

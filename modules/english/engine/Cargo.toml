@@ -3,7 +3,7 @@ name = "guangxue_wasm"
 version = "0.1.0"
 edition = "2021"
 description = "广学 英语模块引擎（Rust → WebAssembly）"
-license = "MIT"
+license = "AGPL-3.0-or-later"
 
 [lib]
 # cdylib 生成可被浏览器加载的 .wasm；rlib 允许在宿主环境跑 cargo test
