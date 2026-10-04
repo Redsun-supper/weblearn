@@ -371,22 +371,22 @@ body.acc-page {
 }
 
 /* 左侧栏：半透明深色，让下面的渐变透出来（与后台那块实心 #263238 的差别就在这）
-   ⚠️ 内边距是 18px 30px，不是后台那套 20px 0 —— 它要和首页导航栏那颗头像**逐像素对齐**：
-   首页 `.rounded-square` 是 left:30px + 导航栏 100px 高里垂直居中（64px 高 → top 18px）。
-   所以这里左右 30px、上下 18px，配上下面那个 64×64 的头像，两边都落在 (30, 18)。
-   这样点头像进个人中心时那颗头像**一个像素都不用动**，过场只剩「白底扩散」。 */
+   ⚠️ 这里是**只留上下内边距、左右交给各区块自己写**（后台 admin/ 的侧栏也是 0）：
+   这样导航那列能整条通栏、选中竖条贴在侧栏最左缘，而头像那一格又能用自己那 30px 左边距
+   对齐到屏幕上的 (30, 18) —— 与首页导航栏那颗逐像素重合（见 .acc-sidebar-avatar）。
+   一条 padding 管不住这两种诉求，所以分开写。 */
 .acc-sidebar {
     display: flex;
     flex-direction: column;
     width: 200px;
     flex: 0 0 200px;
-    padding: 18px 30px;
+    padding: 18px 0;
     background-color: rgba(20, 30, 40, 0.55);
     border-right: 1px solid rgba(255, 255, 255, 0.12);
 }
 
 /* ⚠️ 首页头像过场的落点：与首页那颗**完全同款**（64×64、3px 白边、9px 圆角、白底），
-   位置也由上面的内边距对齐到 (30, 18)。
+   位置也逐像素对齐到 (30, 18) —— 上下由侧栏的 18px 内边距给，左右由这里的 30px 左边距给。
    ⚠️ 这组数字必须与 main.css 的 .rounded-square 一字不差 —— 差一点就要在过场里补位移，
    而「不补位移」正是不要那段形变动画的前提。改这里请同时改 main.css。
    ⚠️ 用 border-box 让 width/height 直接表示**外框**尺寸（64 就是 64，含白边）。 */
@@ -394,7 +394,7 @@ body.acc-page {
     box-sizing: border-box;
     width: 64px;
     height: 64px;
-    margin: 0 0 12px;
+    margin: 0 0 12px 30px;
     border: 3px solid #ffffff;
     border-radius: 9px;
     background-color: #ffffff;
@@ -415,11 +415,11 @@ body.acc-page {
     display: flex;
     flex-direction: column;
     align-items: center;
-    /* 左右不再各留 20px：侧栏自带 30px 内边距，文字与头像同一条竖线（见 .acc-sidebar）。
-       ⚠️ 居中而不是左对齐：左边那颗 64px 的头像占满了内容宽度（200 - 30×2 = 140），
-       品牌文字左对齐会显得偏在左边，居中才压得住。 */
+    /* 左右 20px 内边距：与导航项文字、页脚同一档（侧栏自己不写左右内边距，见 .acc-sidebar）。
+       ⚠️ 这下品牌文字比头像（30px）靠左 10px：那是没法避免的 —— 头像的 30px 是给
+       「首页那颗头像过场时不动」用的，而导航要通栏，品牌夹在中间只能二选一。 */
+    padding: 0 20px 14px;
     margin: 0 0 16px;
-    padding-bottom: 14px;
     border-bottom: 1px solid rgba(255, 255, 255, 0.12);
     text-decoration: none;
 }
@@ -435,19 +435,19 @@ body.acc-page {
     color: #90a4ae;
 }
 
-/* 侧栏导航（条目由 account.js 渲染）
-   ⚠️ 负外边距让这列导航**通栏**（左右都顶到侧栏边缘）、再用左右 30px 内边距把文字拉回
-   与头像同一条竖线；蓝色竖条则绝对定位在「内容左缘」= 距侧栏左边 30px 处 —— 既跟文字对齐，
-   又不会把选中底色截断成一块内缩的补丁（这是侧栏改成 30px 内边距之后必须做的抵消）。 */
+/* 侧栏导航（条目由 account.js 渲染）：**通栏**，与后台 admin/ 的侧栏同一套 ——
+   条目左右顶到侧栏边缘（所以选中/悬停的底色是整条铺满的，不会在左边留一块内缩的补丁），
+   文字与蓝色竖条分别靠内边距和绝对定位摆：竖条贴在侧栏最左缘，文字缩进 20px。
+   ⚠️ 这一列**不再需要负外边距**去抵消侧栏内边距了：侧栏改成「只留上下内边距、左右交给
+   各个区块自己写」（见 .acc-sidebar），导航这块本来就是通的。 */
 .acc-nav {
     flex: 1;
-    margin: 0 -30px;
 }
 
 .acc-nav-item {
     display: block;
     position: relative;
-    padding: 10px 30px;
+    padding: 10px 20px;
     color: #cfd8dc;
     font-size: 14px;
     text-decoration: none;
@@ -455,11 +455,12 @@ body.acc-page {
     transition: background-color 0.2s, color 0.2s;
 }
 
-/* 选中 / 悬停时才出现的左侧竖条：绝对定位（不在文档流里，所以文字的左对齐不受影响） */
+/* 选中 / 悬停时才出现的左侧竖条：绝对定位（不在文档流里，所以文字的左对齐不受影响）。
+   left: 0 而不是跟着文字缩进 —— 后台侧栏那条也是贴在最左缘的（.admin-nav-item 的 border-left） */
 .acc-nav-item::before {
     content: '';
     position: absolute;
-    left: 30px;
+    left: 0;
     top: 0;
     bottom: 0;
     width: 3px;
@@ -495,11 +496,11 @@ body.acc-page {
 .acc-sidebar-footer {
     display: flex;
     flex-direction: column;
-    /* 与品牌那块一致：居中（见 .acc-brand 的说明），左右留给侧栏自己的 30px 内边距 */
+    /* 与品牌那块一致：居中、左右 20px 内边距（侧栏自己不写左右内边距，见 .acc-sidebar） */
     align-items: center;
     gap: 8px;
     margin-top: auto;
-    padding: 14px 0 0;
+    padding: 14px 20px 0;
     border-top: 1px solid rgba(255, 255, 255, 0.12);
 }
 
@@ -878,16 +879,21 @@ body.acc-page {
         flex-wrap: wrap;
         align-items: center;
         gap: 10px;
-        /* 只把左右收到 16px：上下保持 18px，让 64×64 的头像竖直中心与首页导航栏那颗一致 */
-        padding: 18px 16px;
+        /* 上下仍 18px（64×64 的头像竖直中心与首页那颗一致）。
+           ⚠️ 这里**不写左右内边距**，和宽屏一样：光靠内边距管不住下面那颗头像
+           —— 它得落在 30px 处（首页窄屏那颗也是 left:30px），靠自己的左边距走。
+           早先这里写的是 `18px 16px` + 头像 margin:0，结果头像落到 16px，
+           与首页那颗差 14px —— 换页那一刻看得见头像跳一下（实测数据）。 */
+        padding: 18px 0;
         border-right: none;
         border-bottom: 1px solid rgba(255, 255, 255, 0.12);
     }
 
     /* ⚠️ 这里**不再缩小头像**：缩了就成了 36×36，与首页那颗（窄屏也不缩）不一致，
-       过场落地时会看到大小跳一下。窄屏横条里放得下 64×64，就让它保持一致。 */
+       过场落地时会看到大小跳一下。窄屏横条里放得下 64×64，就让它保持一致。
+       ⚠️ 左边距保持 30px（不能清掉）：首页窄屏那颗也还在 left:30px，两边必须一样。 */
     .acc-sidebar-avatar {
-        margin: 0;
+        margin: 0 0 0 30px;
     }
 
     .acc-brand {
@@ -900,14 +906,14 @@ body.acc-page {
         display: none;
     }
 
-    /* 导航横向排列，超出就横滑 */
+    /* 导航横向排列，超出就横滑。
+       ⚠️ 这条横排导航**故意留在侧栏的 16px 内边距里**（不像宽屏那样通栏顶到边缘）：
+       真贴到屏幕左缘、文字再缩进 20px 反而会挤在一起，留一点边距在窄屏上更好看。 */
     .acc-nav {
         order: 3;
         flex: 1 1 100%;
         display: flex;
         overflow-x: auto;
-        /* 横过来之后不再通栏：宽屏那条 -30px 的负外边距在这里会把导航横拉出侧栏 */
-        margin: 0;
     }
 
     .acc-nav-item {
@@ -934,7 +940,10 @@ body.acc-page {
         flex-direction: row;
         gap: 14px;
         margin: 0 0 0 auto;
-        padding: 0;
+        /* 右边留 30px：横条右侧贴着屏幕边缘，「退出登录」的最后一个字会被切掉一半；
+           30px 与头像的左边距对称（其实是同一个值），也和主区内容的右留白对得上。
+           ⚠️ 左边不写：它靠 margin-left:auto 顶到最右，写了也没用。 */
+        padding: 0 30px 0 0;
         border-top: none;
     }
 
