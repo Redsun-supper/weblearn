@@ -18,7 +18,8 @@ body {
 /* 顶部导航栏：固定定位，滚动时不动。
    高度 100px 是全站基准值 —— .content-container 的上外边距、
    .rounded-square 的垂直居中换算都依赖它。
-    ⚠️ 宽屏下 .rounded-square 的 left 是 68px（= 个人中心 200px 侧栏的栏心 100 - 头像半宽 32），
+    ⚠️ 宽屏下 .rounded-square 的 left 是 65px（= 个人中心 200px 侧栏的栏心 100 - 头像半宽 32
+       - 3px 光学偏移：那 3px 是为了「看起来居中」，理由见下方 .rounded-square），
        窄屏（≤920px）侧栏横过来之后覆盖回 30px —— 见文件末尾的 @media。 */
 .rectangle {
     position: fixed;
@@ -42,18 +43,19 @@ body {
 .rounded-square {
     position: absolute;
     top: 50%;
-    left: 68px; /* = 200px 侧栏的栏心 100 - 头像半宽 32，见下方 .rounded-square 的说明 */
+    left: 65px; /* = 侧栏栏心 100 - 头像半宽 32 - 3px 光学偏移，见下方 .rounded-square 的说明 */
     width: 64px;
     height: 64px;
     transform: translateY(-50%);
     /* 圆角矩形（9px）：原来就是这个形状，别改成正圆 ——
        个人中心侧栏那颗（.acc-sidebar-avatar）跟它一模一样 —— 同一组数字、同一个位置：
-       （64×64、3px 白边、9px 圆角）落在 (68, 18)，两边逐像素重合，
+       （64×64、3px 白边、9px 圆角）落在 (65, 18)，两边逐像素重合，
        所以过场里那颗头像**一个像素都不用动**，只剩「白底扩散 / 收圈」这一件事。
-       ⚠️ 68px 的来历与「为什么不是 30px」：个人中心侧栏宽 200px、栏心 x=100，那颗 64px
-           的头像在栏里居中，左缘就是 100 - 32 = 68；2026-10 用户要求侧栏里全部居中，
-           首页这颗就跟着从 30px 挪到 68px。窄屏（≤920px）侧栏横过来、没有栏心了，
-           两边都回到 30px —— 覆盖规则在本文件末尾的 @media。
+       ⚠️ 65px 的来历：个人中心侧栏宽 200px、栏心 x=100，那颗 64px 的头像**看起来**居中时
+           左缘落在 100 - 32 - 3 = 65。为什么比几何正中（68）少 3px：这颗头像带 3px 白边，
+           还有一道**朝右下**的投影（下面 box-shadow 的 4px 4px），右边视觉重量更大，
+           2026-10 用户看实机截图说「这不像是居中，向左一点」，整体左移 3px 才看着正。
+       ⚠️ 窄屏（≤920px）侧栏横过来、没有栏心了，两边都回到 30px —— 覆盖规则在本文件末尾。
        ⚠️ 改这里的值要同步改 account/account.css 的 .acc-sidebar-avatar：
            两边一旦不一致，换页那一刻就会看到头像跳一下（已经没有形变兜着了）。 */
     border-radius: 9px;
@@ -291,7 +293,7 @@ body.is-immersive .content-container {
 
 /* 窄屏（≤920px）：个人中心的侧栏会横过来铺满整屏（见 account/account.css 的同名断点），
    侧栏里那颗头像的左边距是写死的 30px —— 首页这颗必须**同步回到 30px**，
-   否则换页那一刻头像会横跳 38px（宽屏 68px、窄屏 30px 的差）。 */
+   否则换页那一刻头像会横跳 35px（宽屏 65px、窄屏 30px 的差）。 */
 @media (max-width: 920px) {
     .rounded-square {
         left: 30px;

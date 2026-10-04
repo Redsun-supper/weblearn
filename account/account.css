@@ -391,18 +391,22 @@ body.acc-page {
 }
 
 /* ⚠️ 首页头像过场的落点：与首页那颗**完全同款**（64×64、3px 白边、9px 圆角、白底），
-   位置也逐像素对齐到 (68, 18) —— 上下由侧栏的 18px 内边距给，左右由这里的
-   `margin: 0 auto` 在 200px 的侧栏里平分（(200-64)/2 = 68）。
+   位置也逐像素对齐到 **(65, 18)** —— 上下由侧栏的 18px 内边距给，左右靠
+   `calc(50% - 32px - 3px)`：50% 是栏心 100，减半宽 32、再减 3px 的**光学偏移**。
+   ⚠️ 为什么不是 68（几何正中）：2026-10 用户看了实机截图说「这不像是居中，向左一点」
+   —— 这颗头像带 3px 白边，还有一道**朝右下**的投影（box-shadow: 4px 4px …），
+   右边的视觉重量更大，所以严格平分反而看着偏右；整体左移 3px 把这层重量补回来才看着正。
    ⚠️ 这组数字必须与 main.css 的 .rounded-square 一字不差 —— 差一点就要在过场里补位移，
-   而「不补位移」正是不要那段形变动画的前提。改这里请同时改 main.css。
+   而「不补位移」正是不要那段形变动画的前提。改这里请同时改 main.css（那边是 left: 65px）。
    ⚠️ 用 border-box 让 width/height 直接表示**外框**尺寸（64 就是 64，含白边）。
-   ⚠️ 必须用 auto 而不是写死 68px：侧栏一旦不是 200px（窄屏横过来）auto 会自动跟着变，
-   写死的数字在窄屏就得再来一条覆盖规则（窄屏那条见下方 @media，那里显式改成 30px）。 */
+   ⚠️ 用 calc 而不是写死 65px：侧栏一旦不是 200px，50% 会自己跟着变
+   （`calc()` 里不能写 auto，所以不用 `margin: auto` 那套）；窄屏另给 30px，见下方 @media。 */
 .acc-sidebar-avatar {
     box-sizing: border-box;
     width: 64px;
     height: 64px;
     margin: 0 auto 12px;
+    margin-left: calc(50% - 32px - 3px);
     border: 3px solid #ffffff;
     border-radius: 9px;
     background-color: #ffffff;
