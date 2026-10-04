@@ -961,7 +961,7 @@ AUTH_ADMIN_PASSWORD='管理员密码' \
 
 ## 许可证
 
-Copyright (C) 2026 HR_RedSun
+Copyright (C) 2026 HR_RedSun（大冬呱）
 
 本项目以 **GNU Affero 通用公共许可证第 3 版（AGPL-3.0）** 发布，全文见仓库根目录 [`LICENSE`](LICENSE)。
 Cargo 清单（`backend-rust/Cargo.toml`、`modules/english/engine/Cargo.toml`）里的 SPDX 标识相应为 `AGPL-3.0-or-later`。
@@ -972,7 +972,7 @@ Cargo 清单（`backend-rust/Cargo.toml`、`modules/english/engine/Cargo.toml`�
 
 ```
 广学（Guangxue）· 学科内容展示与英语复习平台
-Copyright (C) 2026  HR_RedSun
+Copyright (C) 2026  HR_RedSun（大冬呱）
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU Affero General Public License as published by
