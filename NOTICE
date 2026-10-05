@@ -18,14 +18,67 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 项目：广学（Guangxue）· 学科内容展示与英语复习平台
 作者：HR_RedSun（别名：大冬呱）
+作者账号：https://gitcode.com/HR_RedSun ｜ https://github.com/Redsun-supper
 许可：AGPL-3.0-or-later（附加条款见下）
 仓库：https://gitcode.com/HR_RedSun/weblearn
 
 许可全文见仓库根目录 LICENSE 文件（FSF 官方英文全文）。
 
-附加条款：暂无。日后若依 AGPL-3.0 第 7 条添加，将写入本文件并在此处列明。
+附加条款（AGPL-3.0 第 7 条 (b) 项）：署名与来源链接的保留
+================================================================
 
-按第 7 条 (b) 项保留作者署名：源码文件头部的 SPDX 标识与版权行（本仓库每个源文件顶部两行）、
-本文件与 LICENSE 中的版权声明，均须在分发时原样保留。
+范围：当你分发（convey）本项目，或把本项目、其修改版作为服务提供给他人时，以下署名信息必须
+原样保留并显示，不得删除、隐藏，也不得改指向别处。
+
+须保留的署名信息（三处，缺一不可）：
+
+  作者账号   https://gitcode.com/HR_RedSun
+             https://github.com/Redsun-supper
+  项目仓库   https://gitcode.com/HR_RedSun/weblearn
+             （若该地址日后失效，以版权人另行指定的后继地址为准）
+
+显示位置：
+
+  1. 源码文件头部 —— 本仓库每个源文件顶部两行的 SPDX 标识与版权行，以及本文件与 LICENSE 中的
+     版权声明，均须原样保留；
+  2. 作品的法律声明展示处 —— 作品若有页脚、「关于」页或同类声明区，须在其中显示上述作者账号与
+     项目仓库链接；
+  3. 分发依附于本项目的修改版时，还须显著标明该版本为修改版、非官方版本（配合第 7 条 (c) 项）。
+
+说明：本条款只要求「保留并显示已有署名信息」，不附加任何其他条件；未在本文件列明的限制一律
+不构成许可条件。
+
+---
+
+Additional terms under AGPL-3.0 section 7(b) — attribution and source links
+===========================================================================
+
+Scope: if you convey this program, or make it (or a modified version) available
+to others as a service, the following attribution must be kept intact and
+displayed. You may not remove it, hide it, or replace it with a link that points
+elsewhere.
+
+Attribution that must be preserved:
+
+  Author accounts  https://gitcode.com/HR_RedSun
+                   https://github.com/Redsun-supper
+  Project repo     https://gitcode.com/HR_RedSun/weblearn
+                   (or a successor URL designated by the copyright holder)
+
+Where it must appear:
+
+  1. in the source files — the SPDX identifier and copyright line at the top of
+     every source file, plus the copyright notices in this file and in LICENSE,
+     must remain verbatim;
+  2. in the Appropriate Legal Notices displayed by the work — if the work shows a
+     footer, an "about" screen, or a comparable notice area, it must display the
+     author accounts and the project repository link listed above;
+  3. in a modified version conveyed as a service, the version must additionally
+     be marked prominently as modified and unofficial (together with section
+     7(c)).
+
+Note: this term only requires preserving and displaying the attribution above and
+imposes no other conditions; no restriction that is not stated in this file forms
+part of the license terms.
 
 仓库结构与各模块说明见 README.md。

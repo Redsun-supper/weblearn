@@ -1015,7 +1015,7 @@ Cargo 清单（`backend-rust/Cargo.toml`、`modules/english/engine/Cargo.toml`�
 
 - 你可以自由使用、修改、分发本项目；**分发（含把改过的版本挂到服务器上供人访问）时必须提供完整对应源码**，并保留版权声明与许可全文。
 - AGPL 第 13 条专门管网络服务：谁把改过的版本拿去做线上服务，谁就有义务让访问者拿到那份源码。
-- **附加条款（AGPL 第 7 条）暂未添加**；日后若要加，会写进 [`NOTICE`](NOTICE) 并在本文件说明，加之前本项目的许可条件就是 AGPL-3.0 本身。
+- **附加条款（AGPL 第 7 条 (b) 项）已加入**：分发、或把本项目（含修改版）作为服务提供时，须保留并显示作者账号（[gitcode.com/HR_RedSun](https://gitcode.com/HR_RedSun)、[github.com/Redsun-supper](https://github.com/Redsun-supper)）与项目仓库 [gitcode.com/HR_RedSun/weblearn](https://gitcode.com/HR_RedSun/weblearn) 的链接；条款全文与显示位置见 [`NOTICE`](NOTICE)。
 
 ```
 广学（Guangxue）· 学科内容展示与英语复习平台
