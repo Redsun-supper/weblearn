@@ -1,0 +1,25 @@
+# ============================================================================
+# 广学 · 每 5 分钟探活一次（P2，2026-10）
+#
+#   sudo systemctl enable --now guangxue-monitor.timer
+#   systemctl list-timers guangxue-monitor.timer
+#   journalctl -u guangxue-monitor -n 30
+#
+# ⚠️ 刻意**不设** Persistent=true：探活不是备份 —— 服务器关机期间漏掉的检查
+#    补跑一次毫无意义，而且刚开机时两个服务可能还没起来，
+#    补跑只会先发一封假告警、5 分钟后再发一封「已恢复」。
+#
+# AccuracySec / RandomizedDelaySec：这一轮探活不需要卡在整分整秒上，
+# 稍微错开可以避免和 03:00 的备份、证书续期任务挤在一起。
+# ============================================================================
+
+[Unit]
+Description=广学 · 每 5 分钟探活一次
+
+[Timer]
+OnCalendar=*:0/5
+AccuracySec=30s
+RandomizedDelaySec=15
+
+[Install]
+WantedBy=timers.target

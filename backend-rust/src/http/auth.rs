@@ -2,8 +2,8 @@
 // Copyright (C) 2026  HR_RedSun (大冬呱)
 //! HTTP 处理器：注册 / 登录 / 刷新 / 登出 / 会话
 
-use axum::extract::State;
-use axum::http::HeaderMap;
+use axum::extract::{Query, State};
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::Deserialize;
@@ -53,15 +53,81 @@ pub struct LogoutAllReq {
     pub keep_current: bool,
 }
 
+/// 健康检查的查询参数（P2）
+#[derive(Debug, Default, Deserialize)]
+pub struct HealthQuery {
+    /// `?deep=1`：**真的查一次库**。监控命令（`guangxue-monitor`）走深检，
+    /// Nginx / dev-server 的探活走浅检。写成 `Option<String>` 而不是 bool：
+    /// 监控是用手写请求发的（`?deep=1`），`?deep=true` 也一并认。
+    /// ⚠️ 只认 `1` 与 `true`（大小写不敏感）—— 与 Go 侧 `?deep=1` 的口径**逐字一致**，
+    /// 两边多认一个写法就会多一类「明明传了却没生效」的排查题。
+    #[serde(default)]
+    pub deep: Option<String>,
+}
+
+impl HealthQuery {
+    fn wants_deep(&self) -> bool {
+        // 大小写不敏感地认 `1` / `true`（与 Go 侧同一口径）；其余一律浅检
+        match self.deep.as_deref().map(str::trim) {
+            Some(v) => v == "1" || v.eq_ignore_ascii_case("true"),
+            None => false,
+        }
+    }
+}
+
 /// 服务健康检查（dev-server.js / 运维探活用）
-pub async fn health(State(state): State<AppState>) -> Json<Value> {
-    ok(json!({
+///
+/// 浅检只证明「进程活着、路由通」；`?deep=1` 多查一次数据库 ——
+/// **进程活着但库坏了**（迁移没跑、文件被换、盘满了写不进去）是最常见的「悄悄坏掉」，
+/// 浅检永远发现不了。深检不健康时回 **503**：这样监控只需要看状态码。
+pub async fn health(State(state): State<AppState>, Query(q): Query<HealthQuery>) -> Response {
+    let mut data = json!({
         "service": "guangxue-auth",
         "version": env!("CARGO_PKG_VERSION"),
         "env": state.cfg.env,
         "mail_mode": state.mailer.mode(),
         "dev_endpoints": state.cfg.dev_endpoints,
-    }))
+        "uptime_seconds": state.uptime_seconds(),
+    });
+
+    if !q.wants_deep() {
+        return ok(data).into_response();
+    }
+
+    match state.service.health_details().await {
+        Ok(details) => {
+            data["deep"] = details;
+            ok(data).into_response()
+        }
+        Err(e) => {
+            // 具体错误（SQLite 的原文）留给日志与响应体，别只回一句「503」——
+            // 半夜收到告警的人需要一眼看出是「表不见了」还是「盘满了」
+            tracing::error!(error = %e, "深度健康检查失败");
+            data["deep"] = json!({ "database": format!("error: {e}") });
+            data["status"] = json!("degraded");
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({
+                    "code": 503,
+                    "message": format!("数据库不可用：{e}"),
+                    "error": "unavailable",
+                    "data": data,
+                })),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// GET /api/auth/config —— **公开**的「前端需要知道的服务端开关」（不需要登录）
+///
+/// 目前只有一项：注册是否强制邀请码。注册表单据此把邀请码标成必填并写清提示，
+/// 用户就不会填完邮箱、点了「发验证码」才发现自己手里根本没有码。
+///
+/// ⚠️ 这是匿名可调的接口：**只放布尔开关**，不要往里加任何带隐私或安全含义的字段
+/// （账号数、管理员邮箱、SMTP 主机名之类一律不要）。
+pub async fn config(State(state): State<AppState>) -> Json<Value> {
+    ok(json!({ "require_invite": state.cfg.require_invite }))
 }
 
 /// POST /api/auth/email-code —— 发注册验证码（填了邀请码就先校验，再发信）

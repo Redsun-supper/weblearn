@@ -83,10 +83,36 @@ async fn run() -> Result<(), String> {
         }
     }
 
-    println!("广学 · 账号系统（Rust 认证服务）已启动");
-    println!("  监听地址    : http://{addr}");
+    // 审计日志保留期（P1）：启动时清一次，之后每 24 小时一次。
+    // `interval` 的第一次 tick 立刻返回，所以「启动时清一次」不用另写一遍。
+    // 清理失败只记日志、不影响服务（下一轮再试）——审计表只在写入时才被用到。
+    if state.cfg.audit_retention_days > 0 {
+        let sweep = state.clone();
+        let days = state.cfg.audit_retention_days;
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(std::time::Duration::from_secs(24 * 3600));
+            loop {
+                ticker.tick().await;
+                match sweep.service.prune_audit(days).await {
+                    Ok(0) => {}
+                    Ok(removed) => tracing::info!(removed, days, "已清理过期审计日志"),
+                    Err(e) => tracing::warn!(error = %e, "清理审计日志失败（下一轮再试）"),
+                }
+            }
+        });
+    }
+
+    println!("广学 · 账号系统（Rust 认证服务）已启动");    println!("  监听地址    : http://{addr}");
     println!("  数据库      : {db_path}");
     println!("  邮件模式    : {mail_mode}");
+    println!(
+        "  审计保留    : {}",
+        if state.cfg.audit_retention_days > 0 {
+            format!("{} 天（启动时与每 24 小时各清一次）", state.cfg.audit_retention_days)
+        } else {
+            "永不清理".to_string()
+        }
+    );
     match &mail_check {
         // 连不上只是告警：服务照常起，用户照样能登录（发不出码另说）
         Some(msg) if msg.starts_with("能连上") => println!("  邮件自检    : {msg}"),
@@ -97,6 +123,28 @@ async fn run() -> Result<(), String> {
         None => {}
     }
     println!("  会话有效期  : access {access_ttl} 秒 / refresh {refresh_days} 天");
+    // P2：把**实际生效**的限流打出来。这几个数字现在能用 AUTH_RL_* 改，
+    // 写错格式会在启动时报错退出，写对了就在这几行里能核对 —— 「我明明改了啊」
+    // 这类问题不该靠再读一遍配置文件来查。
+    let rate = state.cfg.rate;
+    println!(
+        "  限流（同 IP）: 登录 {}/{} 秒 · 发码 {}/{} 秒 · 注册 {}/{} 秒",
+        rate.login_ip.limit,
+        rate.login_ip.window.as_secs(),
+        rate.code_ip.limit,
+        rate.code_ip.window.as_secs(),
+        rate.register_ip.limit,
+        rate.register_ip.window.as_secs()
+    );
+    println!(
+        "  限流（账号）: 验证码每邮箱 {}/{} 秒 与 {}/{} 秒 · 密码连错 {} 次锁 {} 分钟",
+        rate.code_email_minute.limit,
+        rate.code_email_minute.window.as_secs(),
+        rate.code_email_hour.limit,
+        rate.code_email_hour.window.as_secs(),
+        state.cfg.lock_threshold,
+        state.cfg.lock_minutes
+    );
     println!("  Cookie      : HttpOnly + SameSite=Lax{}", if cookie_secure { " + Secure" } else { "" });
     println!("  允许来源    : {}", state.cfg.allowed_origins.join(", "));
     println!(
@@ -150,15 +198,26 @@ fn print_help() {
   AUTH_MAIL_MODE               log（默认）/ smtp
   AUTH_SMTP_HOST/PORT/USERNAME/PASSWORD/FROM/TLS
   AUTH_DEV_ENDPOINTS           默认随 APP_ENV（生产强制关闭）
+  AUTH_REQUIRE_INVITE          是否强制邀请码注册，默认 false
+  AUTH_AUDIT_RETENTION_DAYS    审计日志保留天数，默认 180（0 = 永不清理）
   AUTH_ADMIN_EMAIL             默认 2262997289@qq.com
   AUTH_ADMIN_PASSWORD          仅 development 允许用默认值
   AUTH_SEED_ADMIN              默认随 APP_ENV
   AUTH_ARGON2_M_COST/T_COST/P_COST
-  AUTH_RL_* / AUTH_LOCK_THRESHOLD / AUTH_LOCK_MINUTES
+  AUTH_RL_LOGIN_IP             登录：同 IP，默认 200/900
+  AUTH_RL_CODE_EMAIL_MINUTE    发码：同邮箱每分钟，默认 1/60
+  AUTH_RL_CODE_EMAIL_HOUR      发码：同邮箱每小时，默认 5/3600
+  AUTH_RL_CODE_IP              发码：同 IP，默认 200/3600
+  AUTH_RL_REGISTER_IP          注册：同 IP，默认 100/3600
+                               （格式「次数/窗口秒」；0/0 关闭这一条。口径：严在账号、宽在 IP）
+  AUTH_LOCK_THRESHOLD / AUTH_LOCK_MINUTES
+                               密码连错几次锁多久，默认 5 次 / 15 分钟
 
 配套命令：
-  cargo run --bin seed-admin -- --help     # 建/重置管理员
-  cargo run --bin invite -- --help         # 邀请码 CLI
+  cargo run --bin seed-admin -- --help          # 建/重置管理员
+  cargo run --bin invite -- --help              # 邀请码 CLI
+  cargo run --bin mail-test -- 邮箱@example.com # 用同一份配置真发一封测试邮件（P0-3）
+  cargo run --release --bin guangxue-monitor    # 探活两个服务（P2；退出码 1 = 有不健康项）
 "#
     );
 }

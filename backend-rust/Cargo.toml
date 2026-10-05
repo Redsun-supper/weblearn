@@ -30,6 +30,11 @@ path = "src/bin/invite.rs"
 name = "mail-test"
 path = "src/bin/mail_test.rs"
 
+# 探活与告警（P2）：由 systemd timer 每 5 分钟跑一次，坏了一封邮件
+[[bin]]
+name = "guangxue-monitor"
+path = "src/bin/monitor.rs"
+
 [dependencies]
 # HTTP 框架（0.8 起路径参数写作 {id}，不再是 :id）
 axum = "0.8"

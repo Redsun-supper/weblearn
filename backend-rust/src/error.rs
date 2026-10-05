@@ -42,6 +42,16 @@ pub enum AuthError {
     RateLimited,
     #[error("邮件发送失败，请稍后再试")]
     MailFailed,
+    /// 超管自定义的那串码**已经存在**。
+    ///
+    /// 带上 `existing`（那张码当前的列表形态：状态 / 已用次数 / 谁用过）——
+    /// 面板要拿它弹「这张码已经用过，是否无视风险继续」的确认框；
+    /// 直接把 `InvitePublic` 塞进错误里是为了让前端**不用再发一次查询**去凑这些信息。
+    #[error("这个邀请码已经被占用了")]
+    InviteCodeTaken {
+        code: String,
+        existing: Option<Box<crate::models::InvitePublic>>,
+    },
     #[error("记录不存在")]
     NotFound,
     #[error("服务内部错误")]
@@ -60,7 +70,7 @@ impl AuthError {
             | AuthError::CodeAttemptsExceeded => StatusCode::BAD_REQUEST,
             AuthError::BadCredentials | AuthError::Unauthenticated => StatusCode::UNAUTHORIZED,
             AuthError::Forbidden => StatusCode::FORBIDDEN,
-            AuthError::EmailTaken => StatusCode::CONFLICT,
+            AuthError::EmailTaken | AuthError::InviteCodeTaken { .. } => StatusCode::CONFLICT,
             AuthError::NotFound => StatusCode::NOT_FOUND,
             AuthError::AccountLocked | AuthError::RateLimited => StatusCode::TOO_MANY_REQUESTS,
             AuthError::MailFailed => StatusCode::BAD_GATEWAY,
@@ -85,6 +95,7 @@ impl AuthError {
             AuthError::Forbidden => "forbidden",
             AuthError::RateLimited => "rate_limited",
             AuthError::MailFailed => "mail_failed",
+            AuthError::InviteCodeTaken { .. } => "invite_code_taken",
             AuthError::NotFound => "not_found",
             AuthError::Internal(_) => "internal",
         }
@@ -105,11 +116,23 @@ impl IntoResponse for AuthError {
             tracing::error!(error = %detail, "内部错误");
         }
         let status = self.status();
-        let body = json!({
-            "code": status.as_u16(),
-            "message": self.public_message(),
-            "error": self.code(),
-        });
+        // 「码已被占用」多带一个 data：那张码当前的列表形态（状态 / 已用次数 / 谁用过）。
+        // 面板要拿它弹「已经用过 → 是否无视风险继续」的确认框，省掉一次额外查询。
+        // ⚠️ 放在 `data` 里而不是平铺在顶层：`{code,message,error}` 是三个后端共用的信封，
+        // 顶层多一个键会让「按信封解析」的调用方（admin/admin.js 的 apiFetch）走岔。
+        let body = match &self {
+            AuthError::InviteCodeTaken { code, existing } => json!({
+                "code": status.as_u16(),
+                "message": self.public_message(),
+                "error": self.code(),
+                "data": { "code": code, "existing": existing },
+            }),
+            other => json!({
+                "code": status.as_u16(),
+                "message": other.public_message(),
+                "error": other.code(),
+            }),
+        };
         (status, Json(body)).into_response()
     }
 }

@@ -25,8 +25,26 @@ pub trait Mailer: Send + Sync + 'static {
     /// 发送验证码邮件
     async fn send_code(&self, to: &str, code: &str, purpose: &str, ttl_seconds: i64) -> Result<()>;
 
+    /// 发送邀请码邮件（管理面板的「整批发邮件」用它，一次一封）
+    ///
+    /// `expires_hint` 是**已经排版好的**一句中文（例如「有效期至 2026-10-10」，不过期时是空串），
+    /// 由服务层拼好传进来：两个实现因此不会各排一种格式，换文案也只改一处。
+    async fn send_invite(&self, to: &str, code: &str, note: &str, expires_hint: &str) -> Result<()>;
+
+    /// 发一封**运维告警**邮件（P2 的 `guangxue-monitor` 用它）
+    ///
+    /// 与验证码/邀请码那两类不同：没有固定模板，主题与正文由调用方（监控命令）排好。
+    /// 单独开一个方法而不是复用 `send_code`：告警邮件不该长得像验证码邮件 ——
+    /// 收件人一眼要能看出「这是服务器出事了」，而不是「又有验证码」。
+    async fn send_notice(&self, to: &str, subject: &str, body: &str) -> Result<()>;
+
     /// 取最近一次发给该邮箱的验证码明文（仅开发模式的 log 发送器实现）
     fn last_dev_code(&self, _to: &str) -> Option<String> {
+        None
+    }
+
+    /// 取最近一次发给该邮箱的邀请码明文（同上：只有 log 发送器会记住；集成测试靠它断言）
+    fn last_dev_invite(&self, _to: &str) -> Option<String> {
         None
     }
 

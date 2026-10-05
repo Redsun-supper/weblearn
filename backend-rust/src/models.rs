@@ -94,6 +94,7 @@ impl UserRow {
             role: self.role.clone(),
             status: self.status.clone(),
             email_verified_at: self.email_verified_at.map(ts),
+            last_login_at: self.last_login_at.map(ts),
             created_at: ts(self.created_at),
         }
     }
@@ -103,11 +104,15 @@ impl UserRow {
 #[derive(Debug, Clone, Serialize)]
 pub struct UserPublic {
     pub id: i64,
+    /// ⚠️ 普通管理员在管理面板里看到的是**打码后**的邮箱（`22***@qq.com`）：
+    /// 脱敏在 HTTP 层做（见 `http/admin.rs` 的 `list_users`），服务层始终返回真值。
     pub email: String,
     pub username: Option<String>,
     pub role: String,
     pub status: String,
     pub email_verified_at: Option<String>,
+    /// 最后登录时间（P1 管理面板的用户列表要显示它；可空 = 从没登录过）
+    pub last_login_at: Option<String>,
     pub created_at: String,
 }
 
@@ -199,6 +204,8 @@ impl InviteRow {
             status: self.status(now).to_string(),
             grant_role: self.grant_role.clone(),
             batch_id: self.batch_id.clone(),
+            // 兑换记录由服务层单独查（这里只保证字段存在，前端不必判 undefined）
+            uses: Vec::new(),
         }
     }
 
@@ -216,7 +223,9 @@ impl InviteRow {
 }
 
 /// 对外的邀请码信息
-#[derive(Debug, Clone, Serialize)]
+///
+/// `PartialEq/Eq` 是为了能塞进 `AuthError::InviteCodeTaken`（错误类型带 Eq 派生）
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct InvitePublic {
     pub id: i64,
     pub code: String,
@@ -232,6 +241,86 @@ pub struct InvitePublic {
     pub grant_role: String,
     /// 生成批次（同一次生成的码共享）
     pub batch_id: String,
+    /// 最近几条兑换记录（谁用了 / 邮箱），列表页显示用。
+    /// [`InviteRow::public`] 只给空数组 —— 它不知道兑换记录，
+    /// 由服务层查出来再挂上（见 `AuthService::list_invites`）。
+    #[serde(default)]
+    pub uses: Vec<InviteUsePublic>,
+}
+
+/// 邀请码兑换记录（一行 = 一次成功兑换）
+#[derive(Debug, Clone)]
+pub struct InviteUseRow {
+    pub invite_code_id: i64,
+    pub user_id: Option<i64>,
+    pub email: String,
+    pub ip: String,
+    pub used_at: OffsetDateTime,
+}
+
+impl InviteUseRow {
+    pub fn public(&self) -> InviteUsePublic {
+        InviteUsePublic {
+            user_id: self.user_id,
+            email: self.email.clone(),
+            ip: self.ip.clone(),
+            used_at: ts(self.used_at),
+        }
+    }
+}
+
+/// 对外的兑换记录
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct InviteUsePublic {
+    pub user_id: Option<i64>,
+    pub email: String,
+    pub ip: String,
+    pub used_at: String,
+}
+
+/// 审计日志行（查询用；写入用 [`NewAudit`]）
+#[derive(Debug, Clone)]
+pub struct AuditRow {
+    pub id: i64,
+    pub actor_user_id: Option<i64>,
+    /// 关联查出来的操作者邮箱（`LEFT JOIN users`）：账号没了或动作没有操作者时为空
+    pub actor_email: Option<String>,
+    pub action: String,
+    pub target: String,
+    pub ip: String,
+    pub user_agent: String,
+    pub detail: String,
+    pub created_at: OffsetDateTime,
+}
+
+impl AuditRow {
+    pub fn public(&self) -> AuditPublic {
+        AuditPublic {
+            id: self.id,
+            actor_user_id: self.actor_user_id,
+            actor_email: self.actor_email.clone(),
+            action: self.action.clone(),
+            target: self.target.clone(),
+            ip: self.ip.clone(),
+            user_agent: self.user_agent.clone(),
+            detail: self.detail.clone(),
+            created_at: ts(self.created_at),
+        }
+    }
+}
+
+/// 对外的审计日志
+#[derive(Debug, Clone, Serialize)]
+pub struct AuditPublic {
+    pub id: i64,
+    pub actor_user_id: Option<i64>,
+    pub actor_email: Option<String>,
+    pub action: String,
+    pub target: String,
+    pub ip: String,
+    pub user_agent: String,
+    pub detail: String,
+    pub created_at: String,
 }
 
 /// 邮箱验证码行（只存摘要）

@@ -2,8 +2,14 @@
 // Copyright (C) 2026  HR_RedSun (大冬呱)
 //! 邀请码：生成、规范化与状态机
 //!
-//! 字符集用 Crockford Base32（去掉了容易看错的 I / L / O / U），默认 16 位 =
-//! 80 bit 随机量，足够抵抗猜测。
+//! 字符集是 **A-Z 与 0-9 共 36 个字符**（用户 2026-10-05 定：邀请码就只要这个范围），
+//! 默认 16 位 ≈ 82.7 bit 随机量（log2(36) × 16），足够抵抗猜测。
+//!
+//! ⚠️ 曾经用过 Crockford Base32（排除 I/L/O/U 这套易混字符），**2026-10-05 按用户要求改掉**：
+//! 生成与手填现在用同一套字符表，邮件的码和超管自己定的码长得一样。
+//! 代价是随机码里会出现 `O`/`I`/`l` 这类手抄容易看错的字符 ——
+//! 兑换时不做「O→0」这类自动纠正（那会把用户真写对的码改成另一个码，反而更难查），
+//! 所以抄码要连字符一起复制（面板上有「复制」按钮）。
 //!
 //! ## 邀请码的定位（2026-09 改）
 //!
@@ -22,8 +28,13 @@
 use rand::Rng;
 use time::OffsetDateTime;
 
-/// 无易混字符的 Base32 字母表
-const ALPHABET: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+/// 邀请码的字符表：**A-Z 与 0-9**（36 个）。
+///
+/// ⚠️ 别自作聪明换回「无易混字符」的 32 字符表（Crockford 那套）：2026-10-05 用户明确要
+/// 「邀请码要 A-Z 和 0-9」，而且**手填的自定义码本来就是这个范围** —— 两处口径不一致时，
+/// 表现是「我自己写的码里能用 O，系统发的码里却永远见不到 O」，看起来像 bug。
+/// 改这张表**不影响已经发出去的码**：兑换一律查库，旧码照样有效。
+const ALPHABET: &[u8; 36] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 
 /// 默认邀请码长度
 pub const CODE_LEN: usize = 16;
@@ -82,9 +93,9 @@ pub fn split_codes(raw: &str) -> Vec<String> {
 ///
 /// 长度按**去掉 `-` 之后的字母数字部分**算（8~32）。
 ///
-/// ⚠️ 这里刻意**不套用生成时那套 Crockford 字母表**：用途前缀会是
-/// `ADMIN` / `POINTS` 这类英文单词，而它们含 I / L / O / U（正是生成时被排除的
-/// 易混字符）。真正的判定是查库，这里只是一道廉价的预筛，放宽不会漏掉什么。
+/// ⚠️ 这里刻意比生成/自定义码**宽**：用途前缀会是 `ADMIN` / `POINTS` 这类英文单词，
+/// 而且老库里可能还有 Crockford 时代（排除 I/L/O/U）发的码。真正的判定是查库，
+/// 这里只是一道廉价的预筛，放宽不会漏掉什么。
 pub fn is_plausible(raw: &str) -> bool {
     let code = normalize_code(raw);
     let core: String = code.chars().filter(|c| *c != '-').collect();
@@ -93,6 +104,43 @@ pub fn is_plausible(raw: &str) -> bool {
     }
     (8..=32).contains(&core.len())
         && code.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+}
+
+/// 管理员**自己指定**的邀请码：规范化（去空白、统一大写、抹掉所有 `-`）。
+///
+/// ⚠️ 这里比其他地方**多抹一层 `-`**（[`normalize_code`] 是刻意保留的，用途前缀靠它区分）：
+/// 自定义码的长度口径是「16 个字符」= 系统生成那种 16 位的样子，而人手写时很自然会把
+/// 它抄成分组的 `ABCD-EFGH-IJKL-MNOP`。不抹掉的话，这串去掉横杠明明就是 16 位，
+/// 却会被判成「21 位、太长」，管理员只会觉得「我明明写的就是 16 位」。
+///
+/// 用它的地方只有一处：超管在管理面板里手填码（`service::create_invites`），
+/// 兑换侧一律走 [`normalize_code`]（那里绝不能抹横杠，否则 `ADMIN-xxx` 会退化）。
+pub fn normalize_custom_code(raw: &str) -> String {
+    normalize_code(raw).replace('-', "")
+}
+
+/// 自定义邀请码的格式校验（与系统生成同长同形）。
+///
+/// 规则三条，都是**故意**的：
+/// ① **正好 16 位**（与 `CODE_LEN` 对齐）：管理员的码和系统码在列表 / 邮件 / 手抄里长得一样，
+///    出了事也好一眼分辨「这是人定的码」；
+/// ② **只用 A-Z 与 0-9**：不放行 `-`（会被 [`normalize_custom_code`] 抹掉）与其它符号，
+///    免得出现连自己都打不出来的码；
+/// ③ 字母表与系统生成**完全一致**（2026-10-05 起两边都是 A-Z + 0-9）：`MYCODE1234567890`
+///    这种含 O/0 混杂的写法必须放行，随机码里同样会出现这些字符 ——
+///    「我自己写的码能用 O，系统发的却永远见不到 O」这种不一致本身就是 bug。
+pub fn validate_custom_code(raw: &str) -> Result<String, String> {
+    let code = normalize_custom_code(raw);
+    if code.is_empty() {
+        return Err("自定义码不能为空".to_string());
+    }
+    if code.chars().count() != CODE_LEN {
+        return Err(format!("自定义码要正好 {CODE_LEN} 位字符（现在 {} 位）", code.chars().count()));
+    }
+    if !code.bytes().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit()) {
+        return Err("自定义码只能用 0-9 与 A-Z（大小写不敏感，会统一转成大写）".to_string());
+    }
+    Ok(code)
 }
 
 /// 邀请码状态
@@ -140,13 +188,31 @@ mod tests {
     }
 
     #[test]
-    fn generated_code_uses_safe_alphabet_and_length() {
+    fn generated_code_uses_full_alphanumeric_alphabet_and_length() {
         let code = generate_code();
         assert_eq!(code.len(), CODE_LEN);
         assert!(code.bytes().all(|b| ALPHABET.contains(&b)), "含字母表外的字符：{code}");
-        for bad in ['I', 'L', 'O', 'U'] {
-            assert!(!code.contains(bad), "不应出现易混字符 {bad}");
+        // ⚠️ 这里**曾经**断言「不能出现 I/L/O/U」（Crockford 那套无易混字符的 Base32）。
+        // 2026-10-05 用户要求「邀请码要 A-Z 和 0-9」，断言随之反过来：只要在大写字母与
+        // 数字里，出现什么都正常 —— 别再把它当成 bug 修回去。
+        assert!(code.bytes().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit()));
+    }
+
+    /// 锁住「字符表真的是 A-Z + 0-9 这 36 个」，而不是靠 `ALPHABET` 自己证明自己。
+    ///
+    /// 生成 2000 张（32000 个字符位）时，36 个字符每个的期望出现次数 ≈ 889 次，
+    /// 漏掉任何一个的概率低到可以忽略（(35/36)^32000 ≈ 10^-386）。所以「全都见过一次」
+    /// 是这张表完整的充分证据，也就顺带证明了它**没有**被换回 32 字符那套。
+    #[test]
+    fn alphabet_covers_every_letter_and_digit() {
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..2000 {
+            seen.extend(generate_code().bytes());
         }
+        let want: Vec<u8> = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ".to_vec();
+        let missing: Vec<char> = want.iter().filter(|b| !seen.contains(b)).map(|b| *b as char).collect();
+        assert!(missing.is_empty(), "这些字符永远生成不出来：{missing:?}");
+        assert_eq!(seen.len(), 36, "字母表应当正好 36 个字符，实际生成了 {} 种", seen.len());
     }
 
     #[test]
@@ -227,15 +293,15 @@ mod tests {
 
     #[test]
     fn plausibility_accepts_purpose_prefixed_codes() {
-        // 将来后台靠 `-` 前缀区分用途，这类前缀含 I/O 等易混字母，必须放行
+        // 将来后台靠 `-` 前缀区分用途，这类前缀含 I/O 等字母，必须放行
         assert!(is_plausible("ADMIN-ABCD1234"));
         assert!(is_plausible("points-abcd1234"), "大小写不敏感");
         assert!(is_plausible("ABCD-EFGH-IJKL-MNOP"), "手抄分组");
         assert!(!is_plausible("ADMIN-AB"), "去掉 - 后不足 8 位");
-        // 生成出来的码仍然只用安全字母表（不会出现 I/L/O/U）
-        for bad in ['I', 'L', 'O', 'U'] {
-            assert!(!generate_code().contains(bad));
-        }
+        // 生成出来的码必须能通过预筛（2026-10-05 前这里断言的是「不会出现 I/L/O/U」；
+        // 字符表放开成 A-Z + 0-9 之后，该断言换成了「生成的码本身就能过预筛」）
+        assert!(is_plausible(&generate_code()));
+        assert!(is_plausible(&generate_code_for(crate::models::ROLE_ADMIN)));
     }
 
     #[test]
@@ -247,5 +313,43 @@ mod tests {
         assert_eq!(evaluate(false, 0, 1, Some(at(1_000_000)), now), InviteState::Expired);
         assert_eq!(evaluate(false, 1, 1, None, now), InviteState::Exhausted);
         assert_eq!(evaluate(true, 5, 1, Some(at(1)), now), InviteState::Disabled);
+    }
+
+    #[test]
+    fn custom_code_normalization_strips_hyphens_and_uppercases() {
+        // 手写成 4 位一组的写法要能收（去掉横杠正好 16 位）
+        assert_eq!(normalize_custom_code("abcd-efgh-jklm-npqt"), "ABCDEFGHJKLMNPQT");
+        assert_eq!(normalize_custom_code(" my code 1234 5678 "), "MYCODE12345678");
+        // ⚠️ 兑换侧那一套**不能**跟着变：用途前缀 `ADMIN-` 必须原样保留
+        assert_eq!(normalize_code("ADMIN-ABCD1234"), "ADMIN-ABCD1234");
+    }
+
+    #[test]
+    fn custom_code_validation_is_exactly_sixteen_alphanumeric() {
+        // 小写要自动转大写
+        assert_eq!(validate_custom_code("myCode1234567890").unwrap(), "MYCODE1234567890");
+        // 含易混字符（O/0/I/1）照样放行 —— 2026-10-05 起随机生成用的也是同一套字符表，
+        // 两边口径一致：**A-Z 与 0-9 都合法**，谁也不比谁宽
+        assert_eq!(validate_custom_code("ADMIN-12345678901").unwrap(), "ADMIN12345678901");
+    }
+
+    #[test]
+    fn custom_code_validation_rejects_bad_shapes() {
+        for bad in ["", "   ", "SHORT", "ADMIN-123456789", "TOOLONG1234567890"] {
+            assert!(validate_custom_code(bad).is_err(), "本应拒绝：{bad}");
+        }
+        // ⚠️ 长度与字符集是两道**分开**的检查，且长度在前：
+        // `中文码1234567890` 只有 13 位，报的是「位数不够」而不是「字符不合法」——
+        // 想验字符集就必须拿一个**长度正好 16** 的串（下面那条）。
+        let err = validate_custom_code("中文码1234567890").unwrap_err();
+        assert!(err.contains("16") && err.contains("13 位"), "13 个字符的串该报长度：{err}");
+        // 这两条都是「长度正好 16、但字符不合法」：下划线 / 中文
+        let err = validate_custom_code("MYCODE_123456789").unwrap_err();
+        assert!(err.contains("0-9 与 A-Z"), "下划线不合法：{err}");
+        let err = validate_custom_code("中文码4567890123456").unwrap_err();
+        assert!(err.contains("0-9 与 A-Z"), "长度恰好 16 但不是 ASCII：{err}");
+        // 长度不对时要报出实际位数，管理员才知道差几位
+        let err = validate_custom_code("ABC123").unwrap_err();
+        assert!(err.contains("16") && err.contains("6 位"), "报错要带位数：{err}");
     }
 }

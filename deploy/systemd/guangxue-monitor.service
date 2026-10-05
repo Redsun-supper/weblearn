@@ -1,0 +1,69 @@
+# ============================================================================
+# 广学 · 探活与告警（P2，2026-10）
+#
+# 由 guangxue-monitor.timer 每 5 分钟拉起一次（oneshot）：
+#
+#   sudo systemctl enable --now guangxue-monitor.timer
+#   systemctl list-timers guangxue-monitor.timer       # 看下次触发时间
+#   sudo systemctl start guangxue-monitor.service      # 手动跑一次（验收告警通道）
+#   journalctl -u guangxue-monitor -n 30               # 看上一轮结果
+#
+# ⚠️ 这个服务**故意允许失败**：退出码 1 = 有服务不健康。
+#    所以 `systemctl --failed` / `systemctl status` 会把它标红 —— 邮件是第二道，
+#    systemd 是第一道。
+#
+# ⚠️ MONITOR_ALERT_TO 留空 = 告警只写日志（不发邮件）。第一次装完请按
+#    docs/deploy-runbook.md 的「监控与告警」一节做一次**真故障演练**：
+#    告警通道没验过，等于没有监控。
+# ============================================================================
+
+[Unit]
+Description=广学 · 探活与告警（检查两个服务的深度健康，坏了发邮件）
+Documentation=file:/opt/guangxue/docs/deploy-runbook.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=guangxue
+Group=guangxue
+WorkingDirectory=/opt/guangxue/backend-rust
+
+# 与账号服务**同一份** .env：告警邮件走的就是账号服务那套 AUTH_SMTP_* 配置。
+# 于是「这条命令能发信」与「注册能收到验证码」是同一个前提。
+EnvironmentFile=/opt/guangxue/backend-rust/.env
+
+# 监控自己的变量（想改就改这里，别改代码）。两个 URL 直接打回环端口，
+# 不经过 Nginx —— 这一层要回答的是「进程还能不能用」，Nginx 那一层交给
+# 外部 uptime 服务（见 runbook）。
+Environment=MONITOR_GO_URL=http://127.0.0.1:8080/api/health?deep=1
+Environment=MONITOR_AUTH_URL=http://127.0.0.1:8081/api/auth/health?deep=1
+# 告警收件人：**留空 = 只写日志**（不发邮件）。填上管理员邮箱才会真的发信。
+# 两种写法都行：① 把下面这行取消注释并填地址；② 写进 backend-rust/.env。
+# ⚠️ 优先级：systemd 的 EnvironmentFile（那份 .env）**覆盖**单元文件里的 Environment=，
+#    与两行书写的先后无关 —— 所以「unit 里留空、.env 里填了」最终按 .env 的值发信，
+#    别以为 unit 里留空就等于一定不发信。装了之后按 runbook 第 9 节做一次演练，
+#    以 journal 里的提示为准（要发信却没配收件人时它会明确喊一句）。
+#Environment=MONITOR_ALERT_TO=admin@example.com
+# 上一轮状态（判断「刚坏」还是「一直坏」）。StateDirectory 由 systemd 建好并授权。
+Environment=MONITOR_STATE_FILE=/var/lib/guangxue-monitor/state.json
+# 持续故障多久重发一次提醒；0 = 只在状态变化时发
+Environment=MONITOR_REPEAT_HOURS=6
+StateDirectory=guangxue-monitor
+
+ExecStart=/opt/guangxue/backend-rust/guangxue-monitor
+
+# 探活本身只读：不放开任何可写路径（状态目录由 StateDirectory 单独授权）
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+# 探活要快：连不上就该报「连不上」，而不是挂在 systemd 里等默认的 90 秒
+TimeoutStartSec=60
+
+[Install]
+WantedBy=multi-user.target

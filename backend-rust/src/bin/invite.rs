@@ -17,6 +17,7 @@ use std::process::ExitCode;
 use guangxue_auth::cli::CliArgs;
 use guangxue_auth::config::Config;
 use guangxue_auth::models::{ROLE_ADMIN, ROLE_USER};
+use guangxue_auth::service::InviteSpec;
 use guangxue_auth::store::sql::InviteFilter;
 use guangxue_auth::{init_tracing, AppState};
 
@@ -71,7 +72,19 @@ async fn run() -> Result<(), String> {
             let grant_role = args.get("--grant-role").unwrap_or(ROLE_USER);
             let created = state
                 .service
-                .create_invites(None, count, max_uses, days, note, grant_role)
+                .create_invites(
+                    None,
+                    InviteSpec {
+                        count,
+                        max_uses,
+                        expires_in_days: days,
+                        note: note.to_string(),
+                        grant_role: grant_role.to_string(),
+                        // CLI 的自定义码走 `--code`：与面板同一个校验
+                        custom_code: args.get("--code").map(str::to_string),
+                        allow_existing: args.has("--allow-existing"),
+                    },
+                )
                 .await
                 .map_err(|e| e.to_string())?;
             let level = if grant_role == ROLE_ADMIN { "管理员" } else { "普通用户" };
@@ -168,6 +181,10 @@ create 选项：
   --expires-in-days <N>    有效期天数（0 表示不过期，默认 7）
   --grant-role <角色>      兑换后授予的角色：user（默认）/ admin
                            管理员码会带 ADMIN- 前缀（给人看的，不是安全边界）
+  --code <码>              **自己指定**邀请码：正好 16 位 A-Z 与 0-9（大小写不敏感，
+                           手写的 - 会被抹掉）；给了它就只出 1 张，--count 被忽略。
+                           这个码已经存在时默认报错退出，加 --allow-existing 才照用
+  --allow-existing         自定义码已存在时照用不误（等价于面板上的「无视风险继续」）
   --note <文字>            备注（后台列表可见）
 
 list 选项：

@@ -39,6 +39,9 @@ pub struct AppState {
     pub mailer: Arc<dyn Mailer>,
     pub limiter: Arc<RateLimiter>,
     pub clock: Arc<dyn Clock>,
+    /// 进程启动时刻（P2）：深度健康检查要报「运行了多久」。
+    /// 用 `Instant` 而不是墙上时间 —— 报的是**单调**时长，系统时间被 NTP 校正也不会跳变。
+    pub started_at: std::time::Instant,
 }
 
 impl AppState {
@@ -56,7 +59,12 @@ impl AppState {
             mailer.clone(),
             limiter.clone(),
         )?);
-        Ok(Self { cfg, service, mailer, limiter, clock })
+        Ok(Self { cfg, service, mailer, limiter, clock, started_at: std::time::Instant::now() })
+    }
+
+    /// 已经运行了多少秒（深度健康检查用）
+    pub fn uptime_seconds(&self) -> u64 {
+        self.started_at.elapsed().as_secs()
     }
 }
 

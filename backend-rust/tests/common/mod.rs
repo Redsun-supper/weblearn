@@ -28,7 +28,7 @@ use guangxue_auth::mail::log_mailer::LogMailer;
 use guangxue_auth::mail::Mailer;
 use guangxue_auth::models::{ROLE_ADMIN, ROLE_SUPER_ADMIN, ROLE_USER};
 use guangxue_auth::rate_limit::RateLimiter;
-use guangxue_auth::service::AuthService;
+use guangxue_auth::service::{AuthService, InviteSpec};
 use guangxue_auth::store::SqliteStore;
 use guangxue_auth::{build_app, AppState};
 
@@ -74,7 +74,7 @@ pub async fn spawn_with(configure: impl FnOnce(&mut Config)) -> TestApp {
         AuthService::new(cfg.clone(), store, clock.clone(), mailer.clone(), limiter.clone())
             .expect("构建服务"),
     );
-    let state = AppState { cfg, service, mailer, limiter, clock: clock.clone() };
+    let state = AppState { cfg, service, mailer, limiter, clock: clock.clone(), started_at: std::time::Instant::now() };
     let router = build_app(state.clone());
     TestApp { state, router, clock, tmp }
 }
@@ -95,7 +95,18 @@ impl TestApp {
         let created = self
             .state
             .service
-            .create_invites(None, 1, max_uses, expires_in_days, "测试", grant_role)
+            .create_invites(
+                None,
+                InviteSpec {
+                    count: 1,
+                    max_uses,
+                    expires_in_days,
+                    note: "测试".to_string(),
+                    grant_role: grant_role.to_string(),
+                    custom_code: None,
+                    allow_existing: false,
+                },
+            )
             .await
             .expect("建邀请码");
         created.codes[0].code.clone()

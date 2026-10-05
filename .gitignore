@@ -42,3 +42,9 @@ Thumbs.db
 
 # DSH 插件的运行态目录（本机 GUI 状态，与项目代码无关，不入库）
 .dshwolf/
+
+# 跑测试用的临时目录：本机的命令沙箱只允许写工作区内，
+# 所以 cargo test / go test 的 TEMP 会指到这里（见 docs/boundaries.md 第 6 节）
+.tmp-cargo/
+.tmp-test/
+.tmp-e2e/

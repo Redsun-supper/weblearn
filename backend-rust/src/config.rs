@@ -37,17 +37,20 @@ impl RateRule {
 }
 
 /// 限流配置（单进程内存实现，见 `rate_limit.rs`）
+///
+/// ⚠️ 每一条都能用 `AUTH_RL_*` 覆盖（P2，2026-10 才接上；在那之前这几个环境变量
+/// 只出现在 `--help` 里、实际一行都没解析）。格式：`次数/窗口秒`，`0/0` 关闭。
 #[derive(Debug, Clone, Copy)]
 pub struct RateConfig {
-    /// 登录：同 IP 15 分钟内的尝试次数
+    /// 登录：同 IP 15 分钟内的尝试次数（`AUTH_RL_LOGIN_IP`，默认 200）
     pub login_ip: RateRule,
-    /// 发验证码：同邮箱 60 秒 1 次
+    /// 发验证码：同邮箱 60 秒 1 次（`AUTH_RL_CODE_EMAIL_MINUTE`）
     pub code_email_minute: RateRule,
-    /// 发验证码：同邮箱 1 小时 5 次
+    /// 发验证码：同邮箱 1 小时 5 次（`AUTH_RL_CODE_EMAIL_HOUR`）
     pub code_email_hour: RateRule,
-    /// 发验证码：同 IP 1 小时 20 次
+    /// 发验证码：同 IP 1 小时 200 次（`AUTH_RL_CODE_IP`）
     pub code_ip: RateRule,
-    /// 注册：同 IP 1 小时 10 次
+    /// 注册：同 IP 1 小时 100 次（`AUTH_RL_REGISTER_IP`）
     pub register_ip: RateRule,
 }
 
@@ -192,6 +195,11 @@ pub struct Config {
     pub lock_threshold: i64,
     /// 锁定时长（分钟）
     pub lock_minutes: i64,
+    /// 审计日志保留天数（P1）：启动时清一次，之后每 24 小时清一次；`0` = 永不清理
+    ///
+    /// 为什么不设成 `Option`：默认值 180 天是「已经和用户定过」的口径，
+    /// 想永久保留就显式写 0 —— 配置里看得见，比一个隐含的「没配就不清理」好排查。
+    pub audit_retention_days: i64,
     pub jwt_secret_is_default: bool,
     pub admin_password_is_default: bool,
 }
@@ -227,14 +235,23 @@ impl Config {
             seed_admin: true,
             argon2: Argon2Config { m_cost: 19456, t_cost: 2, p_cost: 1 },
             rate: RateConfig {
-                login_ip: RateRule::new(20, Duration::from_secs(15 * 60)),
+                // P2（2026-10）按「上百人」重算，口径是**严在账号、宽在 IP**：
+                // IP 是共享资源 —— 校园 / 公司 / 运营商 CGNAT 后面可能站着几十上百个用户，
+                // 按「一个人一台机器」算出来的 IP 额度，落到共享出口上会在早高峰
+                // 被自己人打满（症状是整栋楼一起收到 429，却没人做错什么）。
+                // 真正要卡死的是**账号维度**：验证码每邮箱 1 分钟 1 封 / 1 小时 5 封、
+                // 密码连错 5 次锁 15 分钟 —— 那几条保持原值不动。
+                // 这几条都能用 AUTH_RL_* 覆盖（格式 `次数/窗口秒`，`0/0` 关闭）。
+                login_ip: RateRule::new(200, Duration::from_secs(15 * 60)),
                 code_email_minute: RateRule::new(1, Duration::from_secs(60)),
                 code_email_hour: RateRule::new(5, Duration::from_secs(3600)),
-                code_ip: RateRule::new(20, Duration::from_secs(3600)),
-                register_ip: RateRule::new(10, Duration::from_secs(3600)),
+                code_ip: RateRule::new(200, Duration::from_secs(3600)),
+                register_ip: RateRule::new(100, Duration::from_secs(3600)),
             },
             lock_threshold: 5,
             lock_minutes: 15,
+            // 审计日志保留 180 天（P1 与用户定案；0 表示不清理）
+            audit_retention_days: 180,
             jwt_secret_is_default: true,
             admin_password_is_default: true,
         }
@@ -284,6 +301,15 @@ impl Config {
         };
         cfg.lock_threshold = env_parse_i64(lookup, "AUTH_LOCK_THRESHOLD", cfg.lock_threshold)?;
         cfg.lock_minutes = env_parse_i64(lookup, "AUTH_LOCK_MINUTES", cfg.lock_minutes)?;
+        // P2：限流规则接进配置。此前 `--help` 里列着 AUTH_RL_*，但**一行解析都没有** ——
+        // 「按上百人重算限流」只能改代码发版；上线后想临时放宽也得重新编译。
+        cfg.rate.login_ip = env_rate_rule(lookup, "AUTH_RL_LOGIN_IP", cfg.rate.login_ip)?;
+        cfg.rate.code_email_minute =
+            env_rate_rule(lookup, "AUTH_RL_CODE_EMAIL_MINUTE", cfg.rate.code_email_minute)?;
+        cfg.rate.code_email_hour =
+            env_rate_rule(lookup, "AUTH_RL_CODE_EMAIL_HOUR", cfg.rate.code_email_hour)?;
+        cfg.rate.code_ip = env_rate_rule(lookup, "AUTH_RL_CODE_IP", cfg.rate.code_ip)?;
+        cfg.rate.register_ip = env_rate_rule(lookup, "AUTH_RL_REGISTER_IP", cfg.rate.register_ip)?;
 
         // 密钥：生产必须显式提供；开发缺失则随机生成（重启后旧令牌失效，并打印告警）
         match env_opt(lookup, "AUTH_JWT_SECRET") {
@@ -365,6 +391,15 @@ impl Config {
         // 否则「忘了配」与「故意关掉」在配置里长得一模一样。
         cfg.require_invite = env_parse_bool(lookup, "AUTH_REQUIRE_INVITE", cfg.require_invite)?;
 
+        // P1：审计日志保留天数（默认 180 天；0 表示永不清理）
+        cfg.audit_retention_days =
+            env_parse_i64(lookup, "AUTH_AUDIT_RETENTION_DAYS", cfg.audit_retention_days)?;
+        if cfg.audit_retention_days < 0 {
+            return Err(
+                "AUTH_AUDIT_RETENTION_DAYS 不能是负数（0 表示不清理，默认 180）".to_string()
+            );
+        }
+
         // 管理员
         cfg.admin_email = env_str(lookup, "AUTH_ADMIN_EMAIL", &cfg.admin_email);
         cfg.admin_password = match env_opt(lookup, "AUTH_ADMIN_PASSWORD") {
@@ -439,6 +474,41 @@ fn env_parse_i64(lookup: &dyn Fn(&str) -> Option<String>, key: &str, default: i6
     env_parse(lookup, key, default)
 }
 
+/// 解析一条限流规则：`次数/窗口秒`（例如 `200/900` = 15 分钟内最多 200 次）。
+///
+/// * 没配 → 用 `default`；
+/// * `0/0`（或**任一侧**写 0）→ 关闭这条规则，与 `RateRule::off()` 一致。
+///   任一侧为 0 都当「关闭」是有意的：写 `0/60` 的人想表达的显然是「别限了」，
+///   而不是「窗口 60 秒、一次都不许」—— 后者会让对应接口彻底不可用；
+/// * 格式写错 → **拒绝启动**并点名配置项。静默退回默认值的症状是
+///   「明明放宽了却还被 429」，而配置文件看上去完全正常，这种问题最难查。
+///
+/// 为什么用 `次数/窗口秒` 这种自定义格式而不是 `AUTH_RL_X_LIMIT` + `AUTH_RL_X_WINDOW`
+/// 两个变量：五条规则 × 两个变量 = 十个环境变量，读的人要在脑子里配对；
+/// 一行 `200/900` 自带「多少次、多久内」，抄进 ticket 里也不会丢一半。
+fn env_rate_rule(
+    lookup: &dyn Fn(&str) -> Option<String>,
+    key: &str,
+    default: RateRule,
+) -> Result<RateRule, String> {
+    let Some(raw) = env_opt_keep_inner(lookup, key) else {
+        return Ok(default);
+    };
+    let bad = || {
+        format!(
+            "{key} 格式应为「次数/窗口秒」，例如 200/900（= 15 分钟内最多 200 次）；\
+             0/0 表示关闭这条限流。收到：{raw}"
+        )
+    };
+    let (limit_part, window_part) = raw.split_once('/').ok_or_else(|| bad())?;
+    let limit: usize = limit_part.trim().parse().map_err(|_| bad())?;
+    let window_secs: u64 = window_part.trim().parse().map_err(|_| bad())?;
+    if limit == 0 || window_secs == 0 {
+        return Ok(RateRule::off());
+    }
+    Ok(RateRule::new(limit, Duration::from_secs(window_secs)))
+}
+
 fn env_parse_bool(
     lookup: &dyn Fn(&str) -> Option<String>,
     key: &str,
@@ -481,6 +551,59 @@ mod tests {
 
     fn smtp_of(cfg: &Config) -> &SmtpConfig {
         cfg.mail.smtp.as_ref().expect("smtp 模式下必然有配置")
+    }
+
+    // ---------------------------------------------------------------- P2：限流规则
+
+    #[test]
+    fn rate_rules_default_to_the_tuned_values() {
+        let cfg = from_pairs(&[]).expect("默认配置要能加载");
+        // 口径「严在账号、宽在 IP」：IP 是共享资源（校园 / 公司 / CGNAT 出口），
+        // 账号（邮箱）才是身份
+        assert_eq!(cfg.rate.login_ip.limit, 200);
+        assert_eq!(cfg.rate.login_ip.window, Duration::from_secs(900));
+        assert_eq!(cfg.rate.code_email_minute.limit, 1);
+        assert_eq!(cfg.rate.code_email_hour.limit, 5);
+        assert_eq!(cfg.rate.code_ip.limit, 200);
+        assert_eq!(cfg.rate.register_ip.limit, 100);
+    }
+
+    #[test]
+    fn rate_rules_can_be_overridden_by_env() {
+        let cfg = from_pairs(&[
+            ("AUTH_RL_LOGIN_IP", "50/300"),
+            ("AUTH_RL_CODE_IP", " 10 / 600 "), // 两侧空格要能容忍：从 ticket 里抄来的值常带空格
+        ])
+        .expect("加载");
+        assert_eq!(cfg.rate.login_ip.limit, 50);
+        assert_eq!(cfg.rate.login_ip.window, Duration::from_secs(300));
+        assert_eq!(cfg.rate.code_ip.limit, 10);
+        assert_eq!(cfg.rate.code_ip.window, Duration::from_secs(600));
+        // 没写的那几条保持默认，互不影响
+        assert_eq!(cfg.rate.code_email_hour.limit, 5);
+        assert_eq!(cfg.rate.register_ip.limit, 100);
+    }
+
+    #[test]
+    fn rate_rule_zero_means_disabled() {
+        let cfg = from_pairs(&[("AUTH_RL_CODE_EMAIL_MINUTE", "0/0")]).expect("0/0 是合法的「关闭」");
+        assert_eq!(cfg.rate.code_email_minute.limit, 0);
+        // 任一侧写 0 都当关闭：写 `0/60` 的人想说的显然是「别限了」，
+        // 而不是「窗口 60 秒、一次都不许」—— 后者会让接口彻底不可用
+        let cfg = from_pairs(&[("AUTH_RL_REGISTER_IP", "0/60")]).expect("0/60 也合法");
+        assert_eq!(cfg.rate.register_ip.limit, 0);
+    }
+
+    #[test]
+    fn rate_rule_rejects_bad_format_and_names_the_variable() {
+        for bad in ["200", "200/", "/900", "很多/900", "200/很久", "200-900", "200/-1"] {
+            let err = match from_pairs(&[("AUTH_RL_LOGIN_IP", bad)]) {
+                Ok(_) => panic!("「{bad}」应当被拒绝，却加载成功了"),
+                Err(e) => e,
+            };
+            assert!(err.contains("AUTH_RL_LOGIN_IP"), "报错要点名配置项：{err}");
+            assert!(err.contains("次数/窗口秒"), "报错要说清正确格式：{err}");
+        }
     }
 
     #[test]

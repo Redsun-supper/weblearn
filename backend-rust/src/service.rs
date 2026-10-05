@@ -7,9 +7,11 @@
 //!   - 需要原子的动作（占邀请码 + 校验验证码 + 建用户 + 建会话）放进一个事务；
 //!   - 每个状态变更都写审计日志（`audit_logs`），但**绝不写密码与验证码明文**。
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use rusqlite::Connection;
+use serde::Serialize;
 use time::OffsetDateTime;
 
 use crate::clock::Clock;
@@ -22,12 +24,42 @@ use crate::core::validate;
 use crate::error::{AuthError, Result};
 use crate::mail::Mailer;
 use crate::models::{
-    self, InvitePublic, InviteRow, NewAudit, SessionPublic, SessionRow, UserPublic, UserRow,
-    PURPOSE_REGISTER,
+    self, AuditPublic, InvitePublic, InviteRow, InviteUsePublic, InviteUseRow, NewAudit,
+    SessionPublic, SessionRow, UserPublic, UserRow, PURPOSE_REGISTER,
 };
 use crate::rate_limit::RateLimiter;
-use crate::store::sql::{self, InviteFilter};
+use crate::store::sql::{self, AuditFilter, InviteFilter};
 use crate::store::SqliteStore;
+
+/// 邀请码列表里每张码最多带几条兑换记录（够看清「谁用了」即可，
+/// 全量明细是另一个接口的事）
+const INVITE_USES_SHOWN: usize = 3;
+
+/// 单次「整批发邮件」最多几封（和发码上限 50 对齐）
+const INVITE_MAIL_MAX: usize = 50;
+
+/// 把「邀请码行」与「兑换记录」拼成对外结构：
+/// 每张码最多挂 [`INVITE_USES_SHOWN`] 条记录（SQL 已按时间倒序，这里按顺序截取）
+fn build_invite_publics(
+    rows: Vec<InviteRow>,
+    uses: Vec<InviteUseRow>,
+    now: OffsetDateTime,
+) -> Vec<InvitePublic> {
+    let mut grouped: HashMap<i64, Vec<InviteUsePublic>> = HashMap::new();
+    for item in uses {
+        let bucket = grouped.entry(item.invite_code_id).or_default();
+        if bucket.len() < INVITE_USES_SHOWN {
+            bucket.push(item.public());
+        }
+    }
+    rows.into_iter()
+        .map(|row| {
+            let mut public = row.public(now);
+            public.uses = grouped.remove(&row.id).unwrap_or_default();
+            public
+        })
+        .collect()
+}
 
 /// 事务内的两种结局
 ///
@@ -104,6 +136,53 @@ pub struct LoginInput {
 #[derive(Debug, Clone)]
 pub struct InviteCreated {
     pub codes: Vec<InvitePublic>,
+    /// 这次用的是管理员指定的码（而不是随机生成）
+    pub custom: bool,
+    /// 其中至少一张**沿用了已经存在的码**（`allow_existing` 那条路径）。
+    ///
+    /// 单独报出来是因为返回的 `codes` 里是这份**沿用后的新参数**，
+    /// 而那张码上一个时刻的参数（尤其是旧的次数上限）已经不在了 ——
+    /// 面板要能说清「你改的是一张老码，它的兑换记录还在」。
+    pub reused_existing: bool,
+}
+
+/// 「生成邀请码」的全部入参。
+///
+/// 收成一个结构体而不是继续加形参：这条路已经有 6 个参数（数量 / 次数 / 天数 / 备注 / 等级），
+/// 再加自定义码就是 8 个，调用处会退化成「一串看不出哪个是哪个」的字面量。
+#[derive(Debug, Clone, Default)]
+pub struct InviteSpec {
+    /// 生成几个（系统随机码用；自定义码时被忽略）
+    pub count: i64,
+    /// 每个可用几次
+    pub max_uses: i64,
+    /// 有效期天数；`<= 0` 表示**不过期**（"永不过期" 在界面上是一个勾选框）
+    pub expires_in_days: i64,
+    pub note: String,
+    /// 兑换后授予的角色：`user` / `admin`
+    pub grant_role: String,
+    /// 超管**自己指定**的码；`None`/空 = 照旧用系统随机生成。
+    /// 只能是 [`crate::core::invite::CODE_LEN`] 位 A-Z 与 0-9（见 `invite::validate_custom_code`）
+    pub custom_code: Option<String>,
+    /// 自定义码**已经存在**时是否照用不误（等价于「无视风险继续」）。
+    ///
+    /// ⚠️ 这是**管理员显式确认过**才会为 true 的：面板先拿到 409 `invite_code_taken`
+    /// （带那张码的状态与谁用过），弹确认框，用户点了「继续」才会带上来。
+    /// 不带上它就一律拒绝 —— 免得手滑把一张已经发出去的码又「建」一遍，还以为新发了一张。
+    pub allow_existing: bool,
+}
+
+/// 「整批发邮件」里单个收件人的结果
+///
+/// 逐条返回而不是「一失败整单失败」：批量发码时最常见的失败就是某一个邮箱打错了，
+/// 那种情况下其余的必须照发，界面也要能指出是哪一条出的问题。
+#[derive(Debug, Clone, Serialize)]
+pub struct InviteMailResult {
+    pub invite_id: i64,
+    pub email: String,
+    pub ok: bool,
+    /// 失败原因（成功时是空串）
+    pub error: String,
 }
 
 pub struct AuthService {
@@ -151,6 +230,25 @@ impl AuthService {
         T: Send + 'static,
     {
         self.store.write::<T, AuthError, F>(f).await
+    }
+
+    /// 深度健康检查（P2）：真的碰一次库，证明「表读得出来」而不只是「进程还活着」。
+    ///
+    /// 为什么不能只用 `SELECT 1`：那条连表都不碰 —— 库文件被换成空文件、
+    /// 迁移没跑、表被误删，它照样返回成功。而「进程活着但库坏了」正是最需要被告警的一类。
+    /// 这里只读、极轻（auth.db 只有几十上百 KB，监控每 5 分钟跑一次）：
+    /// 数一次 users 行 + 读一次 `PRAGMA user_version`（就是迁移版本）。
+    pub async fn health_details(&self) -> Result<serde_json::Value> {
+        self.read(|conn| {
+            let users: i64 = conn.query_row("SELECT COUNT(*) FROM users", [], |r| r.get(0))?;
+            let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+            Ok(serde_json::json!({
+                "database": "ok",
+                "users": users,
+                "migration_version": version,
+            }))
+        })
+        .await
     }
 
     fn finish_auth(
@@ -711,55 +809,117 @@ impl AuthService {
     /// `grant_role` 决定兑换后拿到的角色（只允许 `user` / `admin`，见 [`models::is_valid_grant_role`]）。
     /// ⚠️ 管理员码的 `ADMIN-` 前缀**只是给人看的**：真正的判定永远是查库读 `grant_role`，
     /// 所以伪造/删掉前缀都不会改变兑换结果（有测试把这一点钉死）。
+    ///
+    /// 两条路径（[`InviteSpec::custom_code`]）：
+    /// - **留空 = 系统生成**：随机 16 位（字符表 A-Z + 0-9，与手填自定义码同一套），一次出 `count` 张，极小概率撞码时重试；
+    /// - **填了 = 用管理员指定的码**：出 1 张，格式见 `invite::validate_custom_code`。
+    ///
+    /// ⚠️ 自定义码**已经存在**时不覆盖、不新建，回 [`AuthError::InviteCodeTaken`]（409）并带上
+    /// 那张码的现状，由面板决定「无视风险继续」（`allow_existing`）。这样才不会出现
+    /// 「以为新发了一张码，其实是把一张旧码又列了一遍」——那是最容易发错人的一种错。
     pub async fn create_invites(
         &self,
         actor_user_id: Option<i64>,
-        count: i64,
-        max_uses: i64,
-        expires_in_days: i64,
-        note: &str,
-        grant_role: &str,
+        spec: InviteSpec,
     ) -> Result<InviteCreated> {
-        if !models::is_valid_grant_role(grant_role) {
+        if !models::is_valid_grant_role(&spec.grant_role) {
             return Err(AuthError::InvalidParams(format!(
-                "grant_role 只能是 user 或 admin，收到：{grant_role}"
+                "grant_role 只能是 user 或 admin，收到：{}",
+                spec.grant_role
             )));
         }
-        let count = count.clamp(1, 50);
-        let max_uses = max_uses.clamp(1, 1000);
+        let max_uses = spec.max_uses.clamp(1, 1000);
         let now = self.clock.now();
-        let expires_at = if expires_in_days <= 0 {
+        let expires_at = if spec.expires_in_days <= 0 {
             None
         } else {
-            Some(now + time::Duration::days(expires_in_days.min(365)))
+            Some(now + time::Duration::days(spec.expires_in_days.min(365)))
         };
-        let note = validate::truncate(note.trim(), 100);
-        let ip = "";
+        let note = validate::truncate(spec.note.trim(), 100);
         // 一批共享一个 batch_id：便于「按批回收」与统计（例如「上周发的那 20 张用了几个」）
         let batch_id = uuid::Uuid::new_v4().to_string();
-        let grant_role = grant_role.to_string();
+        let grant_role = spec.grant_role.clone();
+        let custom = match spec.custom_code.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            None => None,
+            Some(raw) => Some(invite::validate_custom_code(raw).map_err(AuthError::InvalidParams)?),
+        };
+        let allow_existing = spec.allow_existing;
+        // 自定义码一次只出一张：它的价值在「我认得这个串」，一填 50 个不同的码不是这个入口的用法
+        let count = if custom.is_some() { 1 } else { spec.count.clamp(1, 50) };
+        // 审计与回执里要写清「有效期」，0 天人话就是「永不过期」
+        let expiry_text = if spec.expires_in_days <= 0 {
+            "永不过期".to_string()
+        } else {
+            format!("{} 天", spec.expires_in_days.min(365))
+        };
+        let ip = "";
+        // 闭包会拿走 `custom`，而返回时要报「这次是不是自定义码」，所以先记下来
+        let is_custom = custom.is_some();
 
-        let rows: Vec<InviteRow> = self
-            .write(move |conn| -> Result<Vec<InviteRow>> {
+        let (rows, reused): (Vec<InviteRow>, bool) = self
+            .write(move |conn| -> Result<(Vec<InviteRow>, bool)> {
                 let mut out = Vec::new();
-                for _ in 0..count {
-                    // 极小概率撞码：撞了就换一个，最多试 5 次
-                    let mut created = None;
-                    for _ in 0..5 {
-                        let code = invite::generate_code_for(&grant_role);
-                        match sql::insert_invite(
-                            conn,
-                            &code,
-                            &note,
-                            max_uses,
-                            expires_at,
-                            actor_user_id,
-                            now,
-                            &grant_role,
-                            &batch_id,
-                        ) {
-                            Ok(id) => {
-                                created = Some(InviteRow {
+                let mut reused = false;
+                for index in 0..count {
+                    // 自定义码只在第一张（也就是唯一那张）上生效
+                    let want = if index == 0 { custom.clone() } else { None };
+                    match want {
+                        Some(code) => match sql::find_invite_by_code(conn, &code)? {
+                            Some(existing) => {
+                                // 已经存在：默认拒绝并回现状；管理员确认过（allow_existing）才继续
+                                if !allow_existing {
+                                    let uses = sql::list_invite_uses(conn, &[existing.id])?;
+                                    let public = build_invite_publics(vec![existing], uses, now)
+                                        .pop()
+                                        .map(Box::new);
+                                    return Err(AuthError::InviteCodeTaken { code, existing: public });
+                                }
+                                // 沿用：把「这张码以后还能用几次 / 什么时候到期」改成这次填的，
+                                // **不动** used_count / disabled / grant_role（见 sql::update_invite_terms）
+                                sql::update_invite_terms(conn, existing.id, max_uses, expires_at)?;
+                                let summary = code.clone();
+                                audit(
+                                    now,
+                                    conn,
+                                    "invite_create",
+                                    actor_user_id,
+                                    &summary,
+                                    ip,
+                                    "",
+                                    &format!(
+                                        "自定义码：沿用已存在的码（旧的兑换记录与已注册用户都不受影响），规则改为 次数上限 {max_uses}、有效期 {expiry_text}，等级 {grant_role}，批次 {batch_id}"
+                                    ),
+                                )?;
+                                let row = sql::find_invite_by_code(conn, &code)?
+                                    .ok_or(AuthError::NotFound)?;
+                                reused = true;
+                                out.push(row);
+                            }
+                            None => {
+                                let id = sql::insert_invite(
+                                    conn,
+                                    &code,
+                                    &note,
+                                    max_uses,
+                                    expires_at,
+                                    actor_user_id,
+                                    now,
+                                    &grant_role,
+                                    &batch_id,
+                                )?;
+                                audit(
+                                    now,
+                                    conn,
+                                    "invite_create",
+                                    actor_user_id,
+                                    &code,
+                                    ip,
+                                    "",
+                                    &format!(
+                                        "自定义码，等级 {grant_role}，次数上限 {max_uses}，批次 {batch_id}"
+                                    ),
+                                )?;
+                                out.push(InviteRow {
                                     id,
                                     code,
                                     note: note.clone(),
@@ -772,32 +932,80 @@ impl AuthService {
                                     grant_role: grant_role.clone(),
                                     batch_id: batch_id.clone(),
                                 });
-                                break;
                             }
-                            Err(crate::error::StoreError::Sql(rusqlite::Error::SqliteFailure(e, _)))
-                                if e.code == rusqlite::ErrorCode::ConstraintViolation => continue,
-                            Err(e) => return Err(e.into()),
+                        },
+                        None => {
+                            // 系统随机码：撞码（极小概率）就换一个重试。
+                            // ⚠️ 只对随机码重试 —— 自定义码撞了必须**如实报冲突**（上面那个分支），
+                            // 重试只会把「你写的码已经被占用」变成一句莫名其妙的「连续撞码」。
+                            let mut created = None;
+                            for _ in 0..5 {
+                                let code = invite::generate_code_for(&grant_role);
+                                match sql::insert_invite(
+                                    conn,
+                                    &code,
+                                    &note,
+                                    max_uses,
+                                    expires_at,
+                                    actor_user_id,
+                                    now,
+                                    &grant_role,
+                                    &batch_id,
+                                ) {
+                                    Ok(id) => {
+                                        created = Some(InviteRow {
+                                            id,
+                                            code,
+                                            note: note.clone(),
+                                            max_uses,
+                                            used_count: 0,
+                                            expires_at,
+                                            disabled: false,
+                                            created_by: actor_user_id,
+                                            created_at: now,
+                                            grant_role: grant_role.clone(),
+                                            batch_id: batch_id.clone(),
+                                        });
+                                        break;
+                                    }
+                                    Err(crate::error::StoreError::Sql(e)) if is_unique_violation(&e) => continue,
+                                    Err(e) => return Err(e.into()),
+                                }
+                            }
+                            out.push(created.ok_or_else(|| {
+                                AuthError::Internal("生成邀请码失败（连续撞码）".into())
+                            })?);
                         }
                     }
-                    let row = created.ok_or_else(|| AuthError::Internal("生成邀请码失败（连续撞码）".into()))?;
-                    out.push(row);
                 }
-                let summary = out.iter().map(|r| r.code.clone()).collect::<Vec<_>>().join(",");
-                audit(
-                    now,
-                    conn,
-                    "invite_create",
-                    actor_user_id,
-                    &summary,
-                    ip,
-                    "",
-                    &format!("共 {count} 个，等级 {grant_role}，批次 {batch_id}"),
-                )?;
-                Ok(out)
+                if custom.is_none() {
+                    let summary = out.iter().map(|r| r.code.clone()).collect::<Vec<_>>().join(",");
+                    audit(
+                        now,
+                        conn,
+                        "invite_create",
+                        actor_user_id,
+                        &summary,
+                        ip,
+                        "",
+                        &format!("共 {count} 个，等级 {grant_role}，批次 {batch_id}"),
+                    )?;
+                }
+                Ok((out, reused))
             })
             .await?;
 
-        Ok(InviteCreated { codes: rows.iter().map(|r| r.public(now)).collect() })
+        let uses = self
+            .read({
+                let ids: Vec<i64> = rows.iter().map(|r| r.id).collect();
+                move |conn| Ok(sql::list_invite_uses(conn, &ids)?)
+            })
+            .await?;
+        Ok(InviteCreated {
+            codes: build_invite_publics(rows, uses, now),
+            custom: is_custom,
+            reused_existing: reused,
+        })
     }
 
     pub async fn list_invites(
@@ -810,14 +1018,18 @@ impl AuthService {
         let size = size.clamp(1, 100);
         let offset = (page - 1) * size;
         let now = self.clock.now();
-        let (rows, total) = self
+        let (rows, total, uses) = self
             .read(move |conn| {
                 let total = sql::count_invites(conn, filter, now)?;
                 let rows = sql::list_invites(conn, filter, size, offset, now)?;
-                Ok((rows, total))
+                // 兑换记录只查**这一页**的码：管理面板要显示「谁用了 / 邮箱」，
+                // 但没必要为了这一页去扫全表
+                let ids: Vec<i64> = rows.iter().map(|r| r.id).collect();
+                let uses = sql::list_invite_uses(conn, &ids)?;
+                Ok((rows, total, uses))
             })
             .await?;
-        Ok((rows.iter().map(|r| r.public(now)).collect(), total))
+        Ok((build_invite_publics(rows, uses, now), total))
     }
 
     pub async fn disable_invite(&self, id: i64) -> Result<()> {
@@ -833,6 +1045,285 @@ impl AuthService {
             return Err(AuthError::NotFound);
         }
         Ok(())
+    }
+
+    // ------------------------------------------------ 邀请码批量 / 审计（P1 管理面板）
+
+    /// 「重新启用一张已用过的码」：把已用次数清零，让它还能被兑换。
+    ///
+    /// ⚠️ 这是一个**主动降安全**的动作：码已经流出去过（可能已经被别人看到），
+    /// 清零之后它又是一张可用的凭据。所以三件事必须同时成立：
+    /// ① 只有超管能做（路由上挂 `SuperAdminUser`）；② 每次都写一条 `invite_reset` 审计；
+    /// ③ `invite_uses` 里的兑换记录**保留**，面板里仍然看得到谁用过它。
+    ///
+    /// 码不存在 → 404；本来就没被用过 → 返回 0（幂等，不是错误，面板照实说一句）。
+    pub async fn reset_invite(
+        &self,
+        actor_user_id: Option<i64>,
+        id: i64,
+        ip: &str,
+        ua: &str,
+    ) -> Result<usize> {
+        let now = self.clock.now();
+        let ip_owned = ip.to_string();
+        let ua_owned = ua.to_string();
+        let cleared = self
+            .write(move |conn| -> Result<usize> {
+                match sql::reset_invite(conn, id)? {
+                    None => Err(AuthError::NotFound),
+                    Some(cleared) => {
+                        audit(
+                            now,
+                            conn,
+                            "invite_reset",
+                            actor_user_id,
+                            &id.to_string(),
+                            &ip_owned,
+                            &ua_owned,
+                            &format!("重新启用：清掉 {cleared} 次使用记录"),
+                        )?;
+                        Ok(cleared)
+                    }
+                }
+            })
+            .await?;
+        Ok(cleared)
+    }
+
+    /// 按批停用（面板上的「停用这一批」）：整批一次性回收，返回真正被停用的张数。
+    ///
+    /// 幂等：已经是停用状态的不计数（重复点只会拿到 0）。只有这一批**根本不存在**才 404 ——
+    /// 「已经全停用了」不该让面板弹一个错误出来。
+    pub async fn disable_invites_by_batch(
+        &self,
+        actor_user_id: Option<i64>,
+        batch_id: &str,
+        ip: &str,
+        ua: &str,
+    ) -> Result<usize> {
+        let batch = batch_id.trim().to_string();
+        if batch.is_empty() {
+            return Err(AuthError::InvalidParams("batch_id 不能为空".into()));
+        }
+        let now = self.clock.now();
+        let ip_owned = ip.to_string();
+        let ua_owned = ua.to_string();
+        let n = self
+            .write(move |conn| -> Result<usize> {
+                if sql::count_invites_in_batch(conn, &batch)? == 0 {
+                    return Err(AuthError::NotFound);
+                }
+                let n = sql::disable_invites_by_batch(conn, &batch)?;
+                audit(
+                    now,
+                    conn,
+                    "invite_disable_batch",
+                    actor_user_id,
+                    &batch,
+                    &ip_owned,
+                    &ua_owned,
+                    &format!("整批停用 {n} 张"),
+                )?;
+                Ok(n)
+            })
+            .await?;
+        Ok(n)
+    }
+
+    /// 让某个用户的**全部**会话立刻下线（超管动作，写审计）。
+    ///
+    /// 与自己点的「退出其它设备」不同：这里连**当前**会话一起吊销 ——
+    /// 管理动作的语义就是「这个账号现在必须重新登录」。actor 就是目标本人时同样生效，
+    /// 等于把自己也踢出去（界面会先确认一次）。
+    pub async fn revoke_user_sessions_admin(
+        &self,
+        actor_user_id: i64,
+        target_user_id: i64,
+        ip: &str,
+        ua: &str,
+    ) -> Result<usize> {
+        let now = self.clock.now();
+        let ip_owned = ip.to_string();
+        let ua_owned = ua.to_string();
+        let n = self
+            .write(move |conn| -> Result<usize> {
+                if sql::find_user_by_id(conn, target_user_id)?.is_none() {
+                    return Err(AuthError::NotFound);
+                }
+                let n = sql::revoke_user_sessions(conn, target_user_id, "admin_revoke", now, None)?;
+                audit(
+                    now,
+                    conn,
+                    "user_logout_all",
+                    Some(actor_user_id),
+                    &target_user_id.to_string(),
+                    &ip_owned,
+                    &ua_owned,
+                    &format!("吊销 {n} 个会话"),
+                )?;
+                Ok(n)
+            })
+            .await?;
+        Ok(n)
+    }
+
+    /// 审计日志查询（超管）：返回 `(条目, 总数, 出现过的动作清单)`。
+    ///
+    /// 动作清单跟着列表一起回：前端筛选下拉就不用再发一个请求（「尽量少请求」的落点之一），
+    /// 也不会出现「界面里写死的动作列表」与库里实际动作对不上的情况。
+    pub async fn list_audit(
+        &self,
+        filter: AuditFilter,
+        page: i64,
+        size: i64,
+    ) -> Result<(Vec<AuditPublic>, i64, Vec<String>)> {
+        let page = page.max(1);
+        let size = size.clamp(1, 100);
+        let offset = (page - 1) * size;
+        let (rows, total, actions) = self
+            .read(move |conn| {
+                let total = sql::count_audit(conn, &filter)?;
+                let rows = sql::list_audit(conn, &filter, size, offset)?;
+                let actions = sql::distinct_audit_actions(conn)?;
+                Ok((rows, total, actions))
+            })
+            .await?;
+        Ok((rows.iter().map(|r| r.public()).collect(), total, actions))
+    }
+
+    /// 清理过期的审计日志（保留期见 `AUTH_AUDIT_RETENTION_DAYS`）。
+    /// 启动时跑一次、之后每 24 小时一次（见 `main.rs`）；`retention_days <= 0` 表示不清理。
+    pub async fn prune_audit(&self, retention_days: i64) -> Result<usize> {
+        if retention_days <= 0 {
+            return Ok(0);
+        }
+        let cutoff = self.clock.now() - time::Duration::days(retention_days);
+        let n = self
+            .write(move |conn| -> Result<usize> { Ok(sql::prune_audit_before(conn, cutoff)?) })
+            .await?;
+        Ok(n)
+    }
+
+    /// 把指定邀请码发给指定邮箱（面板上的「整批发邮件」）。
+    ///
+    /// 设计取舍：
+    ///   - **一对一**：`pairs[i]` 就是「第 i 张码发给第 i 个邮箱」，由调用方配对。
+    ///     一对一最好解释，也不会出现「一张码发给两个人」这种说不清的语义；
+    ///   - 邮箱先**全部**规范化：有一个不合法就整单拒掉，不然用户要一封一封试；
+    ///   - 单次最多 [`INVITE_MAIL_MAX`] 封，且**逐封独立**：某封失败不影响后面的，
+    ///     结果逐条返回（批量发码最常见的手滑就是某一个邮箱打错）；
+    ///   - 审计只记「哪几个码的 id、成功几封失败几封」，**绝不写邀请码明文** ——
+    ///     审计表是给人翻的，把还能用的码抄进去等于到处撒钥匙。
+    pub async fn send_invites_by_email(
+        &self,
+        actor_user_id: i64,
+        pairs: Vec<(i64, String)>,
+        ip: &str,
+        ua: &str,
+    ) -> Result<Vec<InviteMailResult>> {
+        if pairs.is_empty() {
+            return Err(AuthError::InvalidParams("至少要指定一个收件邮箱".into()));
+        }
+        if pairs.len() > INVITE_MAIL_MAX {
+            return Err(AuthError::InvalidParams(format!(
+                "单次最多发 {INVITE_MAIL_MAX} 封，收到 {}",
+                pairs.len()
+            )));
+        }
+        let mut normalized: Vec<(i64, String)> = Vec::with_capacity(pairs.len());
+        for (id, email) in pairs {
+            let to = validate::normalize_email(&email)
+                .ok_or_else(|| AuthError::InvalidParams(format!("邮箱不合法：{email}")))?;
+            normalized.push((id, to));
+        }
+
+        // 先把要用到的码一次读完（只读、不占写锁），再在锁外逐封发信 ——
+        // 发信是网络操作，绝不能攥着数据库连接做（见 `store::mod` 顶部那段警告）
+        let ids: Vec<i64> = normalized.iter().map(|(id, _)| *id).collect();
+        let rows = self
+            .read(move |conn| {
+                let mut out = Vec::new();
+                for id in ids {
+                    out.push(sql::find_invite_by_id(conn, id)?);
+                }
+                Ok(out)
+            })
+            .await?;
+
+        let mut results = Vec::with_capacity(normalized.len());
+        let mut sent = 0usize;
+        let mut failed = 0usize;
+        let push_failed = |results: &mut Vec<InviteMailResult>, invite_id: i64, email: String, reason: &str| {
+            results.push(InviteMailResult {
+                invite_id,
+                email,
+                ok: false,
+                error: reason.to_string(),
+            });
+        };
+        for ((invite_id, email), row) in normalized.into_iter().zip(rows.into_iter()) {
+            let Some(row) = row else {
+                failed += 1;
+                push_failed(&mut results, invite_id, email, "邀请码不存在");
+                continue;
+            };
+            // 只发「确实还能用」的码：停用 / 用完 / 过期当场说明白，别让对方收到一封废码
+            let status = row.status(self.clock.now());
+            if status != "unused" {
+                failed += 1;
+                let reason = match status {
+                    "disabled" => "这张码已停用",
+                    "used" => "这张码已经用完",
+                    "expired" => "这张码已过期",
+                    _ => "这张码不可用",
+                };
+                push_failed(&mut results, invite_id, email, reason);
+                continue;
+            }
+            let expires_hint = match row.expires_at {
+                Some(at) => format!("有效期至 {}", at.date()),
+                None => String::new(),
+            };
+            match self.mailer.send_invite(&email, &row.code, &row.note, &expires_hint).await {
+                Ok(()) => {
+                    sent += 1;
+                    results.push(InviteMailResult {
+                        invite_id,
+                        email,
+                        ok: true,
+                        error: String::new(),
+                    });
+                }
+                Err(e) => {
+                    failed += 1;
+                    // 具体失败原因可能含 SMTP 服务器信息：只进日志，对外给一句通用提示
+                    tracing::warn!(error = %e, invite_id, "发送邀请码邮件失败");
+                    push_failed(&mut results, invite_id, email, "发送失败（详见服务端日志）");
+                }
+            }
+        }
+
+        // 审计：只记码的 id 与统计，不记明文
+        let now = self.clock.now();
+        let ip_owned = ip.to_string();
+        let ua_owned = ua.to_string();
+        let ids_text = results.iter().map(|r| r.invite_id.to_string()).collect::<Vec<_>>().join(",");
+        let detail = format!("共 {} 封，成功 {sent}，失败 {failed}", results.len());
+        self.write(move |conn| {
+            audit(
+                now,
+                conn,
+                "invite_email",
+                Some(actor_user_id),
+                &ids_text,
+                &ip_owned,
+                &ua_owned,
+                &detail,
+            )
+        })
+        .await?;
+
+        Ok(results)
     }
 
     // ------------------------------------------------------------ 管理员
@@ -966,21 +1457,30 @@ impl AuthService {
 
     // ------------------------------------------------------------ 用户治理（超管）
 
-    /// 列出用户（可按角色 / 状态过滤）
+    /// 列出用户（可按角色 / 状态过滤，`keyword` 搜邮箱或用户名）
     pub async fn list_users(
         &self,
         role: Option<String>,
         status: Option<String>,
+        keyword: Option<String>,
         page: i64,
         size: i64,
     ) -> Result<(Vec<UserPublic>, i64)> {
         let page = page.max(1);
         let size = size.clamp(1, 100);
         let offset = (page - 1) * size;
+        // 空字符串等于没给（前端清空搜索框后会原样传 `keyword=`）
+        let keyword = keyword.map(|k| k.trim().to_string()).filter(|k| !k.is_empty());
         let (rows, total) = self
             .read(move |conn| {
-                let (rows, total) =
-                    sql::list_users(conn, role.as_deref(), status.as_deref(), size, offset)?;
+                let (rows, total) = sql::list_users(
+                    conn,
+                    role.as_deref(),
+                    status.as_deref(),
+                    keyword.as_deref(),
+                    size,
+                    offset,
+                )?;
                 Ok((rows, total))
             })
             .await?;
@@ -1097,6 +1597,21 @@ impl AuthService {
             })
             .await?;
         updated.map(|u| u.public()).ok_or(AuthError::NotFound)
+    }
+}
+
+/// 是不是「唯一约束被撞了」（邀请码表的 `code` 唯一索引）。
+///
+/// 单独抽出来是因为**两种含义完全不同**：随机码撞了是「换一个再来」（极小概率，重试即可），
+/// 自定义码撞了是「这个码已经被占了」（必须如实告诉管理员，重试只会把它变成一句莫名其妙的
+/// 「连续撞码」）。rusqlite 只在 `SqliteFailure` 里给错误码，所以两级都判一下。
+fn is_unique_violation(err: &rusqlite::Error) -> bool {
+    match err {
+        rusqlite::Error::SqliteFailure(e, _) => {
+            e.code == rusqlite::ErrorCode::ConstraintViolation
+                || e.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE
+        }
+        _ => false,
     }
 }
 
