@@ -411,7 +411,15 @@ function apiFetch(path, options) {
             } catch (e) {
             }
             if (!res.ok) {
-                throw new Error((data && data.message) ? data.message : ('HTTP ' + res.status + ' ' + path));
+                // 把**服务端信封**挂在错误上：面板偶尔需要看机器可读的 `error` 与 `data`
+                // （例：邀请码撞码时回 `invite_code_taken` + 那张码的现状），
+                // 只给一句中文文案就分不出「码被占用了」和「参数写错了」。
+                var err = new Error((data && data.message) ? data.message : ('HTTP ' + res.status + ' ' + path));
+                err.status = res.status;
+                err.code = data && data.code;
+                err.error = data && data.error;
+                err.data = data && data.data;
+                throw err;
             }
             if (data && typeof data.code === 'number' && data.code !== 200) {
                 throw new Error(data.message || ('业务错误 code=' + data.code));
@@ -422,14 +430,18 @@ function apiFetch(path, options) {
 }
 
 // 右下角提示条
+// ⚠️ kind 归一化：管理面板（admin/panels/*.js）里顺手写的是 `'ok'`，
+// 而本文件的 CSS 只定义了 `.admin-toast.success` / `.admin-toast.error` ——
+// 不归一化的话成功提示会落到中性深色样式（个人中心那边同样处理，两边都要一致）。
 function toast(message, kind) {
+    var tone = kind === 'ok' ? 'success' : kind;
     var box = document.getElementById('adminToasts');
     if (!box) return;
-    var item = el('div', { class: 'admin-toast' + (kind ? ' ' + kind : ''), text: String(message) });
+    var item = el('div', { class: 'admin-toast' + (tone ? ' ' + tone : ''), text: String(message) });
     box.appendChild(item);
     setTimeout(function () {
         if (item.parentNode) item.parentNode.removeChild(item);
-    }, kind === 'error' ? 6000 : 3000);
+    }, tone === 'error' ? 6000 : 3000);
 }
 
 // 确认框（当前用浏览器原生 confirm，返回 Promise 以便统一写法）

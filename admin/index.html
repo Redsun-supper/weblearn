@@ -78,11 +78,14 @@
                 </div>
             </header>
 
-            <!-- 安全提示：界面门禁已接入，但服务端鉴权还没有，公网部署仍有风险 -->
+            <!-- 安全提示（P1 更新）：本页现在只做**内容管理**。
+                 阶段 2 已经给 Go 侧补上了服务端鉴权（RequireAdmin + CSRF 闸门），
+                 旧文案还写着「Go 侧没有服务端鉴权」—— 留着它比没有提示更糟：会让人误判风险。
+                 管理面板（看板 / 邀请码 / 用户 / 审计）搬去了个人中心，按角色显示。 -->
             <div class="admin-banner" id="securityBanner">
-                🔐 后台已接入登录门禁（Rust 账号系统的会话）。但 <code>/api/words</code> 等
-                Go 侧接口目前仍<strong>没有服务端鉴权</strong>，直接调接口就能改数据 ——
-                在补齐后端鉴权之前，请勿把该站点部署到公网。
+                🔐 本页只做<strong>内容管理</strong>（词条的增删改查与批量导入）：写接口要
+                <code>role=admin</code> 并通过 CSRF 闸门。看板 / 邀请码 / 用户管理 / 审计日志
+                已经搬到<a href="../account/#/dashboard">个人中心</a>，按账号角色显示。
             </div>
 
             <section class="admin-content" id="adminContent"></section>

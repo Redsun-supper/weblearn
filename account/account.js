@@ -17,7 +17,15 @@
 // 布局与后台 admin/ 同一套（侧栏导航 + 顶栏 + 内容区 + hash 路由），
 // 所以「加一个页面」= NAV 里加一项 + HTML 里加一个 .acc-panel，不用碰样式。
 //
+// P1 起这里还多了一组「管理」页面（数据看板 / 邀请码 / 用户管理 / 审计日志）：
+//   · 导航项按当前账号的角色动态出现 —— 普通用户完全看不到这一组；
+//   · 页面内容**不在 HTML 里**，而是按需 `import('../admin/panels/*.js')` 再 mount 进来：
+//     那些模块是**壳无关**的（后台 admin/ 以后也能挂同一份），只通过 ctx 拿能力
+//     （api/el/toast/confirm/escapeHtml/setTitle/user，与 admin.js 的 createContext 同形状）；
+//   · 因此本文件必须作为 `<script type="module">` 加载（动态 import 的前提）。
+//
 // ⚠️ 本文件保持 ES5 写法（var / function），与 main.js、admin.js 一致。
+// ⚠️ **不要给管理面板加任何动效**（docs/launch-plan.md 第 8 节红线）。
 
 (function () {
     'use strict';
@@ -109,6 +117,104 @@
     // 管理员与超管都能进后台（与 admin.js 的 canEnterAdmin 同口径）
     function canEnterAdmin(role) {
         return role === 'admin' || role === 'super_admin';
+    }
+
+    // ===================== 给管理面板用的通用能力 =====================
+    //
+    // 面板模块（../admin/panels/*.js）拿到的是与后台 admin.js 的 createContext **同形状**的 ctx：
+    //   api(path, {method, body}) → Promise<信封 {code,message,data}>，失败 throw Error
+    //   el(tag, attrs, children) / escapeHtml / toast / confirm / setTitle / user
+    // 这样同一份面板代码在两个壳里都能跑，不用为「现在挂在哪个页面」写分支。
+
+    var ADMIN_ROLES = ['admin', 'super_admin'];
+
+    // 把本页那个「不抛异常」的 api() 包成面板要的语义（与 admin.js 的 apiFetch 一致）：
+    // 非 2xx、信封 code !== 200、网络失败，三种都抛 Error，面板只需 `.catch` 一处。
+    function panelApi(path, options) {
+        var opts = options || {};
+        return api(opts.method || 'GET', path, opts.body).then(function (res) {
+            if (res.networkError) {
+                // 复用本页现成的中文提示（「无法连接账号服务…」），
+                // 别把 `TypeError: Failed to fetch` 这种原文甩给用户
+                throw new Error(messageOf(res, '连不上服务端：' + res.networkError));
+            }
+            var payload = res.data;
+            if (!res.ok) {
+                // 与 admin.js 的 apiFetch 保持一致：把服务端信封挂到错误上，
+                // 面板才能按机器可读的 `error` / `data` 分支（见那个文件的注释）
+                var err = new Error(messageOf(res, 'HTTP ' + res.status + ' ' + path));
+                err.status = res.status;
+                err.code = payload && payload.code;
+                err.error = payload && payload.error;
+                err.data = payload && payload.data;
+                throw err;
+            }
+            if (payload && typeof payload.code === 'number' && payload.code !== 200) {
+                throw new Error(payload.message || '业务错误 code=' + payload.code);
+            }
+            return payload;
+        });
+    }
+
+    // 极简 DOM 构建器（与 admin.js 的 el 一字不差：面板只认这一种写法）。
+    // 默认写 textContent，所以面板不必自己转义；{ html } 只用于自己拼的固定结构。
+    function el(tag, attrs, children) {
+        var node = document.createElement(tag);
+        if (attrs) {
+            Object.keys(attrs).forEach(function (key) {
+                var value = attrs[key];
+                if (value === null || value === undefined) return;
+                if (key === 'class') {
+                    node.className = value;
+                } else if (key === 'text') {
+                    node.textContent = String(value);
+                } else if (key === 'html') {
+                    node.innerHTML = value;
+                } else if (key.indexOf('on') === 0 && typeof value === 'function') {
+                    node.addEventListener(key.slice(2), value);
+                } else {
+                    node.setAttribute(key, value);
+                }
+            });
+        }
+        if (children) {
+            var list = Array.isArray(children) ? children : [children];
+            list.forEach(function (child) {
+                if (child === null || child === undefined) return;
+                node.appendChild(typeof child === 'string' ? document.createTextNode(child) : child);
+            });
+        }
+        return node;
+    }
+
+    function escapeHtml(value) {
+        return String(value === null || value === undefined ? '' : value)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
+    // 右下角提示条：错误停 6 秒、其余 3 秒（与 admin.js 的 toast 同口径）。
+    // 不做进出场动画 —— 管理面板这条线上「零动效」是红线。
+    // ⚠️ 面板传的 kind 里 `'ok'` 是 `'success'` 的别名：两个壳的历史写法不一样
+    //    （admin.js 用 success/error，面板作者顺手写了 ok），这里统一归一化，
+    //    免得同一句提示在个人中心是绿底、在后台是灰底。
+    function toast(message, kind) {
+        var box = $('accToasts');
+        if (!box) return;
+        var tone = kind === 'error' ? 'error' : kind === 'ok' || kind === 'success' ? 'success' : kind || '';
+        var item = el('div', { class: 'acc-toast' + (tone ? ' ' + tone : ''), text: String(message) });
+        box.appendChild(item);
+        window.setTimeout(function () {
+            if (item.parentNode) item.parentNode.removeChild(item);
+        }, tone === 'error' ? 6000 : 3000);
+    }
+
+    // 确认框：面板要的是 Promise<boolean>，这里用浏览器原生 confirm 包一层
+    function confirmDialog(message) {
+        return Promise.resolve(window.confirm(String(message)));
     }
 
     // ===================== 过渡节奏 =====================
@@ -343,12 +449,38 @@
         { id: 'actions', name: '可用操作' }
     ];
 
+    // P1：管理页面（数据看板 / 邀请码 / 用户管理 / 审计日志 / 内容管理）。
+    //   roles   → 谁能看到这一项（与 admin.js 的 ADMIN_ROLES 同口径；邀请码与审计只有超管能碰，
+    //             见 docs/launch-plan.md 第 3 节的权限矩阵）
+    //   module  → 面板模块的**相对本文件**路径，route() 按需 import 后 mount
+    //   href    → 不走 hash 路由的普通链接（内容管理仍然是后台 admin/ 的学科后台）
+    var ADMIN_GROUPS = [
+        { id: 'dashboard', name: '数据看板', module: '../admin/panels/dashboard.js', roles: ADMIN_ROLES },
+        { id: 'invites', name: '邀请码', module: '../admin/panels/invites.js', roles: ['super_admin'] },
+        { id: 'users', name: '用户管理', module: '../admin/panels/users.js', roles: ADMIN_ROLES },
+        { id: 'audit', name: '审计日志', module: '../admin/panels/audit.js', roles: ['super_admin'] },
+        { id: 'content', name: '内容管理', href: '../admin/#/english', roles: ADMIN_ROLES }
+    ];
+
     var DEFAULT_GROUP = NAV_GROUPS[0].id;
     var currentGroup = null;
 
+    // 侧栏实际渲染哪些：学生页面人人都有，管理页面按角色挑（普通用户一个都看不到）
+    function visibleGroups() {
+        var list = NAV_GROUPS.slice();
+        if (currentUser && canEnterAdmin(currentUser.role)) {
+            var role = currentUser.role;
+            ADMIN_GROUPS.forEach(function (entry) {
+                if (entry.roles.indexOf(role) >= 0) list.push(entry);
+            });
+        }
+        return list;
+    }
+
     function findGroup(id) {
-        for (var i = 0; i < NAV_GROUPS.length; i++) {
-            if (NAV_GROUPS[i].id === id) return NAV_GROUPS[i];
+        var list = visibleGroups();
+        for (var i = 0; i < list.length; i++) {
+            if (list[i].id === id) return list[i];
         }
         return null;
     }
@@ -365,6 +497,10 @@
         return findGroup(id) ? id : DEFAULT_GROUP;
     }
 
+    // 上一次拿到的会话台数：renderNav 会因为「角色确认下来、管理项出现」而重跑一次，
+    // 重跑会把 .acc-nav-note 里那个数字冲掉，所以留一份再补回去
+    var lastSessionCount = 0;
+
     // 渲染侧栏导航。会话台数（.acc-nav-note）由 loadSessions 填，
     // 所以重渲染后要把那个数字再补回去，别让它一闪就没了。
     function renderNav() {
@@ -372,11 +508,23 @@
         if (!nav) return;
         nav.innerHTML = '';
 
-        NAV_GROUPS.forEach(function (entry) {
+        var sectionAdded = false;
+        visibleGroups().forEach(function (entry) {
+            // 「管理」那一组前面插一个小标题（普通用户压根没有这一组，所以也不会出现）
+            if (entry.roles && !sectionAdded) {
+                nav.appendChild(el('div', { class: 'acc-nav-section', text: '管理' }));
+                sectionAdded = true;
+            }
+
             var item = document.createElement('a');
             item.className = 'acc-nav-item';
-            item.href = '#/' + entry.id;
-            item.setAttribute('data-group', entry.id);
+            if (entry.href) {
+                // 内容管理是普通链接（去后台 admin/），不参与本页的 hash 路由
+                item.href = entry.href;
+            } else {
+                item.href = '#/' + entry.id;
+                item.setAttribute('data-group', entry.id);
+            }
             item.textContent = entry.name;
 
             if (entry.id === 'devices') {
@@ -388,6 +536,11 @@
             }
             nav.appendChild(item);
         });
+
+        renderSessionCount(lastSessionCount);
+        // 重建导航会把 is-active 一起冲掉。今天 renderNav 的两个调用点后面都紧跟着 route()
+        // （route 里会 setActiveNav），但以后谁在别处调它就会静默丢掉侧栏高亮 —— 这里补一句。
+        if (currentGroup) setActiveNav(currentGroup);
     }
 
     function setActiveNav(groupId) {
@@ -412,7 +565,8 @@
         var changed = id !== currentGroup;
         currentGroup = id;
 
-        NAV_GROUPS.forEach(function (entry) {
+        visibleGroups().forEach(function (entry) {
+            if (entry.href) return;            // 去后台的那种链接没有本页面板
             var panel = $(panelIdOf(entry.id));
             if (!panel) return;
             if (entry.id === id) {
@@ -426,11 +580,98 @@
         if ($('accPageTitle')) $('accPageTitle').textContent = entry ? entry.name : '个人中心';
         setActiveNav(id);
 
+        // 管理面板：按需 import 再 mount 进这一块的容器（学生页面则把上一个卸掉）
+        mountPanel(entry);
+
         // 只在真的换了页面时才播入场（同页重渲染会重跑动画，看着像闪）
         if (changed) {
             playEnter([$(panelIdOf(id))]);
         }
         if (id === 'devices') loadSessions();
+    }
+
+    // ===================== 管理面板的挂载 =====================
+
+    var mountedPanel = null;   // { groupId, container, module }
+    // 每次挂载/卸载都加一：用来丢掉「迟到」的 import 回调。
+    // 只比 groupId 不够 —— 同一分组「离开又立刻回来」时，两次 import 的 groupId 相同，
+    // 先发的那次落地时会把已经卸掉的面板又挂一次（多一轮请求，DOM 因为 mount 会先清容器所以不算脏）。
+    var mountSeq = 0;
+
+    // 面板拿到的 ctx（形状与 admin.js 的 createContext 一致）
+    function panelContext() {
+        return {
+            user: currentUser,
+            api: panelApi,
+            el: el,
+            escapeHtml: escapeHtml,
+            toast: toast,
+            confirm: confirmDialog,
+            setTitle: function (text) {
+                if ($('accPageTitle')) $('accPageTitle').textContent = text;
+            }
+        };
+    }
+
+    function panelAllowed(entry) {
+        if (!currentUser) return false;
+        if (!entry || !entry.roles) return true;
+        return entry.roles.indexOf(currentUser.role) >= 0;
+    }
+
+    function unmountPanel() {
+        if (!mountedPanel) return;
+        var current = mountedPanel;
+        mountedPanel = null;
+        mountSeq += 1;   // 让还在飞的 import 回调失效
+        try {
+            // 卸载钩子是可选的；它自己出错也不该拦住切页面
+            if (current.module && typeof current.module.unmount === 'function') {
+                current.module.unmount();
+            }
+        } catch (e) {
+            // 忽略
+        }
+        current.container.innerHTML = '';
+        current.container.className = 'acc-panel';
+    }
+
+    function mountPanel(entry) {
+        if (!entry || !entry.module || !panelAllowed(entry)) {
+            unmountPanel();
+            return;
+        }
+        // 已经在上面了（同页重渲染 / 只是重设 hash）就别再 import 一次，
+        // 否则面板状态会被清空 —— 例如用户刚填完发码表单、切了一下 hash 又回来
+        if (mountedPanel && mountedPanel.groupId === entry.id) return;
+
+        unmountPanel();
+        var container = $(panelIdOf(entry.id));
+        if (!container) return;
+        var seq = ++mountSeq;
+        mountedPanel = { groupId: entry.id, container: container, module: null };
+
+        // 动态 import：面板代码只在真的要打开时才下载（与后台 admin.js 的做法一致）
+        import(entry.module)
+            .then(function (mod) {
+                // 加载期间用户可能又切走了（或同一分组被卸载后又重挂了一次）
+                if (!mountedPanel || mountedPanel.groupId !== entry.id || seq !== mountSeq) return;
+                mountedPanel.module = mod;
+                mod.mount(container, panelContext());
+            })
+            .catch(function (err) {
+                if (!mountedPanel || mountedPanel.groupId !== entry.id || seq !== mountSeq) return;
+                container.innerHTML = '';
+                // 面板的样式（.pn-msg 的颜色）挂在 .pn-root 这个命名空间下，
+                // 加载失败时容器还没被面板加过这个类，得自己补上，否则错误文字是黑的
+                container.classList.add('pn-root');
+                container.appendChild(
+                    el('div', {
+                        class: 'pn-msg is-error',
+                        text: '面板加载失败：' + (err && err.message ? err.message : String(err))
+                    })
+                );
+            });
     }
 
     // ===================== 当前账号 =====================
@@ -446,13 +687,18 @@
 
         var adminLink = $('accAdmin');
         if (adminLink) {
-            // 管理员与超管都能进后台（与 admin.js 的 canEnterAdmin 同口径）
+            // 管理员与超管都能进后台（与 admin.js 的 canEnterAdmin 同口径）。
+            // 后台现在只做内容管理（词条），所以这一项在侧栏里叫「内容管理」。
             if (canEnterAdmin(user.role)) {
                 adminLink.removeAttribute('hidden');
             } else {
                 adminLink.setAttribute('hidden', 'hidden');
             }
         }
+
+        // ⚠️ 顺序：角色决定了侧栏有没有「管理」那一组，所以必须在这一步之后再渲染导航
+        // （DOMContentLoaded 里的那次 renderNav 跑在「我还不知道我是谁」的时候）
+        renderNav();
     }
 
     function loadSessions() {
@@ -482,6 +728,7 @@
     // 会话台数：侧栏导航上一个小数字 + 「登录过得设备」标题旁的括号。
     // 列表超过可视高度时会滚动，不给个数字用户不知道自己还有几台。
     function renderSessionCount(n) {
+        lastSessionCount = n;   // 记一份：renderNav 重跑时要把这个数字补回去
         var label = n > 0 ? String(n) : '';
         var inNav = $('navDevicesCount');
         if (inNav) {
@@ -546,7 +793,10 @@
                     // 顺序有讲究：先把门禁摆出来（此刻它还是藏着的，字段入场会被跳过），
                     // 再由 showGate 把白卡按「浮起淡入」放出来 —— 首屏是统一的入场动画。
                     currentUser = null;
-                    switchTab('login', false);
+                    // 顺序有讲究：先把门禁摆出来（此刻它还是藏着的，字段入场会被跳过），
+                    // 再由 showGate 把白卡按「浮起淡入」放出来 —— 首屏是统一的入场动画。
+                    // 从邀请链接进来的（?invite=）直接停在注册页：码已经替他填好了。
+                    switchTab(initialTab || 'login', false);
                     showGate();
                     if (res.networkError) {
                         setMsg($('loginMsg'), messageOf(res), 'error');
@@ -606,9 +856,71 @@
         });
     }
 
-    // ===================== 注册 =====================
+    // ===================== 注册（含「是否强制邀请码」的公开开关） =====================
 
     var codeTimer = null;
+
+    // 进页面时想停在哪个标签页（邀请链接进来就直接给注册页）。
+    // 声明写在前面会被 refreshState 用到，所以这里靠 var 提升 —— 它在 DOMContentLoaded
+    // 之前就已经跑完赋值，实际使用时（refreshState 里）一定读得到。
+    var initialTab = null;
+
+    // 服务端的公开开关（GET /api/auth/config）：目前只有「是否强制邀请码」。
+    // 为什么要问服务端：强制邀请制下**没有码连验证码都发不出去**（P0-2 的决策），
+    // 前端提前把话说清楚，用户就不会白填一遍邮箱再被拒。
+    var AUTH_CONFIG = { require_invite: false, loaded: false };
+
+    function loadAuthConfig() {
+        return api('GET', '/api/auth/config').then(function (res) {
+            if (res.status === 200 && res.data && res.data.data) {
+                AUTH_CONFIG.require_invite = !!res.data.data.require_invite;
+                AUTH_CONFIG.loaded = true;
+                applyInviteRequirement();
+            }
+        });
+    }
+
+    // 按开关改写邀请码那一栏：标签、占位、required、提示
+    function applyInviteRequirement() {
+        var label = $('regInviteLabel');
+        var input = $('regInvite');
+        var hint = $('inviteHint');
+        if (AUTH_CONFIG.require_invite) {
+            if (label) label.textContent = '邀请码（必填）';
+            if (input) {
+                input.setAttribute('required', 'required');
+                if (!input.value) input.placeholder = '本站需要邀请码才能注册';
+            }
+            if (hint) {
+                hint.textContent = '本站当前需要邀请码才能注册：没有码就注册不了，请联系管理员获取。';
+            }
+            return;
+        }
+        if (label) label.textContent = '邀请码';
+        if (input) {
+            input.removeAttribute('required');
+            input.placeholder = '管理员派发的邀请码';
+        }
+        if (hint) {
+            hint.innerHTML =
+                '普通码注册出来是普通账号，带 <code>ADMIN-</code> 前缀的码才是管理员；' +
+                '多个用<b>空格</b>分隔，<code>-</code> 是邀请码自身的格式，请原样保留。';
+        }
+    }
+
+    // 邀请链接（/account/?invite=XXXX）进来时：把码填好并直接停在注册标签页。
+    // ⚠️ 只做「填进去」，**不做任何规范化** —— 空格是多个码的分隔符、`-` 是码自身的格式
+    //    （本文件末尾那段说明就是为这件事写的）
+    var inviteFromLink = '';
+    function prefillInvite() {
+        var match = /[?&]invite=([^&#]+)/.exec(location.search);
+        if (!match) return;
+        var code = decodeURIComponent(match[1]).trim();
+        if (!code) return;
+        inviteFromLink = code;
+        if ($('regInvite')) $('regInvite').value = code;
+        initialTab = 'register';
+    }
 
     function startCountdown(seconds) {
         var btn = $('btnSendCode');
@@ -632,9 +944,14 @@
 
     function sendCode() {
         var email = valueOf('regEmail');
-        // 邀请码可选：不填也能发码（开放注册）。填了就一起发过去，
-        // 让服务端在这一步先把「码不对」挡下来，而不是等注册时才失败。
+        // 邀请码是否必填由服务端的公开开关决定（GET /api/auth/config）：
+        // 强制邀请制下没有码连验证码都发不出去（P0-2 的规则），所以这里先拦一次，
+        // 省掉「填完邮箱才被拒」那一趟往返。开关关着时它仍是可选的。
         var invite = valueOf('regInvite');
+        if (AUTH_CONFIG.require_invite && !invite) {
+            setMsg($('regMsg'), '本站需要邀请码才能注册：请先填上管理员派发的邀请码', 'error');
+            return;
+        }
         if (!email) {
             setMsg($('regMsg'), '请先填写邮箱', 'error');
             return;
@@ -666,13 +983,18 @@
     function doRegister(event) {
         if (event) event.preventDefault();
         var email = valueOf('regEmail');
-        // 邀请码可选：留空 = 普通用户；填了 = 注册后升级为管理员（多个用空格分隔）
+        // 邀请码：留空 = 普通用户（开放注册期间）；填了 = 角色由码上的 grant_role 决定 ——
+        // P0-5 起普通码只给 user，只有带 ADMIN- 前缀的码才给 admin（多个用空格分隔）
         var invite = valueOf('regInvite');
         var code = valueOf('regCode');
         var password = $('regPassword') ? $('regPassword').value : '';
         var password2 = $('regPassword2') ? $('regPassword2').value : '';
         var btn = $('regSubmit');
 
+        if (AUTH_CONFIG.require_invite && !invite) {
+            setMsg($('regMsg'), '本站需要邀请码才能注册：请填上管理员派发的邀请码', 'error');
+            return;
+        }
         if (!email || !code || !password) {
             setMsg($('regMsg'), '请把邮箱、验证码、密码都填完整', 'error');
             return;
@@ -900,6 +1222,11 @@
         // ⚠️ 不要再规范化邀请码输入框的内容：**空格是「多个邀请码」的分隔符**，
         // **`-` 是邀请码自身的格式**（后台靠它区分用途），大小写交给服务端处理。
         // （这里以前会把 `[\s-]` 全抹掉再转大写 —— 那正好把这两种语义都破坏了。）
+
+        // 服务端的公开开关（是否强制邀请码）+ 邀请链接里带的码：
+        // 两件事都必须在用户开始填表之前就位，否则「填完才被告知没有码」白费一趟
+        loadAuthConfig();
+        prefillInvite();
 
         // 登录表单小字里的那个「注册」：点了直接切到注册标签页，并把光标放进邮箱框
         var linkToRegister = $('linkToRegister');

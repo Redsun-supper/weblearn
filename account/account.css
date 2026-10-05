@@ -25,6 +25,17 @@
  *      account.js（给元素写 animation-delay），两边只靠延时数字对齐。
  * ========================================================================== */
 
+/* ⚠️ 声明「本页只支持浅色」，别删。
+   手机的深色模式、浏览器的「自动深色 / 强制暗色」（Chromium 的 Auto Dark Mode）会把
+   没声明的浅色页面**自动反色**：底下的浅灰被压成深蓝、正文变白，而输入框这类浅底控件
+   会被翻成深底，中文一压就发虚、看着像「叠字」——2026-10-05 用户报的「这里字有问题」
+   就是它（面板里的提示文字与「邀请码」标题整片发暗）。
+   本页只有浅色一套设计，写完这一行 Chromium 就不再翻转它；本页的深色侧栏是**设计如此**，
+   与「自动深色」无关，别混在一起改。 */
+:root {
+    color-scheme: light;
+}
+
 * {
     margin: 0;
     padding: 0;
@@ -914,6 +925,57 @@ body.acc-page {
 .acc-msg.is-error { color: #c62828; }
 .acc-msg.is-ok { color: #2e7d32; }
 
+/* ===================== 管理面板（P1） ===================== */
+
+/* 侧栏里「管理」这一组的小标题：学生页面与管理员页面混在一起时看不出分界。
+   ⚠️ 这一组导航项只在管理员/超管登录时才由 account.js 渲染出来。 */
+.acc-nav-section {
+    margin: 18px 0 6px;
+    padding: 0 30px;
+    font-size: 12px;
+    letter-spacing: 1px;
+    color: #90a4ae;
+}
+
+/* 提示条容器：管理面板通过 ctx.toast 用它。
+   与后台 .admin-toasts 同一套做法（右下角、错误停 6 秒、其余 3 秒），
+   配色跟着本页的深色底走。**零动效**：直接出现、到点摘掉，不做淡入淡出。 */
+.acc-toasts {
+    position: fixed;
+    right: 18px;
+    bottom: 18px;
+    z-index: 40;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    max-width: 320px;
+    pointer-events: none;
+}
+
+.acc-toast {
+    padding: 10px 14px;
+    font-size: 13px;
+    line-height: 1.6;
+    color: #eceff1;
+    background-color: rgba(20, 30, 40, 0.92);
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    border-radius: 8px;
+    word-break: break-word;
+}
+
+.acc-toast.error {
+    color: #ffebee;
+    background-color: rgba(120, 30, 30, 0.94);
+    border-color: rgba(255, 255, 255, 0.2);
+}
+
+/* 成功态：与后台 .admin-toast.success 同一个绿，两边观感一致 */
+.acc-toast.success {
+    color: #e8f5e9;
+    background-color: rgba(27, 94, 32, 0.94);
+    border-color: rgba(255, 255, 255, 0.2);
+}
+
 /* ===================== 窄屏 ===================== */
 
 /* 侧栏横过来放在顶部：导航变成一行可横向滚动的条目。
@@ -968,6 +1030,11 @@ body.acc-page {
         flex: 1 1 100%;
         display: flex;
         overflow-x: auto;
+    }
+
+    /* 横排导航里「管理」那个小标题不出现：它是一竖行的分组标记，横过来只会占掉一格 */
+    .acc-nav-section {
+        display: none;
     }
 
     .acc-nav-item {

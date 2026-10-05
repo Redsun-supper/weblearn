@@ -1,0 +1,525 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+/* Copyright (C) 2026  HR_RedSun (大冬呱) */
+/*
+ * 管理面板（P1）的共用样式
+ *
+ * 为什么单独一份、而不是塞进 account.css 或 admin.css：
+ * 这四个面板是**壳无关**的模块 —— 现在挂在个人中心（account/），后台（admin/）以后也能
+ * 挂同一份代码。样式跟着模块走，就不必在两个页面的样式表里各写一遍，
+ * 也不会出现「某一边改了颜色、另一边还是旧的」。
+ *
+ * 约定：
+ *   1. 只使用 `pn-` 前缀，**绝不定义** `.acc-*` / `.admin-*`（那些是壳的类名）；
+ *   2. 浅色主题（白卡 + 深字），刻意与 account.css 的 `.acc-card`、admin.css 的 `.admin-card`
+ *      保持同一套观感 —— 面板在个人中心里是「嵌进来的一块白」，在后台里就是普通卡片；
+ *   3. **零动效**（docs/launch-plan.md 第 8 节红线）：本文件不出现 transition / animation /
+ *      @keyframes。要加任何一点动静，先问过用户。
+ *   4. 只用 CSS 变量做间距与颜色，方便以后整体调。
+ */
+
+.pn-root {
+    --pn-ink: #263238;
+    --pn-ink-2: #546e7a;
+    --pn-ink-3: #90a4ae;
+    --pn-line: #e3e8ec;
+    --pn-line-2: #eceff1;
+    --pn-accent: #1565c0;
+    --pn-danger: #c62828;
+    --pn-ok: #2e7d32;
+    --pn-warn: #ef6c00;
+    --pn-gap: 14px;
+    color: var(--pn-ink);
+}
+
+/* ---------- 标题区 ---------- */
+
+.pn-head {
+    margin: 0 0 var(--pn-gap);
+}
+
+.pn-title {
+    margin: 0;
+    font-size: 18px;
+    font-weight: 600;
+    color: var(--pn-ink);
+}
+
+.pn-desc {
+    margin: 6px 0 0;
+    font-size: 13px;
+    line-height: 1.7;
+    color: var(--pn-ink-2);
+}
+
+.pn-sub {
+    font-size: 12px;
+    color: var(--pn-ink-3);
+}
+
+.pn-mono {
+    font-family: Consolas, "Courier New", monospace;
+}
+
+/* ---------- 卡片 ---------- */
+
+.pn-card {
+    margin-bottom: var(--pn-gap);
+    padding: 16px 18px;
+    background-color: #fff;
+    border: 1px solid var(--pn-line);
+    border-radius: 10px;
+}
+
+.pn-card:last-child {
+    margin-bottom: 0;
+}
+
+.pn-card-title {
+    margin: 0 0 12px;
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--pn-ink);
+}
+
+/* ---------- 表单 ---------- */
+
+.pn-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px 14px;
+    align-items: flex-end;
+    margin-bottom: 12px;
+}
+
+.pn-toolbar-end {
+    margin-left: auto;
+    display: flex;
+    gap: 8px;
+    align-items: flex-end;
+}
+
+.pn-field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+/* 勾选框那一格（例如生成表单的「永不过期」）：与 .pn-field 同一行排着，
+   所以自己撑出同一条基线的高度，不要让人以为它错位了 */
+.pn-check {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding-bottom: 7px;
+    font-size: 13px;
+    color: var(--pn-ink-2);
+    cursor: pointer;
+    user-select: none;
+}
+
+.pn-check input[type="checkbox"] {
+    width: 14px;
+    height: 14px;
+    margin: 0;
+    cursor: pointer;
+}
+
+/* 被勾选框接管了的字段（如「永不过期」勾上后的天数框）：淡下去并划掉标签，
+   说明「它现在由旁边那个勾决定」——比直接隐藏更好，位置不会跳 */
+.pn-field.is-off {
+    opacity: 0.5;
+}
+
+.pn-field.is-off > label {
+    text-decoration: line-through;
+}
+
+.pn-field > label {
+    font-size: 12px;
+    color: var(--pn-ink-2);
+}
+
+.pn-field input[type="text"],
+.pn-field input[type="number"],
+.pn-field input[type="email"],
+.pn-field input[type="date"],
+.pn-field select,
+.pn-field textarea {
+    padding: 7px 9px;
+    font-size: 13px;
+    color: var(--pn-ink);
+    background-color: #fff;
+    border: 1px solid #cfd8dc;
+    border-radius: 6px;
+    outline: none;
+}
+
+.pn-field input:focus,
+.pn-field select:focus,
+.pn-field textarea:focus {
+    border-color: #64b5f6;
+}
+
+.pn-field textarea {
+    min-height: 72px;
+    resize: vertical;
+    font-family: inherit;
+}
+
+.pn-field-inline {
+    flex-direction: row;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+    color: var(--pn-ink-2);
+}
+
+.pn-field-wide {
+    flex: 1 1 220px;
+}
+
+/* ---------- 按钮 ---------- */
+
+.pn-btn {
+    padding: 7px 14px;
+    font-size: 13px;
+    font-family: inherit;
+    color: #37474f;
+    background-color: #fff;
+    border: 1px solid #cfd8dc;
+    border-radius: 6px;
+    cursor: pointer;
+}
+
+.pn-btn:hover {
+    background-color: #eceff1;
+}
+
+.pn-btn:disabled {
+    color: var(--pn-ink-3);
+    background-color: var(--pn-line-2);
+    cursor: not-allowed;
+}
+
+.pn-btn-primary {
+    color: #fff;
+    background-color: #1976d2;
+    border-color: #1976d2;
+}
+
+.pn-btn-primary:hover {
+    background-color: #1565c0;
+}
+
+.pn-btn-danger {
+    color: var(--pn-danger);
+    border-color: #e57373;
+}
+
+.pn-btn-danger:hover {
+    background-color: #ffebee;
+}
+
+.pn-btn-sm {
+    padding: 4px 10px;
+    font-size: 12px;
+}
+
+.pn-btn-link {
+    padding: 0 4px;
+    color: var(--pn-accent);
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-size: 13px;
+    font-family: inherit;
+}
+
+.pn-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: center;
+}
+
+.pn-actions-col {
+    flex-direction: column;
+    align-items: flex-start;
+}
+
+/* ---------- 表格 ---------- */
+
+.pn-table-wrap {
+    overflow-x: auto;
+    border: 1px solid var(--pn-line);
+    border-radius: 10px;
+    background-color: #fff;
+}
+
+.pn-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+}
+
+.pn-table th,
+.pn-table td {
+    padding: 9px 12px;
+    text-align: left;
+    border-bottom: 1px solid var(--pn-line-2);
+    vertical-align: top;
+}
+
+.pn-table th {
+    font-weight: 600;
+    color: var(--pn-ink-2);
+    background-color: #fafbfc;
+    white-space: nowrap;
+}
+
+.pn-table tbody tr:hover {
+    background-color: #f7fafd;
+}
+
+.pn-table tbody tr:last-child td {
+    border-bottom: none;
+}
+
+.pn-table .col-actions {
+    white-space: nowrap;
+}
+
+.pn-table .col-num {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+}
+
+.pn-table .col-nowrap {
+    white-space: nowrap;
+}
+
+.pn-table .col-text {
+    max-width: 320px;
+    line-height: 1.6;
+    word-break: break-word;
+}
+
+.pn-table .col-check {
+    width: 34px;
+}
+
+/* ---------- 徽标 ---------- */
+
+.pn-badge {
+    display: inline-block;
+    padding: 2px 8px;
+    font-size: 12px;
+    line-height: 1.6;
+    color: var(--pn-ink-2);
+    background-color: var(--pn-line-2);
+    border-radius: 10px;
+    white-space: nowrap;
+}
+
+.pn-badge.is-ok {
+    color: #1b5e20;
+    background-color: #e8f5e9;
+}
+
+.pn-badge.is-info {
+    color: #0d47a1;
+    background-color: #e3f2fd;
+}
+
+.pn-badge.is-warn {
+    color: #e65100;
+    background-color: #fff3e0;
+}
+
+.pn-badge.is-bad {
+    color: #b71c1c;
+    background-color: #ffebee;
+}
+
+.pn-badge.is-muted {
+    color: var(--pn-ink-3);
+    background-color: #f5f7f8;
+}
+
+/* ---------- 分页 ---------- */
+
+.pn-pager {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    align-items: center;
+    margin-top: 12px;
+    font-size: 13px;
+    color: var(--pn-ink-2);
+}
+
+.pn-pager-btns {
+    display: flex;
+    gap: 6px;
+    margin-left: auto;
+}
+
+/* ---------- 提示 ---------- */
+
+.pn-hint {
+    margin: 8px 0 0;
+    font-size: 12px;
+    line-height: 1.7;
+    color: var(--pn-ink-3);
+}
+
+.pn-msg {
+    margin: 8px 0 0;
+    font-size: 13px;
+    line-height: 1.7;
+    color: var(--pn-ink-2);
+    white-space: pre-wrap;
+}
+
+.pn-msg.is-error {
+    color: var(--pn-danger);
+}
+
+.pn-msg.is-warn {
+    color: var(--pn-warn);
+}
+
+.pn-msg.is-ok {
+    color: var(--pn-ok);
+}
+
+.pn-empty {
+    padding: 22px 0;
+    text-align: center;
+    font-size: 13px;
+    color: var(--pn-ink-3);
+}
+
+/* ---------- 明文邀请码 ---------- */
+
+.pn-codes {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin: 10px 0 0;
+    padding: 12px;
+    background-color: #f7fafd;
+    border: 1px dashed #90caf9;
+    border-radius: 8px;
+}
+
+.pn-code {
+    padding: 4px 8px;
+    font-family: Consolas, "Courier New", monospace;
+    font-size: 13px;
+    color: #0d47a1;
+    background-color: #fff;
+    border: 1px solid #bbdefb;
+    border-radius: 6px;
+}
+
+/* ---------- 看板的数字卡 ---------- */
+
+.pn-stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    gap: 10px;
+}
+
+.pn-stat {
+    padding: 12px 14px;
+    background-color: #fff;
+    border: 1px solid var(--pn-line);
+    border-radius: 10px;
+}
+
+.pn-stat-label {
+    font-size: 12px;
+    color: var(--pn-ink-2);
+}
+
+.pn-stat-value {
+    margin-top: 6px;
+    font-size: 22px;
+    font-weight: 600;
+    color: var(--pn-ink);
+    font-variant-numeric: tabular-nums;
+}
+
+.pn-stat-note {
+    margin-top: 4px;
+    font-size: 12px;
+    color: var(--pn-ink-3);
+}
+
+/* 趋势：用一条静态横条表示数值（没有图表库，也不需要动效） */
+
+.pn-bars {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.pn-bar-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    color: var(--pn-ink-2);
+}
+
+.pn-bar-label {
+    width: 88px;
+    flex: none;
+    font-variant-numeric: tabular-nums;
+}
+
+.pn-bar-track {
+    flex: 1 1 auto;
+    height: 10px;
+    background-color: var(--pn-line-2);
+    border-radius: 5px;
+    overflow: hidden;
+}
+
+.pn-bar-fill {
+    height: 100%;
+    background-color: #64b5f6;
+    border-radius: 5px;
+}
+
+.pn-bar-value {
+    width: 64px;
+    flex: none;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+}
+
+/* ---------- 两栏（左表单 / 右结果） ---------- */
+
+.pn-split {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: var(--pn-gap);
+    align-items: start;
+}
+
+@media (max-width: 640px) {
+    .pn-toolbar {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .pn-toolbar-end {
+        margin-left: 0;
+    }
+
+    .pn-table .col-text {
+        max-width: 200px;
+    }
+}

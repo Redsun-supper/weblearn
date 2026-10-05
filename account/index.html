@@ -34,6 +34,9 @@
          颜色取渐变的起点色（#1f2d3d），切换过来时看起来就是「遮罩化成了页面」。 -->
     <style>html { background-color: #1f2d3d; }</style>
     <link rel="stylesheet" href="account.css">
+    <!-- 管理面板的共用样式（P1）：这批面板是壳无关的模块，样式跟着模块走。
+         放在这里而不是 account.css 里，是为了后台 admin/ 以后挂同一份面板时也能直接引它。 -->
+    <link rel="stylesheet" href="../admin/panels/panels.css">
 </head>
 <body class="acc-page">
 
@@ -85,7 +88,7 @@
                      放在 form 里必须写 type="button"，否则会当成提交按钮 -->
                 <p class="acc-hint" data-enter>还没有账号？点这里
                     <button class="acc-link-btn" type="button" id="linkToRegister">注册</button>
-                    —— 邀请码可留空直接注册，填了可升级为管理员。</p>
+                    —— 注册要用管理员派发的邀请码（是否必填看站点设置）。</p>
             </form>
 
             <!-- 注册 -->
@@ -96,9 +99,12 @@
                            placeholder="用于接收验证码，也是登录账号" required>
                 </div>
                 <div class="acc-field" data-enter>
-                    <label for="regInvite">邀请码（可选）</label>
-                    <input type="text" id="regInvite" placeholder="不填直接注册；填了可升级为管理员">
-                    <p class="acc-hint" id="inviteHint">管理员派发的邀请码：多个用<b>空格</b>分隔；
+                    <!-- 标签与提示会由 account.js 按服务端的公开开关（GET /api/auth/config）改写：
+                         强制邀请制下加「必填」并把提示改成「没有邀请码就无法注册」 -->
+                    <label for="regInvite" id="regInviteLabel">邀请码</label>
+                    <input type="text" id="regInvite" placeholder="管理员派发的邀请码">
+                    <p class="acc-hint" id="inviteHint">普通码注册出来是普通账号，
+                        带 <code>ADMIN-</code> 前缀的码才是管理员；多个用<b>空格</b>分隔，
                         <code>-</code> 是邀请码自身的格式，请原样保留。</p>
                 </div>
                 <div class="acc-field" data-enter>
@@ -215,10 +221,25 @@
                         <p class="acc-msg" id="accountMsg" role="status"></p>
                     </div>
                 </section>
+                <!-- ===================== 管理面板（只有管理员/超管看得到） =====================
+                     四个面板的内容**不写在这里**：account.js 按 hash 动态 import
+                     ../admin/panels/*.js 再 mount 进这些容器（契约见 docs/launch-plan.md §5.0）。
+                     这里只留容器，是为了让「加页面 = 导航加一项 + 这里加一个同 id 的 section」
+                     这条既有约定继续成立。 -->
+                <section class="acc-panel" id="panelDashboard" hidden></section>
+                <section class="acc-panel" id="panelInvites" hidden></section>
+                <section class="acc-panel" id="panelUsers" hidden></section>
+                <section class="acc-panel" id="panelAudit" hidden></section>
             </div>
         </main>
     </div>
 
-    <script src="account.js"></script>
+    <!-- 提示条容器（面板通过 ctx.toast 用它） -->
+    <div class="acc-toasts" id="accToasts"></div>
+
+    <!-- ⚠️ 必须是 module：面板是按需 import() 进来的（与后台 admin/admin.js 同样的做法）。
+         改成 module 后脚本会延迟到文档解析完再执行，DOMContentLoaded 的时机不受影响；
+         文件内部仍是 ES5 写法 + 一层 IIFE，对外只挂 window.__guangxueAccount。 -->
+    <script type="module" src="account.js"></script>
 </body>
 </html>

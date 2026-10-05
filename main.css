@@ -1,5 +1,15 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
 /* Copyright (C) 2026  HR_RedSun (大冬呱) */
+/* ⚠️ 声明「本页只支持浅色」，别删。
+   手机的深色模式、浏览器的「自动深色 / 强制暗色」（Chromium 的 Auto Dark Mode）会
+   把没声明的浅色页面**自动反色**：底下的浅灰被压成深蓝、正文变白，而输入框这类
+   浅底控件会被翻成深底，中文一压就发虚、看着像「叠字」——2026-10-05 用户就是这样
+   报了「这里字有问题」。全站的设计只有浅色一套，写完这一行 Chromium 就不再翻转它了。
+   （放 `:root` 而不是 `html`：与后面用 CSS 变量的写法保持一致。） */
+:root {
+    color-scheme: light;
+}
+
 /* 全站重置：清掉浏览器给 h1 / p 等元素的默认 margin、padding，
    并统一成 border-box，让宽高都含内边距与边框，尺寸好算 */
 * {
