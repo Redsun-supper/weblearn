@@ -218,12 +218,16 @@ e:\porject\4/
 
 ## 管理后台
 
-独立入口，本地地址 **http://127.0.0.1:8899/admin/**。
+管理侧现在**分成两处**（P1，2026-10 你定的「四个面板全部搬进个人中心」）：
 
 ```
-admin/                 通用骨架（布局、侧栏导航、hash 路由、通用组件、鉴权预留位）
+admin/                 内容管理骨架（布局、侧栏导航、hash 路由、通用组件、登录门禁）
+admin/panels/          ✅ 四个管理面板（看板 / 邀请码 / 用户 / 审计）——壳无关模块，挂在个人中心
 modules/<学科>/admin/  各学科自己的后台模块，按需动态加载
+account/               ✅ 管理面板的宿主：个人中心侧栏多出「管理」一组，按角色显示
 ```
+
+**① 内容管理**（`/admin/`，本地 http://127.0.0.1:8899/admin/）：词条增删改查与批量导入。
 
 | 项 | 说明 |
 |----|------|
@@ -232,12 +236,22 @@ modules/<学科>/admin/  各学科自己的后台模块，按需动态加载
 | 通用能力 | `ctx.api` / `toast` / `confirm` / `el` / `escapeHtml` / `setTitle`，避免各学科重复实现 |
 | 英语后台 | 词条列表（搜索 / 词书 / 单元筛选 / 分页）、新增编辑删除、**多释义编辑**（一个词性一块，每块可带自己的例句与译文）、**批量导入**（粘贴词表 → 引擎解析 → 预览 → 分批导入） |
 
-> ✅ **登录门禁已接入**：打开 `/admin/` 会先调 `GET /api/auth/me`，只有后台角色（`admin` / `super_admin`）的账号
-> 才渲染后台，否则显示登录表单（普通账号会提示「不是管理员」）。顶栏显示当前账号与「退出登录」。
-> ⚠️ 但这只是**界面层**的门禁：Go 侧的 `/api/words` 写接口**还没有服务端鉴权**，
-> 直接调接口（例如 `curl -X PUT /api/words/1`）仍然能改数据。
-> **在给 Go 补上鉴权中间件之前，仍然不要把 `/admin/` 部署到公网**——那一期要用同一个
-> `AUTH_JWT_SECRET` 验签并查 `auth.db` 的会话。详见 [`admin/README.md`](admin/README.md)。
+**② 管理面板**（`/account/#/dashboard` 等，跟着个人中心的侧栏走）：
+
+| 面板 | 谁能看 | 内容 |
+|------|--------|------|
+| 数据看板 | 管理员 / 超管 | 今日 5 个数字 + 累计 8 个 + 最近 7/30 天趋势（一个请求出全部数字） |
+| 邀请码 | **超管** | 生成（明文只显示这一次）、复制全部 / 导出 CSV / 邀请链接、状态筛选与分页、单张停用、**按批停用**、**整批发邮件** |
+| 用户管理 | 管理员只读 / 超管可治理 | 关键词搜索、角色与状态筛选、当页复习进度；超管可改角色、封禁解封、强制下线、点开看单人进度 |
+| 审计日志 | **超管** | 动作 / 操作者 / 时间范围筛选，动作清单由服务端返回（不硬编码），保留 180 天 |
+
+- 面板模块（`admin/panels/*.js`）是**壳无关**的：`export var meta = {id,title,desc,roles}` + `mount(container, ctx)`，个人中心与后台都能挂同一份；样式共用 `admin/panels/panels.css`（`pn-` 前缀，**零动效**——这一条是红线）。
+- 后端的账号侧接口（审计 / 发码 / 发邮件 / 强制下线 / 用户列表脱敏）见 [`docs/backend-auth.md`](docs/backend-auth.md)，统计侧接口见 [`backend-go/README.md`](backend-go/README.md) 的「管理统计接口」。
+
+> ✅ **两道门都齐了**：界面层是 `GET /api/auth/me` 的角色判定（普通账号看不到「管理」这一组，也进不了 `/admin/`）；
+> 服务端在阶段 2 补齐——Go 用与账号服务共享的 `AUTH_JWT_SECRET` 本地 HS256 验签 `gx_access` Cookie，
+> `/api/words` 写接口要管理员、`/api/reviews/*` 要登录、`/api/admin/*` 要管理员，写请求还要过 CSRF 闸门。
+> 详见 [`admin/README.md`](admin/README.md)。
 
 > 💡 批量导入的解析规则（支持制表符 / 竖线 / 逗号 / 空格、注释行、重复与错误行提示）由
 > 引擎的 `wordlist.rs` 实现，有 16 个单元测试覆盖各种粘贴格式。
@@ -314,7 +328,7 @@ modules/<学科>/admin/  各学科自己的后台模块，按需动态加载
 
 | 方法 | 路径 | 说明 | 状态 |
 |------|------|------|------|
-| GET | `/api/health` | 健康检查 | ✅ 可用 |
+| GET | `/api/health` | 健康检查（`?deep=1` 会真查一次库，坏则 **503** —— 监控命令只看状态码） | ✅ 可用 |
 | GET | `/api/hello` | 欢迎信息 | ✅ 可用 |
 | GET | `/api/user/info` | 获取用户信息 | 🔄 待实现 |
 | POST | `/api/user/update` | 更新用户信息 | 🔄 待实现 |
@@ -332,12 +346,16 @@ modules/<学科>/admin/  各学科自己的后台模块，按需动态加载
 | GET | `/api/reviews/probes` | ⚠️ 降级为**池尾诊断**：到期最远的已学词，不参与编排 | 🔧 诊断 |
 | POST | `/api/reviews/submit` | 提交复习结果（持久化 FSRS 状态）；请求体可带 `is_reset`，响应含截断后的 `interval_days` 与 `capped` | ✅ 可用 |
 | GET | `/api/reviews/stats` | 复习统计（`pool_size` / `pool_due` / `daily_target` / `daily_done` + 兼容字段 `total_words` / `new_words` / `due_cards`） | ✅ 可用 |
+| GET | `/api/admin/stats/overview` | 管理看板总览：今日 5 个 + 累计 8 个 + 账号库可用性（**要管理员**） | ✅ 可用 |
+| GET | `/api/admin/stats/trend?days=7\|30` | 按北京自然日的趋势（升序、缺日补 0） | ✅ 可用 |
+| GET | `/api/admin/users/progress?ids=1,2,3` | 批量复习进度摘要（≤100 个 id，缺席的补 0） | ✅ 可用 |
+| GET | `/api/admin/users/:id/progress` | 单人进度摘要 + 最近 7 天 | ✅ 可用 |
 
 ### 账号系统 API（Rust 认证服务，详见 [`backend-rust/README.md`](backend-rust/README.md)）
 
 | 方法 | 路径 | 说明 | 状态 |
 |------|------|------|------|
-| GET | `/api/auth/health` | 账号服务健康检查 | ✅ 可用 |
+| GET | `/api/auth/health` | 账号服务健康检查（`?deep=1` 真查一次库，坏则 **503**；运行时长的单位是秒） | ✅ 可用 |
 | POST | `/api/auth/email-code` | 发注册验证码（邀请码可选：填了先校验；不填直接发） | ✅ 可用 |
 | POST | `/api/auth/register` | 邮箱 + 邀请码 + 验证码注册，成功即登录 | ✅ 可用 |
 | POST | `/api/auth/login` | 登录（**每次登录新建会话 → 多端同时在线**） | ✅ 可用 |
@@ -346,8 +364,9 @@ modules/<学科>/admin/  各学科自己的后台模块，按需动态加载
 | GET | `/api/auth/me` | 当前登录用户 | ✅ 可用 |
 | GET | `/api/auth/sessions` | 我的活跃会话（设备名 / IP / 最近活跃 / 是否当前端） | ✅ 可用 |
 | POST | `/api/auth/logout-all` | 登出全部端（`keep_current` 可只踢其他端） | ✅ 可用 |
-| GET/POST | `/api/auth/admin/invites` | 邀请码列表 / 生成（明文只在生成时返回一次） | ✅ 可用 |
+| GET/POST | `/api/auth/admin/invites` | 邀请码列表 / 生成（明文只在生成时返回一次；`custom_code` 可**自己指定** 16 位码） | ✅ 可用 |
 | POST | `/api/auth/admin/invites/{id}/disable` | 停用邀请码 | ✅ 可用 |
+| POST | `/api/auth/admin/invites/{id}/reset` | **重新启用一张已用过的码**（清零已用次数；兑换记录与 `invite_reset` 审计都留着） | ✅ 可用 |
 | GET | `/api/auth/dev/codes` | 读取验证码（**仅 development**，生产环境路由不注册） | ✅ 可用 |
 
 > 账号接口的响应同样使用 `{code, message, data}` 信封，失败时额外带机器可读的
@@ -477,7 +496,7 @@ node dev-server.js --api-port 8081    # 后端换了端口时对齐
 | 想要与线上完全一致的形态 | 用 Nginx 反向代理：`root` 指向仓库根目录、`proxy_pass` 指向 `127.0.0.1:8080`（见「部署说明」） |
 | 登录/注册接口报 502 | 账号服务没启动。`dev-server.js` 会打印 `[proxy error] ... → 账号系统(Rust)`；先 `cd backend-rust && cargo run --release` |
 | 重启服务后登录态全部失效 | 开发环境没设 `AUTH_JWT_SECRET`，每次启动都会随机生成密钥（正式部署务必固定它） |
-| 发验证码提示「操作过于频繁」 | 同邮箱 60 秒只能发一次、每小时 5 次；同 IP 每小时 20 次。可用 `AUTH_RL_*` 调整 |
+| 发验证码提示「操作过于频繁」 | 同邮箱 60 秒只能发一次、每小时 5 次；同 IP 每小时 200 次（P2 放宽：上百人共用校园/公司出口 IP 时，旧的「每小时 20 次」会被自己人打满）。五条限流都能用 `AUTH_RL_*` 覆盖（格式 `次数/窗口秒`，`0/0` 关闭），改完看服务启动横幅里打印的**实际生效值** |
 
 > 💡 `dev-server.js` 仅用于本地开发，部署时无需上传（线上由 Nginx 承担同样的职责）。
 
@@ -762,7 +781,10 @@ go run ./cmd/seed -file my_words.json -db guangxue.db
 ✅ 复习进度已**按人隔离**（P0-1，2026-10）：`word_reviews` 的唯一键是 `(user_id, word_id)`，
 `review_logs` 也带 `user_id`，而词库（`words`）仍然共享——**词库共享、进度私有**。
 P0-1 之前的老库要先跑一次 `go run ./cmd/migrate -apply`（服务启动时会自检并在需要时提示这条命令）。
-仍未做的是浏览器 localStorage 里的每日配额，见 [`docs/launch-plan.md`](docs/launch-plan.md) 的 P2。
+✅ 每日配额也是**服务端算的**（P2 复核）：前端只显示服务端给的 `daily_target` / `daily_done`，
+「今天哪 5 个被置顶」由 `backend-go` 用稳定哈希按 `Asia/Shanghai` 自然日算出来
+（配额是**排序权重**不是硬上限，继续复习不受限 —— 这是 2026-10 单一循环池的既定设计）。
+剩下在浏览器里的只有两个**本该在本地**的东西：自动朗读开关、沉浸模式开关。
 
 ### 邮件
 
@@ -810,7 +832,11 @@ server {
         proxy_pass http://localhost:8081;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        # ⚠️ 用 $remote_addr，**不要**用 $proxy_add_x_forwarded_for：
+        # 后者 = 客户端自己发来的 X-Forwarded-For + $remote_addr，伪造值会留在最前面，
+        # 而账号服务取的是第一个值 → 伪造 XFF 就能绕开它的全部按 IP 限流。
+        # （将来前面加了 CDN，改用 set_real_ip_from + real_ip_header，别无脑信任 XFF。）
+        proxy_set_header X-Forwarded-For $remote_addr;
         proxy_set_header X-Forwarded-Proto $scheme;
     }
 
@@ -821,7 +847,9 @@ server {
         proxy_pass http://localhost:8080;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        # 用 $remote_addr，不要用 $proxy_add_x_forwarded_for（后者保留客户端伪造的 XFF 前缀，
+        # 而账号服务取第一个值 → 可绕过它的按 IP 限流）。完整说明见上面账号服务那段。
+        proxy_set_header X-Forwarded-For $remote_addr;
     }
 }
 ```
@@ -867,6 +895,10 @@ AUTH_ADMIN_PASSWORD='管理员密码' \
 | `SERVER_HOST` | 监听地址 | `0.0.0.0` |
 | `SERVER_PORT` | 端口 | `8080` |
 | `APP_ENV` | 运行环境 | `development` |
+| `DB_PATH` | 复习库（`guangxue.db`）路径，相对进程工作目录 | `guangxue.db` |
+| `AUTH_JWT_SECRET` | 与账号服务**逐字相同**的验签密钥；空则所有需登录的接口一律 401（启动时告警） | 无默认值 |
+| `AUTH_ALLOWED_ORIGINS` | CSRF 闸门的 Origin 白名单 | `http://127.0.0.1:8899,http://localhost:8899` |
+| `AUTH_DB_PATH` | 账号库（`auth.db`）路径，**只读**打开（`mode=ro`），只给管理看板读账号侧数字；读不到时看板降级为「账号侧全 0 + 一句原因」，不影响其它接口 | `../backend-rust/auth.db` |
 
 **Rust 账号系统**（完整清单见 [`backend-rust/README.md`](backend-rust/README.md)）
 
@@ -884,8 +916,12 @@ AUTH_ADMIN_PASSWORD='管理员密码' \
 | `AUTH_REQUIRE_INVITE` | **强制邀请码注册**：`true` 时没有有效邀请码**连验证码都发不出来**（也不写库），注册同样必须带码。**生产必须显式写 `true`** | `false` |
 | `AUTH_ADMIN_EMAIL` / `AUTH_ADMIN_PASSWORD` | 初始管理员（**启动时确保是超级管理员**） | `2262997289@qq.com` / 开发默认密码 |
 | `AUTH_SEED_ADMIN` | 启动时确保管理员存在（幂等） | 随 `APP_ENV` |
+| `AUTH_AUDIT_RETENTION_DAYS` | 审计日志保留天数（`0` = 永不清理）；启动时清一次 + 每 24 小时一次 | `180` |
 | `AUTH_ARGON2_M_COST` / `_T_COST` / `_P_COST` | 密码哈希参数 | `19456` / `2` / `1` |
-| `AUTH_RL_*` / `AUTH_LOCK_THRESHOLD` / `AUTH_LOCK_MINUTES` | 限流与锁定 | 见 `.env.example` |
+| `AUTH_RL_LOGIN_IP` / `AUTH_RL_CODE_IP` / `AUTH_RL_REGISTER_IP` | 按 IP 的限流（登录 / 发码 / 注册）。P2 起**真的可配**（此前 `--help` 列了它却没人解析），格式 `次数/窗口秒`，`0/0` 关闭；口径「严在账号、宽在 IP」 | `200/900` / `200/3600` / `100/3600` |
+| `AUTH_RL_CODE_EMAIL_MINUTE` / `AUTH_RL_CODE_EMAIL_HOUR` | 按**邮箱**的发码限流（这才是要卡死的地方） | `1/60` / `5/3600` |
+| `AUTH_LOCK_THRESHOLD` / `AUTH_LOCK_MINUTES` | 密码连错几次锁定多久（落库，重启不失效） | `5` / `15` |
+| `MONITOR_GO_URL` / `MONITOR_AUTH_URL` / `MONITOR_ALERT_TO` / `MONITOR_STATE_FILE` / `MONITOR_REPEAT_HOURS` | **探活命令**（`guangxue-monitor`）的配置：两个深检地址、告警收件人（留空 = 只写日志）、状态文件、持续故障重发间隔。写在 `deploy/systemd/guangxue-monitor.service` 里，不进 `.env` | 见 runbook「监控与告警」 |
 
 ---
 
@@ -941,10 +977,20 @@ AUTH_ADMIN_PASSWORD='管理员密码' \
 - [x] 账号系统与 Go 后端按前缀分流（`/api/auth/*` → 8081），本地 `dev-server.js` 与线上 Nginx 同形态
 - [x] 个人中心页面 `account/`（身份卡 / 账号信息 / 登录过得设备 / 可用操作，本地开发自动回填验证码，全部组件带入场动效）
 - [x] 后台登录门禁（`admin/` 放行 `admin` 与 `super_admin`）与站点左上角头像入口（点头像扩散过场进个人中心，含登录态圆点）
-- [x] **三级角色**（超级管理员 / 管理员 / 用户）与按等级发码（P0-5，2026-10）：角色常量收口、`RequireSuperAdmin`、邀请码 `grant_role`/`batch_id`、超管自锁保护；邀请码**管理面板**仍待做（见 [`docs/launch-plan.md`](docs/launch-plan.md) 的 P1）
+- [x] **三级角色**（超级管理员 / 管理员 / 用户）与按等级发码（P0-5，2026-10）：角色常量收口、`RequireSuperAdmin`、邀请码 `grant_role`/`batch_id`、超管自锁保护
 - [x] 词条写接口鉴权（Go 侧用同一 JWT 密钥本地验签：`/api/reviews/*` 需登录、`/api/words` 写接口需管理员）
 - [x] 用户与复习数据绑定（`word_reviews` / `review_logs` 加 `user_id`，唯一键 `(user_id, word_id)`；老库跑一次 `go run ./cmd/migrate -apply`）
-- [ ] 每日配额从 localStorage 迁到服务端（见 `docs/launch-plan.md` 的 P2）
+- [x] **P1 管理面板**（2026-10，四个面板挂在**个人中心**、按角色显示）：
+      **数据看板**（今日 5 个 + 累计 8 个 + 7/30 天趋势，一个请求出全部数字，账号库读不到时降级不报错）、
+      **邀请码**（一次性明文 + 复制全部 / 导出 CSV / 邀请链接 + 状态筛选分页 + 单张停用 + 按批停用 + 整批发邮件）、
+      **用户管理**（关键词搜索 / 角色与状态筛选 / 当页复习进度；超管可改角色、封禁解封、强制下线、看单人进度；普通管理员只读且邮箱由服务端脱敏）、
+      **审计日志**（动作清单随列表返回、可按动作/操作者/时间筛、保留 180 天）。
+      面板模块壳无关（`admin/panels/*.js`，`meta` + `mount(container, ctx)`），样式共用 `panels.css`（零动效）
+- [x] **P2：配额口径复核 + 限流重算 + 监控告警**（2026-10）：每日配额其实早在单一循环池改造时就已经服务端化
+      （本轮补测试与文档口径）；`AUTH_RL_*` 五条限流**真正接进配置**并按「严在账号、宽在 IP」重算
+      （IP 维度 20→200，邮箱维度不变），Nginx 补 `limit_req`/`limit_conn` 并**修掉 XFF 可伪造**（`$remote_addr`）；
+      两个服务新增 `?deep=1` 深度健康检查；新增 `guangxue-monitor`（每 5 分钟探活，故障与恢复各发一封邮件，
+      只在状态变化时发）。见 [`docs/launch-plan.md`](docs/launch-plan.md) 第 14 节
 - [ ] 改密 / 找回密码 / 多方式登录（`user_identities` 表已预留）
 - [ ] 复习页面 UI（进阶：完整词义卡交互、统计曲线图表等）
 - [ ] FSRS 参数优化（基于 review_logs 的 compute_parameters）

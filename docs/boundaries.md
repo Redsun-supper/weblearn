@@ -59,12 +59,14 @@
   所以 `backend-rust/` 用 `rusqlite` 的 `bundled` 特性（现场编译 sqlite3.c）可以正常 `cargo test` / `cargo build --release`。
   链接时的 `corrupt .drectve at end of def file` 是 mingw 的**无害告警**。
 - ✅ **宿主 `cargo test` 现在可以运行**（本文档此前记录的「缺 mingw `as`/MSVC SDK 无法链接」**已不再成立**）。
-  ⚠️ **三套测试的数字别混用**（2026-10-03 复测）：`backend-rust/` = **124 项**（49 单元 + 75 集成；
-  集成里 P0-2 的强制邀请码 9 项、P0-5 的三级角色 15 项），
+  ⚠️ **三套测试的数字别混用**（2026-10-05 复测）：`backend-rust/` = **169 项**（73 单元 + 6（`guangxue-monitor` 的 URL 解析与状态机）+ 90 集成，9 个集成文件；
+  集成里 P0-2 的强制邀请码 9 项、P0-5 的三级角色 15 项、**P1 的审计与管理接口 15 项**），
   `modules/english/engine/` = **122 项**（118 + 单一循环池新增的置顶卡重置、365 天封顶、
   真实 `daily` 键名解析、置顶卡不被随机窗口埋掉等），
-  `backend-go/` = **61 项**（handlers 43 + middleware 10 + routes 7 + database 1；
-  阶段 1 补关键路径基线，阶段 2 补鉴权 / CSRF / 路由回归，P0-1 补进度按人隔离与迁移回归）；
+  `backend-go/` = **106 项+**（handlers / routes / middleware / database / config / stablehash 六包；
+  P1 新增 25 个 Test 函数覆盖看板聚合、趋势补零与时区边界、账号库只读打开与降级、`/api/admin` 准入与路由共存；
+  P2 又补了深度健康与配额口径的用例 —— 确切数字以 `go test ./... -count=1` 的实跑为准，
+  ⚠️ `-list` 数出来的是**测试函数个数**，带子测试的包（handlers）实际 PASS 条数会更多，两个数别混着引用）；
   此前文档里那个「118」是**引擎**的，不是账号服务的。
 - 完整验证路径：`pwsh scripts/verify.ps1`（一键跑 Go 构建/vet/测试 + 上面两套测试 + wasm32 目标检查），
   或手工：`cargo test` → `cargo check --target wasm32-unknown-unknown` → `cargo build --target wasm32-unknown-unknown --release`
@@ -84,10 +86,33 @@
   > 要看**服务启动日志**（`已应用数据库迁移 version=N`）或直接查库。
   > 还有：`cargo build` 只更新 `target/debug/`，**开发服务跑的却是 `target/release/`** ——
   > 改完服务端忘了 `--release` 时，症状是「代码明明改了却没生效」，很难往构建目标上想。
+  > ⚠️ **别把库建在 `%TEMP%` 里（2026-10-05 实测）**：这台机器上 SQLite **无法在
+  > `C:\Users\22629\AppData\Local\Temp` 下创建数据库文件**，症状极容易误判成「代码坏了」——
+  >   - Rust 侧：`启动失败：服务内部错误`（`AuthError::Internal` 把 rusqlite 的细节 Display 掉了，看不到真因）；
+  >   - Go 侧：`打开数据库失败 (…\Temp\xxx.db): unable to open database file: out of memory (14)`，**两边同一个根因**；
+  >   - 但**同一份二进制换到仓库目录（`E:\porject\4\.tmp-*`）就一切正常**，普通文件写入 `%TEMP%` 也正常
+  >   （只有 SQLite 开库失败），ACL 看着也没问题（用户本人 `(OI)(CI)(F)`），所以别照着 ACL 去修。
+  >   **做法**：临时库一律建在仓库内（`.tmp-test` / `.tmp-cargo` / `.tmp-e2e`，前者两个已在 `.gitignore` 里），
+  >   跑测试与临时实例前先 `$env:TEMP='E:\porject\4\.tmp-cargo'; $env:TMP=$env:TEMP`（`tempfile` 会跟着走）。
+  >   `verify-auth.ps1` 自己就是这么做的，所以它一直没踩到这个坑。
+  > ⚠️ **临时实例验证完要确认它真的死了**（2026-10-05 踩过）：`verify-auth.ps1` 会占用
+  > **18080 / 18081** 起两个临时账号实例，自己临时验证时也常顺手起在 18081。后台任务被取消时
+  > **子进程可能没跟着退出**（`job_kill` 之后 `guangxue-auth.exe` 仍在监听），下一轮脚本就会
+  > 撞上「端口被占 → 临时实例起不来 → 管理员登录 401」这类**看起来像功能坏了**的报错。
+  > 跑验证脚本前先看一眼：`Get-NetTCPConnection -State Listen -LocalPort 18081`，
+  > 有残留就 `Get-Process guangxue-auth | Stop-Process -Force`（注意别把 8081 的开发实例一起杀了：
+  > 它也是同名进程，按 **PID** 而不是按名字停更稳）。
 - **跨服务鉴权联调**：`pwsh scripts/verify-auth.ps1` 用**临时库**起两个真服务（默认 18081 账号服务 / 18080 Go，不碰真实库、不影响开发端口），
   端到端验证「账号服务发 Cookie → Go 本地验签」：匿名 `/api/reviews/stats` → 401 `unauthenticated`、账号服务发的 `gx_access` → 200、
-  普通用户写词条 → 403 `forbidden`、外站 Origin 写请求 → 403（CSRF 闸门），以及 **P0-1 的进度隔离**
-  （管理员与普通用户复习同一个词后，各自统计里都只有自己那 1 条）。实测 18 项全 PASS、约 6 秒。
+  普通用户写词条 → 403 `forbidden`、外站 Origin 写请求 → 403（CSRF 闸门）、**P0-1 的进度隔离**
+  （管理员与普通用户复习同一个词后，各自统计里都只有自己那 1 条）、**P0-2 的强制邀请码**（另起一个实例）、
+  **P1 的管理接口**（公开开关 / 审计 / 按批停用 / 整批发邮件 / 用户列表脱敏与搜索 / 批量与单人进度 / 看板聚合 / 强制下线）。
+  实测 **62 项全 PASS、约 15 秒**（数字随时长；P2 段会另起两个实例并跑三轮监控命令，所以比最早的 7 秒慢）。
+  > 2026-10-05 修过一处**脚本自身的断言**：原本把「重置幂等 → `cleared=0`」放在「码被别人重新用掉」**之后**，
+  > 那时 `used_count` 已经是 1，服务老实清掉并回 `cleared=1` —— 是断言写错了，不是接口不幂等。
+  > 现在顺序是：重置（`cleared=1`）→ 立刻再重置（`cleared=0`，幂等）→ 别人注册用掉 → 再重置（`cleared=1`，可反复用）。
+  > 其中一条是**故意断言「仍然 200」**的：被强制下线后同一个 Cookie 打 Go 依旧通过 —— Go 本地验签、不查库，
+  > 感知不到会话吊销，直到 access 令牌过期（默认 900 秒）。把它测出来，是为了别让人以为「点一下强制下线 = 全站立刻失效」。
   ⚠️ **别删这个脚本**：两侧的单元测试各自 mock 自己的密钥，密钥/算法/容差对不上时它们全绿，只有这里能发现。
 - **单一循环池验收**：`pwsh scripts/verify-pool.ps1`（28 项，约 8 秒）走**真实 HTTP + 真实开发库**，
   逐条对照 [`review-pool-plan.md`](review-pool-plan.md) 第 7 节的 8 条验收口径。
@@ -151,6 +176,33 @@ Set-Location backend-rust; & '.\target\release\guangxue-auth.exe'
 ```
 
 顺带：这也是同宿舍 / 同办公室共用出口 IP 会被一起锁 15 分钟的原因（见 `TODO.md`）。
+
+## 11. 三份样式表都要声明 `color-scheme: light`（否则被浏览器自动反色）
+
+**症状**（2026-10-05 用户报的「这里字有问题」）：邀请码面板打开后，标题、描述与提示文字整片发暗、
+中文字看着像「叠字/发虚」，输入框像坏掉一样带红边，但**同一台机器换个浏览器、或用无头浏览器截图
+都完全正常**。
+
+**根因**：页面只写了浅色一套样式，**没有声明自己只支持浅色**，于是被浏览器的
+**自动深色 / 强制暗色**（Chromium 的 Auto Dark Mode，手机上也很常见）接管：
+
+- 它把浅色底 `#f5f6f8` 压成深蓝、正文翻成白字，而**浅底控件（输入框）反色后在中文上就发虚**；
+- 这是**合成阶段**的翻转，`getComputedStyle` 读到的仍是原始浅色值 —— 所以「量样式」量不出来，
+  只有**截图/肉眼**看得见（无头浏览器默认不启用自动深色，所以自动化截图也正常）。
+
+**规矩**：任何**新页面**的根样式表都要带这一行（三份都已经有了，别删）：
+
+```css
+:root { color-scheme: light; }
+```
+
+- 位置：`main.css:10`（学生站）、`account/account.css:36`（个人中心）、`admin/admin.css:16`（后台）。
+  三份各写一份、互不依赖 —— `account/` 与 `admin/` 虽然也引 `admin/panels/panels.css`，
+  但那份是面板组件样式，不该承担「本页支持什么色」这种页面级的声明。
+- `admin/panels/panels.css` 里**不用**写：它被两个页面引用，页面级的声明留在页面自己的样式表里。
+- 回归检查：`scripts/verify-auth.ps1` 最后一段有 3 条断言（直接读文件，不依赖 dev-server 在跑）。
+- **排查提醒**：以后凡是「用户说字/颜色不对，而自动化截图正常」，先把浏览器切到自动深色再看
+  （`msedge --headless=new --enable-features=WebContentsForceDark --blink-settings=forceDarkModeEnabled=true,forceDarkModeInversionAlgorithm=Simple`）。
 
 ## 相关文档
 

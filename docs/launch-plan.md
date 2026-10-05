@@ -21,11 +21,17 @@
 | P0-3 | **打通真发邮件** 🟡 代码侧已完成（2026-10），差发件邮箱的授权码 | 现在 `AUTH_MAIL_MODE=log`，验证码只打进日志，**真实用户收不到码就注册不了** | 半天（SMTP 代码早已写好；配置校验、自检与验收命令已补齐） |
 | P0-4 | **公网部署** 🟡 代码侧与部署产物已完成（2026-10），差一台服务器 | HTTPS、Cookie Secure、Nginx 分流、生产环境开关、每日备份 | 1 天（照着 [`deploy-runbook.md`](deploy-runbook.md) 敲） |
 | P0-5 | **三级角色（超管/管理员/用户）** ✅ 已完成（2026-10） | 你要的「超管发带等级的码」；改造前只有 `user`/`admin`，且**带邀请码注册会直接变管理员** | 1~2 天 |
-| P1 | 管理面板四个模块（邀请码/用户/审计/看板） | 现在邀请码只能跑 CLI，`/admin/` 里没有任何界面 | 2~3 天 |
-| P2 | 每日配额服务端化、限流调参、监控 | 配额现在在浏览器 localStorage 里，多设备会翻倍；不影响数据正确性 | 1 天 |
+| P1 | 管理面板四个模块（邀请码/用户/审计/看板） | ✅ **已完成（2026-10-05）**：四个面板挂在**个人中心**、按角色显示；接口契约与四批交付见 [5.0](#50-p1-施工计划2026-10-定案)，实测与交接见 [附录 C](#附录-c进度记录) | 四批（批 3 最重） |
+| P2 | 每日配额服务端化、限流调参、监控 | ✅ **已完成（2026-10-05）**：配额其实早在单一循环池改造时就服务端化了（本轮补测试与口径）；限流已可配并按「严在账号、宽在 IP」重算、Nginx 补 `limit_req` 且修掉 XFF 伪造；新增深度健康检查 + `guangxue-monitor` 邮件告警。见 [14](#14-p2配额口径限流与监控2026-10-定案-已完成) | 1 天 |
 
 **推荐顺序**：P0-1 → P0-5 → P0-2 → P0-3 → P0-4 → 放人 → P1 → P2。
 理由：P0-1 是数据正确性（越早做，废数据越少）；P0-5/P0-2 是同一批代码（注册流程），一起改一次测一次；P0-3/P0-4 是外部依赖（等授权码/等证书），可以和开发并行推进。
+
+**当前状态（2026-10-05）**：P0-1 / P0-2 / P0-5 / **P1** / **P2** 都已完成并过了测试
+（三套测试 + 跨服务脚本 55 项 + 一键 `scripts/verify.ps1` 六步全绿）。
+剩下的两步都卡在外部依赖：**P0-3** 只差发件邮箱的 SMTP 授权码（代码、自检与验收命令都齐了），
+**P0-4** 只差一台服务器（照着 [`deploy-runbook.md`](deploy-runbook.md) 敲，含监控与告警那一节）。
+**放人之前**：先把这两步收尾，再按 runbook「上线前的最后一份清单」逐条打勾。
 
 ---
 
@@ -134,7 +140,8 @@ review_logs:  加 user_id 列 + INDEX(user_id, reviewed_at) idx_review_logs_user
 - 前端 `account/account.js`：邀请码输入框改成**必填**（`regInvite`），文案改成「没有邀请码？暂时无法注册」；`:657-658` 那条「不要把空格规范化」的注释仍然有效，别动。
   > ⚠️ **实际未做**（2026-10 用户选择「先不动前端」）：输入框保持可选。原因是**服务端才是安全边界**——
   > 强制模式下不填码根本发不出验证码、注册也会被 400 挡住，前端标不标必填不影响安全性，
-  > 只影响「用户提不提前知道要填码」。这条等 P1 管理面板一起改文案与表单。
+  > 只影响「用户提不提前知道要填码」。✅ **2026-10-05 已随 P1 一起改完**：注册表单会先问公开开关
+  > `GET /api/auth/config`，强制邀请制下把标签改成「必填」、写清「没有码就注册不了」，并在发码/注册前先本地拦一次。
 - **为什么用开关而不是写死**：你说过未来会「删档重来，注册不强制邀请码，填了才带权限」——那时把开关关掉即可，代码不用再改一遍。
 
 **验收标准**：
@@ -209,7 +216,7 @@ cargo run --bin mail-test -- 你的邮箱@example.com
 > | `deploy/nginx/guangxue.conf.template` | 站点配置模板（HTTP→HTTPS 跳转、`/api/auth/`→8081、`/api/`→8080、静态托管、HSTS、敏感文件兜底拒绝、缓存策略） |
 > | `deploy/systemd/guangxue-auth.service` / `guangxue-api.service` | 两个后端进程守护（`Restart=always` + systemd 沙箱加固 + `EnvironmentFile` 注入密钥） |
 > | `deploy/systemd/guangxue-backup.service` / `.timer` | 每天 03:00 用 `backend-go/cmd/backup`（`VACUUM INTO`）快照两个库，保留 30 份 |
-> | `docs/deploy-runbook.md` | 十步部署手册（含恢复演练与上线前清单） |
+> | `docs/deploy-runbook.md` | 十一步部署手册（含恢复演练、**监控与告警**与上线前清单） |
 >
 > 同时修掉的代码问题：
 > - **`gin.ReleaseMode`（`routes.go`）**：原先生产也跑在 debug 模式，会打印路由表、每个请求一行
@@ -270,9 +277,9 @@ cargo run --bin mail-test -- 你的邮箱@example.com
 > 注册时的角色**只由邀请码上的 `grant_role` 决定**（默认 `user`），
 > 那条「带码注册即管理员」的权限漏洞已经堵上。
 >
-> ⚠️ **邀请码管理面板（发码 / 复制 / 导出 / 邀请链接 / 邮件发放）仍在 P1**。
-> P0-5 交付的是「能力」：CLI 与 HTTP 接口都能发码、带等级、带批次，
-> 界面那一层等 P1 的四个面板一起做。**你现在发码用 CLI**（见附录 C 的命令示例）。
+> ✅ **邀请码管理面板已在 P1 补上（2026-10-05）**：发码 / 一次性明文 / 复制全部 / 导出 CSV / 邀请链接 /
+> 整批发邮件 / 状态筛选分页 / 单张停用 / **按批停用** 都在个人中心的「邀请码」面板里（见 [5.0](#50-p1-施工计划2026-10-定案) 与
+> [附录 C](#附录-c进度记录)）。**CLI 仍然可用**，而且批量脚本化时它比界面方便。
 
 **现状（改造前，留档以免重复踩）**：只有 `user` / `admin` 两种字符串；`users.role` 是 TEXT 字段（`migrations/0001_init.sql:17`，注释里写了「预留：user / admin / ...」），所以**加角色不需要改表结构**。
 
@@ -338,8 +345,11 @@ ALTER TABLE invite_codes ADD COLUMN batch_id   TEXT NOT NULL DEFAULT '';      --
 
 | 类型 | 格式 | 谁能发 | 兑换结果 |
 |---|---|---|---|
-| 普通邀请码 | 16 位 Base32（如 `7K3M9QRT2XWZ5BHD`） | 超管 | `role = 'user'` |
+| 普通邀请码 | 16 位（字符表 **A-Z 与 0-9**，如 `7K3M9QRT2XWZ5BHD`） | 超管 | `role = 'user'` |
 | 管理员码 | `ADMIN-` + 16 位（如 `ADMIN-7K3M9QRT2XWZ5BHD`） | 超管 | `role = 'admin'` |
+| 自定义码 | 超管自己定的 16 位（同一套字符表） | 超管 | 按 `grant_role` |
+
+> ⚠️ 2026-10-05 用户定案：**邀请码只要 A-Z 与 0-9**。此前随机生成用的是 Crockford Base32（排除 I/L/O/U 这套易混字符），已改掉 —— 生成与手填现在共用同一张 36 字符表。改表**不影响已发出的码**（兑换一律查库），老库里 Crockford 时代的码照样有效。
 
 > ⚠️ 前缀是**给人看的**（方便你一眼分出手上这张码的分量），**不是安全边界**——真正的判定永远是查库读 `grant_role`。规范化时**绝不能抹掉 `-`**（`core/invite.rs:37` 有明确警告）。
 
@@ -374,7 +384,48 @@ cargo run --release --bin invite -- disable 12
 
 ## 5. 管理面板设计
 
-### 5.1 放在哪里（一个需要你拍板的取舍）
+### 5.0 P1 施工计划（2026-10 定案）
+
+> **状态：四批全部完成（2026-10-05）** —— 代码清单、实测数字与交接事项见 [附录 C](#附录-c进度记录) 的 P1 段。
+> 唯一没做的：**在真浏览器里人工点一遍**（面板已过 API 端到端 45 项 + 静态检查 + 桩 DOM 46 项断言三层验证）。
+
+**定案（本轮与用户逐条敲定，取代本节原先的待确认项）**
+
+| 问题 | 定案 |
+|---|---|
+| 界面放哪 | **全部搬进个人中心**（`account/`）——用户中心里直接就是管理界面，不取「入口卡片 + `/admin/`」的折中。`/admin/` 保留学科后台（英语词条管理）；代价是个人中心要补一套表格/徽标/分页样式（见批 3） |
+| 看板跨库取数 | **Go 侧聚合，且求「请求尽量少」**：Go **只读**打开 `auth.db`（用户 / 邀请码漏斗）+ 自己的 `guangxue.db`（复习量 / 活跃 / 新学），**看板 1 个请求出全部数字**；用户列表用 **2 个并行请求**（Rust 出用户表——治理数据的唯一来源；Go 出当页批量进度），刻意不让 Go 也读用户表，否则会多出第二份「谁是超管」的判定 |
+| 邀请码必填怎么告知前端 | 新增**公开**接口 `GET /api/auth/config` 返回 `{require_invite}`，注册表单据此标必填并写「没有邀请码？暂时无法注册」 |
+| 审计保留期 | **180 天**（`AUTH_AUDIT_RETENTION_DAYS` 可配），启动时清理一次 + 每 24 小时清理一次 |
+| 整批发邮件 | 代码本轮做完（含 log 模式验收），**真发等 SMTP 授权码**：拿到后只需改 `.env` 再跑一遍 `mail-test` |
+| 顺带项 | 修 `admin/index.html` 那条过时的安全横幅 ✅、管理员看用户列表时**服务端脱敏邮箱** ✅、审计保留期 ✅ |
+
+**四批交付（每批独立验收）**
+
+1. **Rust 接口**：`GET /admin/audit`（按 action / 时间 / 分页筛选，同响应带 `actions` 去重列表，省掉前端第二个请求）、`POST /admin/invite-batches/{batch_id}/disable`、`POST /admin/invite-mail`、`POST /admin/users/{id}/logout-all`、邀请码列表附带兑换记录（谁用了 / 邮箱）、用户列表加关键词搜索 + 脱敏 + 放开给管理员只读、审计清理任务、`GET /api/auth/config`。
+   > ⚠️ **路径与计划草案不同**：按批停用与整批发邮件**没有**写成 `invites/batch/...` 与 `invites/email` —— 那样静态段会和 `invites/{id}` 落在同一层，症状是一类解释不清的 404。最终用 `invite-batches/{batch_id}/disable` 与 `invite-mail`。
+2. **Go 接口**：`AUTH_DB_PATH` + 只读打开 `auth.db`（**库缺失 / 读不到时降级**，不让看板整页 500）、`/api/admin/stats/overview`、`/api/admin/stats/trend?days=`、`/api/admin/users/progress?ids=`、`/api/admin/users/{id}/progress`；`/api/admin/*` 挂 `RequireAdmin`（放行 `admin` 与 `super_admin`）；`deploy/systemd/guangxue-api.service` 加 `ReadOnlyPaths=/opt/guangxue/backend-rust`（把「只读」从自觉变成 systemd 层面的**显式保证**）。
+   > ⚠️ 更正一条我先前的说法：这行**不是**读权限的来源（`ProtectSystem=strict` 本来就允许读那个目录），
+   > 线上看板账号侧**全是 0 的真正原因是 `AUTH_DB_PATH` 配错或账号服务没起来** —— 默认值 `../backend-rust/auth.db` 只在 `WorkingDirectory` 对得上时才成立，
+   > 所以 Go 启动时会检查这个路径并打告警（`StartupWarnings`）。
+3. **前端面板**：新增 `admin/panels/{invites,users,audit,dashboard}.js`（导出 `meta` + `mount(container, ctx)`，ES5，与 `modules/english/admin/english-admin.js` 同一套契约，`/admin/` 以后也能挂同一份）+ 共用样式 `admin/panels/panels.css`（前缀 `pn-`，个人中心引它）；`account/account.js` 改 ES module、「管理」导航组按角色渲染、`?invite=` 预填；`account/index.html` 修正注册文案（「填了可升级为管理员」在 P0-5 之后已不成立）。
+4. **落档**：本文件附录 C 加 P1 段、[`admin-api.md`](admin-api.md)、[`backend-auth.md`](backend-auth.md)、[`admin/README.md`](../admin/README.md)、根 `README.md`、`backend-go/README.md`、`backend-rust/README.md`、`backend-go/.env.example`，以及 **`scripts/verify-auth.ps1` 补 18 项 P1 检查**。
+
+**口径（先钉死，免得三个服务各算一套）**
+
+- 「今日」一律按**北京时间**切天：`auth.db` 的 `created_at` 是 ISO8601 **UTC** 文本，`guangxue.db` 的 `reviewed_at` 是 `time.Time`，不显式钉时区两个库必然对不上；
+- 今日新学 = 当天 `stability_before = 0` 的日志数、今日抽查 = 当天 `is_probe`、今日活跃 = 当天有 `review_logs` 的 distinct `user_id`（沿用既有口径）；
+- 邮箱脱敏在**服务端**做（管理员看 `a***@qq.com`，超管看全），不是只做界面；
+- 面板**零动效**，沿用现有 CSS 过渡（第 8 节红线不变）。
+
+---
+
+### 5.1 放在哪里（✅ 已定案：全部搬进个人中心，见 5.0）
+
+> 下面这段是当初的取舍分析，留档说明「为什么后来还是搬了」：用户 2026-10 选择**全部搬进用户中心**，
+> 于是第 8 节里「新增 `admin/panels/*.js`」的模块位置仍然成立（面板做成壳无关的通用模块），
+> 但它们的**入口与样式留在 `account/`**，`/admin/` 只留学科后台。
+
 
 你的原话是「**在用户中心**为管理员添加一些不一样的功能」。我建议的实现是：
 
@@ -489,9 +540,9 @@ Nginx 配置（`server_name test.lovezmx.com`、`/api/auth/` → 8081、`/api/` 
 | `AUTH_ALLOWED_ORIGINS=https://test.lovezmx.com` | **两个 `.env` 都要改**；漏配 = 所有写请求 403（它同时是 CSRF 白名单与 CORS 依据） |
 | `AUTH_COOKIE_SECURE=true` | 由 `APP_ENV=production` 自动带上；本地 http 调试时别开，否则 Cookie 收不到 |
 | HSTS + certbot 自动续期 | `add_header Strict-Transport-Security "max-age=31536000" always;` |
-| `limit_req` | 在 Nginx 层再挡一道注册/发码接口的脚本扫描 |
-| Gin 生产模式 | ⚠️ `backend-go/routes/routes.go:11` 目前没按 `APP_ENV` 切 `gin.ReleaseMode`，会一直刷调试日志，上线前补 |
-| 监听地址收回环 | Go 默认 `SERVER_HOST=0.0.0.0`（Rust 已是 `127.0.0.1`），改成 `127.0.0.1` 只让 Nginx 访问 |
+| `limit_req` | ✅ 已落地（P2）：模板里两条 `limit_req_zone`（`gx_auth` 30r/m、`gx_api` 300r/m，按 `$binary_remote_addr`）+ `limit_conn`，都回 429。**同时修掉 XFF 伪造**：`proxy_set_header X-Forwarded-For $remote_addr`（原来用 `$proxy_add_x_forwarded_for`，客户端伪造的值会留在最前面，而 `client_ip()` 取第一个 → 可绕过全部按 IP 的限流） |
+| Gin 生产模式 | ✅ 已落地（P0-4）：`backend-go/routes/routes.go` 的 `ginMode(cfg.Env)` 只在**小写 `production`** 时切 `ReleaseMode`（刻意不把拼错的大小写当生产，否则「本机日志突然消失」会变成查不出来的问题） |
+| 监听地址收回环 | ✅ 已落地（P2 文档）：`backend-go/.env.example` 与生产清单都写明 `SERVER_HOST=127.0.0.1`。这不只是洁癖 —— `client_ip()` 信任 `X-Forwarded-For` 的前提就是「外面只有 Nginx」，8080 直接暴露时伪造 XFF 即可绕过按 IP 的限流；Go 启动时对「生产却监听非回环」有告警 |
 | 静态文件同步 | 生产不再用 `dev-server.js`：`rsync` 到 `/var/www/test.lovezmx.com/frontend`，或把 `root` 直接指到仓库目录 |
 | systemd 两个 unit | README 里只有「怎么启动」，没有守护；补 `guangxue-auth.service` / `guangxue-api.service`（`Restart=always`） |
 
@@ -518,14 +569,26 @@ AUTH_MAIL_MODE=smtp
 AUTH_SMTP_*=...
 AUTH_DEV_ENDPOINTS=false
 AUTH_ADMIN_PASSWORD=<改成强密码>
+AUTH_AUDIT_RETENTION_DAYS=180
+# 限流（P2，可省：不写就用默认值。格式「次数/窗口秒」，0/0 关闭这一条）
+AUTH_RL_LOGIN_IP=200/900
+AUTH_RL_CODE_IP=200/3600
+AUTH_RL_REGISTER_IP=100/3600
+AUTH_RL_CODE_EMAIL_MINUTE=1/60
+AUTH_RL_CODE_EMAIL_HOUR=5/3600
 
 # backend-go/.env
 SERVER_HOST=127.0.0.1
 SERVER_PORT=8080
 DB_PATH=/var/lib/guangxue/guangxue.db
+# ⚠️ 看板要读**同一个** auth.db：两边都叫 AUTH_DB_PATH，但含义不同 ——
+#    Rust 那份是「写在哪」，Go 这份是「只读地从哪读」。写错的表现是「看板账号侧全是 0」。
+AUTH_DB_PATH=/var/lib/guangxue/auth.db
 ```
 
 > ⚠️ 改 `AUTH_JWT_SECRET` 会让所有已登录用户掉线——**上线后就别改了**（改的话两边一起改 + 重启两个服务）。
+> 监控的 `MONITOR_*`（告警收件人、两个探活地址）写在 `deploy/systemd/guangxue-monitor.service` 里，不进 `.env`；
+> 见第 14.3 节与 runbook 的「监控与告警」。
 
 ### 9.3 备份（每天 03:00）
 
@@ -563,10 +626,10 @@ DB_PATH=/var/lib/guangxue/guangxue.db
 | **M0** | P0-1 进度按人隔离 | 新增多用户隔离测试通过；`pwsh scripts/verify.ps1` 全绿；`scripts/verify-auth.ps1` 加两条互不可见用例 |
 | **M1** | P0-5 + P0-2 角色与邀请制 | Rust/Go 两侧角色判定一致（联调脚本覆盖 `super_admin` 发码、`admin` 发码被拒、无码注册被拒） |
 | **M2** | P0-3 邮件 | 真实邮箱收到验证码并完成注册（🟡 现在可先用 `cargo run --bin mail-test -- 邮箱` 验收到「服务器已接收」这一步；还差最后一封到收件箱） |
-| **M3** | P0-4 部署 | 公网 https 全链路可用；重启自愈；备份产物可恢复（🟡 代码侧与部署产物已就绪，见 [`deploy-runbook.md`](deploy-runbook.md) 第 9 步的上线清单） |
-| **M4** | P1 管理面板 | 超管能在界面上发一批码、提升一个管理员、封一个号、查到对应审计 |
+| **M3** | P0-4 部署 | 公网 https 全链路可用；重启自愈；备份产物可恢复（🟡 代码侧与部署产物已就绪，见 [`deploy-runbook.md`](deploy-runbook.md) 第 10 步的上线清单） |
+| **M4** | P1 管理面板 ✅ 已完成（2026-10-05） | 超管能在界面上发一批码、提升一个管理员、封一个号、查到对应审计。接口侧已由 `scripts/verify-auth.ps1` 的 18 项 P1 检查覆盖；**界面侧还差你在真浏览器里点一遍**（见附录 C 的交接） |
 | **M5** | 放人（10 → 50 → 上百） | 每批观察 3 天：注册转化、复习留存、错误日志、备份是否正常 |
-| **M6** | P2 配额服务端化 + 限流调参 + 监控告警 | — |
+| **M6** | P2 配额服务端化 + 限流调参 + 监控告警 ✅ 已完成（2026-10-05） | 配额其实早在单一循环池改造时就服务端化了（本轮补测试与口径）；限流已可配并重算、Nginx 补 `limit_req`、修掉 XFF 伪造；新增深度健康检查与 `guangxue-monitor` 邮件告警（**告警通道要按 runbook 演练一次**）。见 [14](#14-p2配额口径限流与监控2026-10-定案-已完成) |
 
 **M5 的放人节奏很重要**：先 10 个人（能一天内问遍每一个人的体验），再 50，再放开。上百人一次性涌入，出问题时你连「谁卡在哪一步」都不知道。
 
@@ -598,10 +661,94 @@ DB_PATH=/var/lib/guangxue/guangxue.db
 1. **域名确认**：继续用 `test.lovezmx.com`（README 里已有配置），还是要换成正式域名？（换的话我要把 Nginx 与两份 `.env` 里的地址一起改）
 2. **服务器系统与规格**？（Linux 发行版、内存、有没有独立数据盘——决定备份往哪写；我按 Linux + systemd 出部署脚本与 unit 文件）
 3. **邮件通道**：先 B（QQ/163 授权码，1 小时能通）还是直接上 A（云邮件推送，要备案）？
-4. **管理面板位置**：接受「用户中心放入口卡片 + 界面留在 `/admin/`」这个折中吗？还是坚持全搬进用户中心（多 1~2 天）？
+4. **管理面板位置**：✅ **已定（2026-10）——全部搬进用户中心**，见 [5.0](#50-p1-施工计划2026-10-定案)；`/admin/` 只保留学科后台。
 5. **要不要封禁功能**？（我列进了 P1，但如果你觉得用不上，可以从本期砍掉，少一块状态判定）
 6. **第一个管理员给谁**？（除了你自己，还有没有要一起管内容的人——这决定 M1 要不要连「管理员码」一起做，还是先只做「后台提升」）
 7. **放人节奏**：按 10 → 50 → 上百 三批走，还是你想一次放开？
+
+---
+
+## 14. P2：配额口径、限流与监控（2026-10 定案，✅ 已完成）
+
+> **状态：三项全部完成（2026-10-05）。** 其中配额的**代码**其实是 2026-10-02 单一循环池改造时就落地的
+> （[`review-pool-plan.md`](review-pool-plan.md) 的 D14/D15），本轮只补了测试与过时口径；
+> 真正的新工作是「限流真的可配 + 按上百人重算」与「监控告警」。
+> 实测数字与交接见 [附录 C](#附录-c进度记录) 的 P2 段。
+
+**定案（2026-10 与用户逐条确认，三个问题都选了推荐项）**
+
+| 问题 | 定案 |
+|---|---|
+| 「每日配额」要不要服务端**强制**？ | **不强制**。保持 D14/A2 的既有设计：今日 5 个是**排序权重**（置顶、按稳定哈希选），继续复习不受限。本轮只把过时文档改对 + 补一条「客户端什么都不传时服务端也算得对」的测试 |
+| 限流按什么口径重算？ | **严在账号、宽在 IP**。IP 是共享资源（校园 / 公司 / CGNAT 出口后面站着几十上百人），账号（邮箱 + 密码错误次数）才是身份 |
+| 监控告警怎么做？ | **深度健康端点 + 复用账号服务的 SMTP 发告警邮件**（systemd timer 每 5 分钟）。磁盘余量与备份新鲜度**本轮不做**（明确的不做项，见下） |
+
+### 14.1 配额：口径更正 + 一条测试（无功能改动）
+
+- 事实：前端已无配额账 —— `modules/english/english.js` 顶部注释即写明「单一循环池之后，这里不再有配额账」，
+  旧的 `PLAN_KEY` / `loadTodayPlan` / `markPlanDone` / `remainingQuota` / `probedIdsInCooldown` 已无引用，
+  `localStorage.reviewDailyPlan` 不再写入。今日进度 = 服务端 `stats.daily_done` + 本会话增量；
+  「今日 5 个」与「今日完成几个」都由 `backend-go/handlers/review_handlers.go` 的稳定哈希算
+  （`dailyWordCount = 5` / `dailyWordIDs` / `countTodayDaily`）。
+- 剩下的 localStorage 只有两件**本该在本地**的东西：自动朗读开关、沉浸模式开关。
+- 时区口径：`poolTZName = "Asia/Shanghai"`（`review_handlers.go`，注释明确「**不要**改成 Local」）。
+  客户端可以传 `?today=YYYYMMDD` 指定自己的自然日 —— 它只影响「今天哪 5 个被置顶」；
+  因为配额不强制，所以不构成「换个日期就多刷一轮」的漏洞。
+- 本轮补的测试：`backend-go/handlers/review_stats_test.go` 证明**客户端什么都不传时** `daily_target` 恒为 5、
+  提交一张 daily 卡后 `daily_done` 由 0 变 1。
+- ⚠️ 与 P1 看板的口径差异：看板的「今日新学」只判 `stability_before = 0`，而 `/api/reviews/stats` 的 `today_new`
+  还排除 `is_reset` —— 「重置重学」多的日子两个数字会不一样（两处注释互相指认，别当成 bug）。
+
+### 14.2 限流：先让 `AUTH_RL_*` 真的可配，再按上百人重算
+
+- ⚠️ **修掉一条「帮助文本在撒谎」**：`main.rs --help` 里列着 `AUTH_RL_*`，但 `config.rs` 里**一行解析都没有** ——
+  「调参」此前只能改代码重编译。本轮把五条规则全部接成环境变量，格式 `次数/窗口秒`，`0/0` 关闭；
+  格式写错**拒绝启动**并点名变量（静默退回默认值的症状是「明明放宽了却还被 429」，最难查）。
+- 新旧默认值（口径：严在账号、宽在 IP）：
+
+| 变量 | 旧 | 新 | 为什么 |
+|---|---|---|---|
+| `AUTH_RL_LOGIN_IP` | 20/900 | **200/900** | 早高峰上百人登录，20 次/15 分钟会被自己人打满 |
+| `AUTH_RL_CODE_IP` | 20/3600 | **200/3600** | 同上；注册当天会集中发码 |
+| `AUTH_RL_REGISTER_IP` | 10/3600 | **100/3600** | 校园 / 公司出口 IP 后面可能一次来几十个新生 |
+| `AUTH_RL_CODE_EMAIL_MINUTE` | 1/60 | 1/60（不变） | **账号维度**，这才是要卡死的地方 |
+| `AUTH_RL_CODE_EMAIL_HOUR` | 5/3600 | 5/3600（不变） | 同上 |
+| `AUTH_LOCK_THRESHOLD` / `AUTH_LOCK_MINUTES` | 5 / 15 | 不变 | 密码连错锁定；落库，重启不失效 |
+
+- 启动横幅现在会打印**实际生效**的限流值（「我明明改了啊」不该靠再读一遍配置文件来查）。
+- ⚠️ **顺带修掉一个真漏洞**：Nginx 原来用 `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for`，
+  它把**客户端自己发来的 XFF 留在最前面**；而 `client_ip()`（`backend-rust/src/http/middleware.rs`）
+  取的是第一个值 → 伪造 XFF 即可绕开所有按 IP 的限流。改成 `$remote_addr`（单层代理场景的权威值），
+  并在模板里写明「将来前面加了 CDN，要改用 `set_real_ip_from` + `real_ip_header`，别无脑信任 XFF」。
+- Nginx 再加一层粗粒度限流（应用里的限流是**单进程内存**、重启清零、多实例各算一份）：
+  `limit_req_zone` 两条（`gx_auth` 30r/m、`gx_api` 300r/m，按 `$binary_remote_addr`）+ `limit_conn` 兜底，
+  都回 **429**（与应用一致）；两层分工写在模板注释里。
+- ⚠️ 生产必须让两个服务只监听回环（Go 的 `SERVER_HOST=127.0.0.1`、Rust 的 `AUTH_HOST=127.0.0.1`）：
+  `client_ip()` 信任 XFF 的前提就是「外面只有 Nginx」。Go 启动时对「生产却监听非回环」有告警。
+
+### 14.3 监控：深度健康 + 邮件告警
+
+- 两个服务新增**深度**健康检查（`?deep=1`）：`GET /api/health?deep=1`（Go）与 `GET /api/auth/health?deep=1`（Rust）。
+  深检真查一次库（Rust：数一次 `users` 行 + 读 `PRAGMA user_version`；Go：`SELECT 1` + 账号库可用性 + 迁移版本），
+  不健康回 **503**。浅检（不传参数）形状不变，继续供 Nginx / dev-server 探活。
+  账号库读不到**不算**不健康（沿用 P1 的降级口径）。
+- 新增 `backend-rust/src/bin/monitor.rs`（二进制 `guangxue-monitor`）：请求两个深检端点，**只看状态码**；
+  本轮结果与上一轮状态文件比较，**只在状态变化时发信**（开始故障 / 已恢复），持续故障每 6 小时重发一次。
+  退出码 **0 = 健康 / 1 = 不健康**，于是 `systemctl --failed` 也能看到。
+  它**手写 HTTP 请求**（`std::net::TcpStream`）而不是引入 HTTP 客户端库：探活只要「发一个 GET、读第一行状态码」，
+  为此拉进 reqwest / hyper 一整棵依赖树不划算；代价是只支持 `http://`、不跟随重定向
+  （公网 HTTPS 入口交给外部 uptime 服务）。
+- 发信复用账号服务那一套 SMTP 配置（`Mailer` trait 新增 `send_notice`）：于是「告警能发出去」与
+  「注册能收到验证码」是同一个前提；`AUTH_MAIL_MODE=log` 时告警只写日志（命令会明确提示这一点）。
+- 新增 `deploy/systemd/guangxue-monitor.{service,timer}`：`OnCalendar=*:0/5`，
+  **刻意不设 `Persistent=true`**（探活不是备份；补跑只会先发一封假告警再发一封「已恢复」）。
+  状态文件在 `/var/lib/guangxue-monitor/`（systemd 的 `StateDirectory=` 自动建好并授权给服务用户）。
+- ⚠️ **告警通道必须演练**：runbook 的「监控与告警」一节写了「停掉账号服务 → 收到告警 → 起回来 → 收到恢复」的步骤。
+  **没验过的告警通道等于没有监控。**
+- ⚠️ **本轮不覆盖**（明确的不做项）：**磁盘余量**与**备份新鲜度**。它们同样属于「悄悄坏掉」，
+  真要加就是在 monitor 里再加两个检查函数 + 两个阈值环境变量；在那之前，备份是否真的在跑仍靠人工核对（runbook 第 7 步）。
+- 机器整体挂掉（或 Nginx 挂掉）时 monitor 自己也喊不出来 → runbook 建议再挂一个**外部 uptime 服务**打
+  `https://<域名>/healthz`（Nginx 直接回 ok、不碰后端，能发现「机器 / 网络 / Nginx 死了」）。
 
 ---
 
@@ -708,7 +855,7 @@ DB_PATH=/var/lib/guangxue/guangxue.db
 
 **刻意没做（不是遗漏）**
 
-1. **前端邀请码框没改成必填**：你选的「先不动前端」。服务端是唯一安全边界，界面只影响用户是否提前知道要填码 → 跟 P1 一起改。
+1. **前端邀请码框没改成必填**：你选的「先不动前端」。服务端是唯一安全边界，界面只影响用户是否提前知道要填码 → **✅ 2026-10-05 已随 P1 改完**（`GET /api/auth/config` 决定标签与提示，发码与注册前各本地拦一次）。
 2. **按 `grant_role` 赋角色留在 P0-5**：那一列由 P0-5 的 `0002_launch.sql` 引入。
    ✅ **2026-10 已由 P0-5 补齐**（见下一条记录）。
 
@@ -779,3 +926,144 @@ DB_PATH=/var/lib/guangxue/guangxue.db
 3. **管理员的只读用户列表**：权限矩阵里写了「管理员 ✅（只读）」，但这次 `GET /admin/users` 只放给超管。
    理由是「只读用户列表」属于 P1 面板的功能，等面板做的时候再按矩阵放开（接口已经就绪，改准入即可）。
    **所以做完 P0-2 并不等于有了三级角色**，别把这两件事混起来。
+
+---
+
+### ✅ P1 管理面板（已完成，2026-10-05）
+
+**你逐条选定的五条**（见 [5.0](#50-p1-施工计划2026-10-定案)）：
+
+1. 面板位置 = **四个面板全部搬进个人中心**（`account/`），`/admin/` 从此只做内容管理；
+2. 跨库取数 = **尽可能少的前端请求** → 看板 **1 个请求**出全部数字、用户列表 **2 个请求**（Rust 出用户表 + Go 出当页批量进度），刻意**不让 Go 也读用户表**（否则会多出第二份「谁是超管」的判定）；
+3. 邀请码面板 = 全选（生成 + 一次性明文 + 复制全部 / 列表筛选分页 + 单张停用 + 按批停用 / 导出 CSV / 邀请链接 / **整批发邮件**）；
+4. 用户管理 = 全选（改角色 + 封禁解封 / 强制下线 / 点开看复习进度 / 管理员**只读**用户列表）；
+5. 顺带项 = 全选（修 `admin/` 过时横幅 / 管理员看用户列表时**服务端脱敏邮箱** / 审计保留期）。
+
+**口径（钉死，改之前先回来看这段）**：「今日 / 按天」一律按**北京时间（UTC+8）**切天；今日新学 = `stability_before = 0`、今日抽查 = `is_probe`、今日活跃 = 当天有 `review_logs` 的 distinct `user_id`；邮箱脱敏在**服务端**做；面板**零动效**（第 8 节红线）；Go **只读**打开 `auth.db`，读不到时降级显示而不是报错。
+
+**批 1：Rust 侧接口（✅ 已完成）**
+
+- 模型（`models.rs`）：`UserPublic.last_login_at`、`InvitePublic.uses`（每张码最多回 3 条兑换记录，`INVITE_USES_SHOWN=3`）、`AuditRow`/`AuditPublic`（多带 `actor_email`）、`InviteUseRow`/`InviteUsePublic`。
+- SQL（`store/sql.rs`）：`AuditFilter{action,actor_user_id,from,to}`（`WHERE_CLAUSE` 四个参数位始终绑定，时间列是定宽 UTC 文本 → 字符串比较就是时间序）、`count_audit`/`list_audit`（`LEFT JOIN users` 取操作者邮箱）/`distinct_audit_actions`/`prune_audit_before`、`disable_invites_by_batch`（`disabled = 0` 幂等）、`count_invites_in_batch`、`list_invite_uses`、`list_users` 加 `keyword`（拼 LIKE 前先剔掉 `%` 与 `_`）。
+- 服务（`service.rs`）：`list_audit`（连动作清单一起回）、`prune_audit`、`disable_invites_by_batch`（审计 `invite_disable_batch`）、`revoke_user_sessions_admin`（`revoked_reason="admin_revoke"`，审计 `user_logout_all`）、`send_invites_by_email`（**一对一配对**、≤50 条、逐封独立、只发未使用的码、审计 `invite_email` **只记 id 与统计**）。
+- 邮件：`Mailer::send_invite`（`expires_hint` 由服务层排版）；`LogMailer` 也能取回明文口令码，联调不必真发信。
+- 配置：`AUTH_AUDIT_RETENTION_DAYS` 默认 **180**（`0` = 永不清理）；`main.rs` 启动时清一次 + 每 24 小时一次（`interval` 的第一次 tick 立即返回，正好当启动清理用）。
+- 路由：**公开** `GET /api/auth/config`；超管 `GET /api/auth/admin/audit`、`POST /api/auth/admin/invite-batches/{batch_id}/disable`、`POST /api/auth/admin/invite-mail`、`POST /api/auth/admin/users/{id}/logout-all`；`GET /api/auth/admin/users` 放开给**管理员**（只读 + 非超管邮箱脱敏 + `email_masked`）。
+- ⚠️ **路由命名**：按批停用没有写成 `invites/batch/...`、发邮件没有写成 `invites/email` —— 那样静态段会和 `invites/{id}` 落在同一层，症状是一类解释不清的 404。
+- 实测：`cargo test --all-targets` **198 项全过**（P1 新增 `tests/audit.rs` **15 项**：公开开关、审计列表/筛选/时间范围、超管专属、保留期清理、按批停用幂等、脱敏、强制下线、逐封发信与坏输入；`tests/invite.rs` 里另加**自定义码 6 项**，见下面那条补记）。
+- 踩坑：① `crate::db::parse_ts` 返回的是 `Option` 不是 `Result`；② 审计动作名是 **`login_ok` / `login_fail`**（没有 `login`）—— 面板的下拉直接吃这个清单，测试里就栽过一次。
+
+**批 2：Go 侧统计（✅ 已完成）**
+
+- 新增 `backend-go/database/authdb.go`：只读账号库访问层，DSN 是 `file:<绝对路径>?mode=ro&_pragma=busy_timeout(5000)`。
+  - ⚠️ **必须带 `mode=ro`**：实测不带它时，打开一个**不存在的路径会凭空创建空库**（于是看板「读得到、但账号侧全是 0 且没有表」）；带上之后，不存在的路径直接报错并且**不创建文件**。
+  - 惰性打开、**失败不缓存**（账号服务重启后自愈）、任何失败只返回 `*AuthDBUnavailableError` 交给 handler 降级 —— 绝不 panic、不影响 Go 服务启动。
+- 新增 `backend-go/handlers/admin_stats.go`（四个 handler）与 `routes.go` 的 `/api/admin` 分组（整组 `RequireAdmin`）。
+- `config.go` 新增 `AuthDBPath`（`AUTH_DB_PATH`，默认 `../backend-rust/auth.db`），并在 `StartupWarnings` 里加一条：这个路径读不到就在启动时喊一声。
+- `deploy/systemd/guangxue-api.service` 加 `ReadOnlyPaths=/opt/guangxue/backend-rust`（**显式只读保证**，不是读权限来源），`deploy-runbook.md` 的 `.env` 清单补 `AUTH_DB_PATH`。
+- **路由冲突是实测过的**：gin 1.9.1 下 `/users/progress` 与 `/users/:id/progress` 两种注册顺序都**不 panic**，两条各走各的处理器（`tree.go` 里 `skippedNodes` 回溯那套），所以保留了计划里的路径形状，并用 `TestRouterAdminProgressPathsCoexist` 钉住（批量看响应里有没有 `items`、单看有没有 `last7`）。
+- ⚠️ **跨库时间的字典序陷阱**：`guangxue.db` 的时间是带自身偏移的文本（形如 `2026-10-03 17:27:36.1460602+08:00`），拿 UTC 边界直接比字典序会**排错先后** → SQL 只做**放宽两天**的粗筛（覆盖 −12:00~+14:00 的文本差，只多不漏），精确判定在 Go 侧按真实时间点做；另外 `MAX(reviewed_at)` 会被驱动当**文本**返回，必须扫成 `*string` 再解析（扫进 `*time.Time` 会得到零值而不报错）。
+- 实测：`go test ./... -count=1` 各包 ok（新增 25 个 Test 函数）、`go vet ./...` 干净。
+- 口径提醒：`today.new_words`（按定案只判 `stability_before = 0`）与 `/api/reviews/stats` 的 `today_new`（还排除 `is_reset`）**在「重置重学」多的日子会不一样**，两处注释互相指认。
+
+**批 4：验证与落档（✅ 已完成）**
+
+- `scripts/verify-auth.ps1` 新增第 9 段 **18 项** P1 检查；脚本总计 **45 项、0 失败、7.2 秒**（P2 又加了第 10 段 10 项；再往后 P1 补了「重置已用过的码」与「自定义码」两组、末尾又补了 3 条样式断言，**现在总计 71 项、0 失败**）。覆盖：公开开关、审计（匿名 401 / 普通用户 403 / 超管 200 且 `actions` 含 `login_ok` / `from=YYYY-MM-DD`）、一次生成 2 张且同批次、按批停用与幂等、整批发邮件（`sent=2 failed=0 mail_mode=log`）、用户列表 keyword 搜索 + `email_masked=false` + `last_login_at`、批量与单人进度、匿名读看板 401、看板聚合（账号侧 2 个用户 / 今天 2 条复习）、趋势 7 个点、强制下线、重置已用过的码（`cleared` 三段口径）、自定义码（位数报错 / 转大写抹横杠 / 永不过期 / 撞码 409 / 确认沿用 / 沿用后再用掉）。
+- ⚠️ 两条断言是**按实际行为**（而不是我原先的想当然）改写的，值得记住：
+  1. **注册不会更新 `last_login_at`**（注册时的自动登录不走 `login` 那条路）→ 断言改成「字段在」，另外用「刚登录过的管理员那行有值」来证明这个字段真会被写；
+  2. **强制下线只能立刻踢掉账号侧**：Go 是本地验签、不查库，所以同一个 Cookie 打 Go **仍然 200**，直到 access 令牌过期（默认 900 秒）。这是阶段 2 就写进文档的已知限制，现在把它**显式测出来**（而不是留一句「应该会 401」），免得以后误以为「点了强制下线 = 全站立刻失效」。
+- 文档同步：`docs/backend-auth.md`（权限矩阵、管理接口表、审计保留期、**样式共用口径的更正**）、`docs/admin-api.md`（管理面板已搬到个人中心 + 面板契约）、`admin/README.md`、根 `README.md`、`backend-go/README.md`、`backend-rust/README.md`、`backend-go/.env.example`。
+- ⚠️ **更正一条我先前的说法**：`ReadOnlyPaths` **不是**读权限的来源（`ProtectSystem=strict` 本来就允许读那个目录），线上「看板账号侧全是 0」的真正原因是 **`AUTH_DB_PATH` 配错**或账号服务没起来。
+
+**还没做的（交接给下一次）**
+
+- **在真浏览器里人工点一遍**：面板的取数与渲染已经过三层验证 —— ① API 端到端（当时脚本 45 项 P1+跨服务，P2 后总计 55 项，加了「重置」「自定义码」与样式断言后 **71 项**）、② 静态检查（`pn-` 类名全部有定义 / 调用的接口全对得上路由表 / 0 处箭头函数·let·const·模板串 / 0 处动效 API）、③ 桩 DOM 里真跑 `mount()`（46 项断言，含降级与按钮 URL）——**但没有在真浏览器里人工点过**。请打开 `/account/#/invites` 走一遍：自定义一串 16 位码（勾「永不过期」、每张 1 次）→ 生成 → 复制 → 拿同一个串再点一次（应弹「已经用过，是否沿用」）→ 停用一张 → 整批停用 → 发邮件（log 模式只写日志）。
+- 面板遇到 401 只提示、**不主动刷新登录态**（侧栏仍停在已登录布局）；会话中被改角色，按钮显隐要刷新页面才变（服务端仍然会拦）。
+
+**补记：自己指定邀请码（2026-10-05，用户原话「不是我希望可以定制邀请码 就是我自己想一个16位的邀请码并设计时间等和触发条件等 不如说不过期但是只能使用一次」）**
+
+> 起因：「邀请码添加可以固定设置功能 再加一个判断 若邀请码已经用过是否无视分险」这句被**误读**成「让生成表单记住上次填的那套值」，
+> 连问两次都没问出来（用户当时没答），于是先按误读做了一版。用户随后把意思说清楚了，才有了这一段。
+> 那次误读的教训写在最后，值得留档。
+
+- **用户要的其实是三件事**：① 生成时能**自己指定一串码**（16 位）；② 有效期要能选**不过期**；③ 已被用过的码要能「无视风险继续用」，但要**先提醒**。
+- **后端本来就支持一半**：`service.rs` 里 `expires_in_days <= 0 → None`（= 永不过期）早就写着，只是**界面没给这个入口**；「只能用一次」= `max_uses: 1`，本来就是默认值。真正缺的只有「自己指定码」。
+- **码的形状**（`core/invite.rs` 新增 `normalize_custom_code` / `validate_custom_code`）：**正好 16 位**（与系统码同长同形）、只允许 `A-Z` 与 `0-9`；小写自动转大写、手写的 `-` 自动抹掉（`abcd-efgh-jklm-npqt` → `ABCDEFGHJKLMNPQT`）。
+  - ⚠️ **随机生成的码也一起放开了**（用户 2026-10-05 追加：「邀请码要 A-Z 和 0-9」）：`core/invite.rs` 的 `ALPHABET` 从 Crockford Base32（32 个字符、排除 I/L/O/U）换成 **36 个字符的 `0-9` + `A-Z`**。理由是不一致本身就是 bug —— 手填的码能用 `O`，系统发的却永远见不到 `O`，看起来像坏了。改表不影响已发出的码（兑换一律查库）；信息量从 80 bit 升到约 82.7 bit。代价与对策：随机码现在会出现 `O`/`I`，手抄容易看错，所以**不做**「O→0」这类自动纠正（那会把用户真写对的码改成另一个码，更难查），界面上一律用「复制」按钮。
+  - 锁这个字符表的测试是 `core/invite.rs` 的 `alphabet_covers_every_letter_and_digit`：生成 2000 张（32000 个字符位），断言 36 个字符**每个都出现过**且总共正好 36 种 —— 换回 32 字符表会立刻红（漏掉 I/L/O/U 的概率 ≈ 10^-386，不是靠运气过的）。
+  - 字母表与系统生成**完全一致**（2026-10-05 起两边都是 A-Z + 0-9）：`MYCODE1234567890` 这种含 O/0 的写法必须放行，随机码里同样会出现这些字符 —— 「我自己写的码能用 O，系统发的却永远见不到 O」这种不一致本身就是 bug。
+  - ⚠️ 两道检查**分开**且**长度在前**：`中文码1234567890` 只有 13 位，报的是「位数不够」而不是「字符不合法」；想测字符集必须拿一个长度正好 16 的串。测试里就栽过一次。
+- **撞码（这是用户那句话里「若邀请码已经用过是否无视风险」的落点）**：自定义的串在库里**已经存在**时 ——
+  - **不覆盖、也不新建**，回 **409 `invite_code_taken`**，`data` 里带 `{code, existing}`（那张码的状态 / 已用次数 / 谁用过）。这样前端面板能直接弹确认框，**不用多发一次查询**；
+  - 管理员点「继续」后带 `allow_existing: true` 重发才**沿用**：只改 `max_uses` 与 `expires_at`，**`used_count` / `disabled` / `grant_role` / 兑换记录一个字都不动**（`sql::update_invite_terms` 的注释里写了为什么：那些是这张码的身份，顺手改掉等于悄悄放宽已发出的凭据）；
+  - 响应带 `{custom, reused}`，面板据此说「已沿用这张已经存在的码」而不是「已生成」；
+  - ⚠️ **不能静默沿用**：手滑把一张已经发出去的码又「建」一遍，最坏的后果是以为新发了一张而把旧码重复给了人。默认拒绝、要人点头，才拦得住。
+  - ⚠️ **只对随机码重试撞码**：随机码撞了换一个再来（极小概率），自定义码撞了必须**如实报冲突** —— 重试只会把「你写的码已被占用」变成一句莫名其妙的「连续撞码」。
+- **前端**（`admin/panels/invites.js`）：生成表单加「自定义码」框（留空 = 随机生成一批；填了 = 只出 1 张，边打边转大写并抹掉 `-`，下方实时提示「将用这一串建 1 张：…」）+「**永不过期**」勾选框（勾上天数框禁用并置灰划掉标签，按 `expires_in_days=0` 提交）。
+  - ⚠️ 自定义码**不会**被加上 `ADMIN-` 前缀（前缀只在随机生成管理员码时加），所以界面上要靠列表里的「等级」列分辨 —— 提示文案里点明了这一点。
+  - 壳（`admin/admin.js` 的 `apiFetch` 与 `account/account.js` 的 `panelApi`）现在会把**服务端信封**挂在抛出的 error 上（`err.error` / `err.data` / `err.status`）：光有一句中文文案分不出「码被占用了」和「参数写错了」，而 409 那条路径要读 `existing`。
+- **命令行**（`cargo run --release --bin invite -- create --code <16位> [--allow-existing]`）：与面板走同一个 `InviteSpec` / 同一套校验，不在第二个入口重写一遍规则。
+- **实测**：`tests/invite.rs` 新增 6 项（形态 / 转大写抹横杠 / 永不过期真能注册 / 坏形状不落库 / 409 带现状 / 确认沿用只改额度 + `allow_existing` 的 HTTP 形状）；`verify-auth.ps1` 新增 6 项跨服务检查；端到端另跑过一遍完整场景（建 → 注册用掉 → 429 冲突 → 沿用 → 再注册）。
+- **教训（误读是怎么发生的）**：用户说「添加可以固定设置功能」时，把它读成了「表单要记住设置」，而用户指的是「**我要能固定下来一串自己定的码**」。两次追问都选了「用选项让我选」的形式，用户没答，于是按错的理解往下做了 —— 更稳的做法是：**把两种理解都写出来并列成选项**（「A：记住你上次填的值 / B：让你自己指定码本身」），而不是只给「存在哪儿」这种同一理解之下的细分选项。另外，用户对某个问题**不回答**本身就是信号：多半意味着选项没覆盖他真正要的东西。
+
+**批 3：前端面板（✅ 已完成）**
+
+- 新增 `admin/panels/`：`panels.css`（只允许 `pn-` 前缀、浅色卡片风、**零动效**）、`util.js`（时间按本地时区显示、复制、CSV、角色/状态中文名）、四个面板 `invites.js` / `dashboard.js` / `users.js` / `audit.js`。
+- **面板是壳无关模块**：`export var meta = {id,title,desc,roles}` + `export function mount(container, ctx)`（可选 `unmount()`），能力全靠 ctx 注入（`api` / `el` / `toast` / `confirm` / `escapeHtml` / `setTitle` / `user`）—— 个人中心挂一份，以后 `/admin/` 也能挂同一份。
+- `account/index.html`：脚本改成 `<script type="module">`（动态 import 的前提）、内容区加四个空容器 `#panelDashboard/#panelInvites/#panelUsers/#panelAudit`、右下角提示条 `#accToasts`、引 `../admin/panels/panels.css`；顺手把注册页那两句 P0-5 之后就不对的邀请码文案改了。
+- `account/account.js`：`ADMIN_GROUPS` + `visibleGroups()`（「管理」这一组按角色出现，普通用户一个都看不到）+ `mountPanel()`（动态 `import()`、同 id 不重复挂、加载失败显示一条 `.pn-msg.is-error`）+ `AUTH_CONFIG`（读 `GET /api/auth/config`，强制邀请制下改标签/占位/required 并提前拦一次）+ `prefillInvite()`（邀请链接 `?invite=` 自动填码并停在注册页）。
+- 静态校验：四个面板 **0 处**箭头函数 / `let` / `const` / 模板字符串 / `transition|animation|@keyframes`；用到的 **37 个 `pn-` 类名全部在 `panels.css` 里有定义**；调用的 11 条接口路径与两侧真实路由表逐条对得上。
+- 三个面板各带一个自检用的极简 DOM 桩（在临时目录跑，不进仓库）：46 项断言覆盖取数、降级、按钮 URL 与请求体、配色映射、展开行。
+
+### ✅ P2 配额口径 / 限流 / 监控（已完成，2026-10-05）
+
+> 详细定案见第 14 节；这里只记「这轮做了什么、实测多少、还剩什么」。
+
+**批 1：盘点（先查清事实，再决定做什么）**
+
+- ⚠️ **三条与计划描述不符的事实**（都在动手前查清）：
+  1. **配额早就服务端化了** —— 2026-10-02 的单一循环池改造（`docs/review-pool-plan.md` 的 D14/D15）已经删掉前端那本配额账，`localStorage.reviewDailyPlan` 不再写入；剩下的 localStorage 只有「自动朗读」「沉浸模式」两个 UI 偏好。**所以 P2 的「服务端化」实际只剩：把口径写进文档 + 补一条测试**。
+  2. **`AUTH_RL_*` 根本没接进配置** —— `backend-rust/src/main.rs` 的 `--help` 一直列着它，但 `config.rs` 的 `from_lookup` 一行解析都没有；「调参」只能改代码重编译。旧默认值按 IP 卡得很紧（登录 20 次/15 分、发码 20 次/时、注册 10 次/时），上百人共用校园/公司/CGNAT 出口 IP 时会被自己人打成 429。
+  3. **监控是从零开始** —— 只有三个浅探活（Nginx `/healthz`、Go `/api/health`、Rust `/api/auth/health`），没有任何主动检查与告警。
+- **顺带查出一个真漏洞**：Nginx 模板用 `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for`，它把**客户端伪造的 XFF 留在最前面**，而 `backend-rust/src/http/middleware.rs` 的 `client_ip()` 取第一个值 → 伪造 XFF 即可绕过账号服务全部按 IP 的限流。正确写法是 `$remote_addr`。
+- **用户定案（三问都选推荐项）**：① 配额**只改口径 + 补测试**；② 限流口径 = **严在账号、宽在 IP**；③ 监控 = **深度健康端点 + 复用账号服务的 SMTP 发告警邮件**（**磁盘余量、备份新鲜度明确不做**，写进第 14.3 节与 runbook）。
+
+**批 2：Rust 账号服务（限流可配 + 深度健康 + 监控命令）**
+
+- `config.rs`：新增 `env_rate_rule`（`次数/窗口秒`；任一侧为 0 = 关闭；**格式错拒绝启动并点名变量**）+ 五条 `AUTH_RL_*`，默认值 `200/900`、`1/60`、`5/3600`、`200/3600`、`100/3600`（4 个新测试）。
+- `lib.rs`：`AppState` 加 `started_at: Instant` + `uptime_seconds()`（`tests/common/mod.rs` 的 `AppState` 字面量同步补字段）。
+- `mail`：`Mailer` trait 加 `send_notice(to, subject, body)`；`log` 模式打进日志、`smtp` 模式走 `deliver`（正文尾巴注明是自动告警）。
+- `service.rs`：`health_details()` 用 `SELECT COUNT(*) FROM users` + `PRAGMA user_version` 拼出 `{"database":"ok","users":N,"migration_version":N}`（**不用 `SELECT 1`**：那条查不出「进程活着但表没了」）。
+- `http/auth.rs`：`/health?deep=1` → 深检，失败回 **503**；`wants_deep()` 只认 `1` 与大小写不敏感的 `true`（**与 Go 侧逐字对齐**）。
+- `src/bin/monitor.rs`（新，约 480 行 + 6 测试）+ `[[bin]] guangxue-monitor`：**手写 HTTP**（`TcpStream`，不引 reqwest）；状态机 `Nothing/Started/StillFailing/Recovered`（`repeat_hours<=0` 只在状态变化时发信，默认 6 小时重发一次）；状态文件 `{failing,since,notified_at}`（坏文件当没有历史）；**先落状态再发信**（SMTP 挂了不会变成每 5 分钟一封）；退出码 0/1 供 systemd 判定；`MONITOR_*` 六个环境变量。
+- `deploy/systemd/guangxue-monitor.service` + `.timer`（`OnCalendar=*:0/5`，刻意**不设** `Persistent=true`：错过的轮次没有补跑的意义）。
+- 启动横幅现在打印**实际生效**的限流值（改完 `AUTH_RL_*` 看那里核对）；`--help` 里五条限流、`mail-test`、`guangxue-monitor` 齐了。
+- 踩坑：给 `parse_target` 写测试时先写成 `unwrap_or_else(|_| panic!(...))` —— 闭包返回值类型是 Ok 分支的 `Target`，`err.is_empty()` 直接编译不过（E0599），改成 `match` 取 `Err`。
+
+**批 3：Go 后端（深检 + 配额口径测试）**
+
+- `handlers/health.go`（新）：`/api/health?deep=1` 追加 `deep` 对象（`database` 真查一次库、`migration_version`、`auth_db.available/error`、`uptime_seconds`、`version`）；**只有业务库查询失败才 503 + `status:"degraded"`**，账号库读不到仍 200（P1 口径：账号服务重启不该让监控每 5 分钟报警）；浅检形状**一个字段都不变**。
+- `handlers.go` 删掉旧 `HealthCheck`（不留第二份实现），`const apiVersion = "1.0.0"`；`admin_stats.go` 抽出 `authDBUnavailableStatus`（看板与深检共用同一套判定与文案）；`database.MigrationVersion` 读 `PRAGMA user_version`（业务库没人写过 → 恒 0，纯信息项，读失败也不降级）。
+- `review_stats_test.go` 新增 `TestStatsDailyQuotaServerSide`（**生产代码零改动**：非 daily 卡提交后 `daily_done` 仍 0、daily 卡提交后 0→1、`daily_target` 恒 5）。
+
+**批 4：部署与文档**
+
+- `deploy/nginx/guangxue.conf.template`：http 上下文加 `limit_req_zone`（`gx_auth` 30r/m、`gx_api` 300r/m）+ `limit_conn_zone`，两处 location 挂 `limit_req`/`limit_conn` 并统一 429；**两处 XFF 都改成 `$remote_addr`**（附 CDN 升级路径 `set_real_ip_from`）；`proxy_pass` 与 location 顺序未动。
+- `backend-rust/.env.example`：⚠️ 旧限流段写的是**不存在的** `AUTH_RL_CODE_EMAIL_PER_MINUTE/_PER_HOUR`（`config.rs` 根本不认）、默认值还是旧的 20/10 —— 已按真实变量名与真默认值重写，并新增 `MONITOR_*` 段。
+- `backend-go/.env.example`：`SERVER_HOST=127.0.0.1` + 理由（绕开 HTTPS、Nginx 限流、「后端只信 Nginx」的前提）。
+- `deploy/systemd/guangxue-monitor.service` 里那行空的 `Environment=MONITOR_ALERT_TO=` 改成**注释**并写明「systemd 的 `EnvironmentFile` 覆盖 `Environment=`，与书写先后无关」。
+- 文档同步：根 `README.md`、`backend-rust/README.md`、`backend-go/README.md`、`docs/README.md`、`docs/boundaries.md`、`docs/backend-auth.md`、`docs/review-engine.md`、`docs/roadmap.md`、`docs/deploy-runbook.md`（新的第 9 节「监控与告警」，含**告警通道演练**脚本：停机 → 退出码 1 → 收到「服务异常」→ 起回来 → 收到「已恢复」；后面两节顺延成第 10/11 节）。三处示例 Nginx 配置的 XFF 也一并改掉（不然会被照抄）。
+
+**实测（2026-10-05）**
+
+- `cargo test --all-targets` = **169 项全过**（73 单元 + 6 `guangxue-monitor` + 90 集成）。
+- `go test ./... -count=1` 六个包全 `ok`；`-list` 数出 **114 个测试函数**（config 6 / database 7 / handlers 67 / stablehash 6 / middleware 12 / routes 16）—— ⚠️ 这是**函数个数**，带子测试的包实际 PASS 条数更多，别和别的数字混着引用。
+- `pwsh scripts/verify-auth.ps1` = **55 项、0 失败、31.3 秒**（P2 段 10 项全 PASS，关键实测：`migration_version=2`、Go `auth_db.available=true`、`AUTH_RL_LOGIN_IP=2/60` 时三次登录 `401,401,429`、坏格式 `exit=1` 且日志点名变量、监控命令四轮 `exit=0/1/1/0`）。
+  - ⚠️ 2026-10-05 之后这个数字变过两次（P1 又补了「重置已用过的码」「自定义码」两组与 3 条样式断言），**以脚本自己打印的合计为准**；最新一次是 **71 项、0 失败**。
+- 静态复核：`node --check` 全过；Go 侧 `gofmt -l` 对改动文件为空、`go vet ./...` 无输出。
+
+**交接（还没做的）**
+
+- **告警通道要用真 SMTP 演练一次**（本机只有 `log` 模式）：runbook 第 9.3 节，配好 `MONITOR_ALERT_TO` 后停一次 `guangxue-auth`，确认真的收到「服务异常」与「已恢复」两封。
+- 上线时 `backend-go/.env` 必须写 `AUTH_DB_PATH`（指到账号库），否则看板账号侧全是 0。
+- 仍未做（本轮明确不做）：**磁盘余量与备份新鲜度**的监控；细粒度 RBAC；图形验证码。

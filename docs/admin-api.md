@@ -7,6 +7,9 @@
 
 - **入口**：`admin/index.html`（本地 `/admin/`）。与学生站**完全独立**：不走 `main.js`、不使用学科页的 localStorage 缓存。
 - **约定**：学科后台放 `modules/<学科>/admin/`，导出 `mount(container, ctx)`（可选 `unmount()`），再到 `admin/admin.js` 的 `SUBJECT_ADMINS` 登记一行；框架用动态 `import()` 按需加载。通用能力通过 `ctx` 注入：`api` / `toast` / `confirm` / `el` / `escapeHtml` / `setTitle`。
+- 🧭 **管理面板不在这里了（P1，2026-10 用户定案「全部搬进个人中心」）**：数据看板 / 邀请码 / 用户管理 / 审计日志四个面板挂在**个人中心**（`account/`，用法与权限见 [`backend-auth.md`](backend-auth.md) 的个人中心一节）。
+  面板模块本体在 **`admin/panels/*.js`**，是**壳无关**的：导出 `meta = {id,title,desc,roles}` + `mount(container, ctx)` + 可选 `unmount()`，个人中心与后台都能挂同一份；样式跟着模块走，共用 `admin/panels/panels.css`（只允许 `pn-` 前缀，**零动效**）。
+  本后台（`admin/`）从此只做**内容管理**：英语学科后台仍在这里（`#/english`），顶栏那颗「管理后台」链接也从个人中心指过来。
 - **登录门禁已接入界面层**：`admin.js` 的 `checkAuth()` 已改为**异步**（调 `GET /api/auth/me`），`role=admin` 才渲染后台，否则只显示 `#adminAuthGate` 里的登录表单；顶栏 `#adminUser` 显示当前账号 + 退出登录。⚠️ 改这块要注意：`DOMContentLoaded` 里必须等 `checkAuth().then(...)` 再 `renderNav/route`。
 - ✅ **服务端鉴权已补上（阶段 2）**：`/api/words` 的写接口（`POST` / `PUT /:id` / `DELETE /:id`）现在要**管理员**，`/api/reviews/*` 整组要**登录**，写请求还要过 CSRF 闸门（`Origin` 白名单）。做法是用与账号服务共享的 `AUTH_JWT_SECRET` 对 `gx_access` Cookie 做本地 HS256 验签（`backend-go/middleware/auth.go`，不查库、不回调）。前端的 401 处理：`admin.js` 的 `apiFetch` 提示后跳 `../account/?next=...`，`english.js` 提示后跳 `account/?next=...`。（历史口径：这两条曾长期是「任何人都能 `curl` 改数据，补中间件前别上公网」；现在服务端拦得住，但**会话撤销与多用户化仍未做**，公网部署照旧要走 [`roadmap.md`](roadmap.md) 的阶段 3。）
 
@@ -36,3 +39,5 @@
 
 - Go 后端其它接口与环境变量 → [`backend-auth.md`](backend-auth.md)
 - 账号门禁背后的登录系统 → [`backend-auth.md`](backend-auth.md)
+- P1 管理面板的施工计划与口径（四批交付、北京时间切天、邀请码一次性明文）→ [`launch-plan.md`](launch-plan.md) 第 5.0 节
+- 管理侧的账号接口（审计 / 发码 / 发邮件 / 强制下线 / 用户列表脱敏）→ [`backend-auth.md`](backend-auth.md) 的「管理接口」表

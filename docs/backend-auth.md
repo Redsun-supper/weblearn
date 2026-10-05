@@ -5,7 +5,8 @@
 
 ## Go 主后端（`backend-go/`）
 
-- API 前缀 `/api`：`/health`、`/hello`、`/words`（读公开、写要管理员）、`/word-options`、`/reviews/*`（**全部要登录**）。`/user/*`、`/data/*` 四条占位路由与 `users` / `data_items` 两张表已在阶段 2 删除——它们与 `auth.db` 同名不同源，留着必然被误用；真正的用户信息是 Rust 侧的 `/api/auth/me`。
+- API 前缀 `/api`：`/health`（`?deep=1` 会真查一次库，坏则 **503**，供监控命令用）、`/hello`、`/words`（读公开、写要管理员）、`/word-options`、`/reviews/*`（**全部要登录**）、`/admin/*`（**全部要管理员**，P1 新增，见下）。`/user/*`、`/data/*` 四条占位路由与 `users` / `data_items` 两张表已在阶段 2 删除——它们与 `auth.db` 同名不同源，留着必然被误用；真正的用户信息是 Rust 侧的 `/api/auth/me`。
+- 📊 **管理看板接口（P1，`handlers/admin_stats.go`，整组 `RequireAdmin`）**：`GET /api/admin/stats/overview`（今日 5 个 + 累计 8 个 + `auth_db.available`，**一个请求出全部数字**）、`GET /api/admin/stats/trend?days=7|30`（`points` 已按**北京自然日**升序、缺失的天补 0，前端不再补洞）、`GET /api/admin/users/progress?ids=1,2,3`（≤100 个，给用户列表补当页进度）、`GET /api/admin/users/:id/progress`（单人 + `last7`）。口径：时间一律折成 **UTC+8** 再切天（`auth.db` 存 UTC 文本、`guangxue.db` 存带时区的时间）；「今日新学」= `stability_before = 0`、「今日抽查」= `is_probe`、「今日活跃」= 当天有 `review_logs` 的 distinct `user_id`。**账号库读不到时接口仍 200**：账号侧数字全按 0 + `auth_db.available=false` + 一句人话原因（看板照常能看复习侧）。
 - 🔐 **Go 侧鉴权 = 共享密钥本地验签**（阶段 2 实现，`backend-go/middleware/auth.go`）：不查库、不回调 Rust，直接从 Cookie `gx_access` 取令牌，用与账号服务**同一把 `AUTH_JWT_SECRET`** 验 HS256。钉死的三件事必须与 Rust 对齐，否则会静默 401：① 只接受 `HS256`（`jwt.WithValidMethods`，防 `alg=none` / 算法降级）；② 过期容差 60 秒（对应 `backend-rust/src/core/token.rs` 的 `LEEWAY_SECONDS`）；③ 载荷字段名与类型照抄 `AccessClaims`（`sub`/`sid` 是 JSON 数字、`role` 取 `"user"`/`"admin"`）。
 - **两级门槛**：`middleware.RequireUser` 挂 `/api/reviews/*` 整组，`middleware.RequireAdmin` 挂 `/api/words` 的 `POST` / `PUT /:id` / `DELETE /:id`。失败响应与 Rust 逐字对齐：401 `{"code":401,"message":"请先登录","error":"unauthenticated"}`、403 `{"code":403,"message":"没有权限","error":"forbidden"}`——前端按 `error` 字段分支（401 → 去登录）。
 - **CSRF 闸门**（`middleware.CSRFGuard`，挂在 `/api` 整组）：写方法（非 `GET`/`HEAD`/`OPTIONS`）必须带白名单内的 `Origin`；没有 `Origin` 时才退回「`Content-Type` 必须 `application/json`」这条规则（跨站表单发不出 JSON）。白名单取 `AUTH_ALLOWED_ORIGINS`，默认与 Rust 相同：`http://127.0.0.1:8899,http://localhost:8899`。
@@ -24,10 +25,29 @@
   - 不填 → 邮箱验证码是唯一门槛，注册出来是普通用户（`role=user`，即**开放注册**）；
   - 填了 → 逐个校验（未停用 / 未过期 / 没用完，任一不合法就整体拒绝，不静默降级），注册成功后 `role=admin`。将来同一入口承载积分 / 礼物兑换，后台靠邀请码里的 **`-` 前缀**区分用途（所以**规范化时绝不能把 `-` 抹掉**）。
   - **多个邀请码用空白分隔**（`invite::split_codes`，顺带去重，防止同一个码被扣两次）；`-` 是码自身的格式、不是分隔符。管理员手抄成 `XXXX-XXXX-XXXX-XXXX` 的老写法靠 `service::find_invite` 兜底（先按原样查，查不到再去掉 `-` 查一次）。
-  - `is_plausible` 只是廉价预筛（字母数字 + `-`，去掉 `-` 后 8~32 位），**刻意不套生成时那套 Crockford 字母表**：用途前缀 `ADMIN`/`POINTS` 含 I/O/U，套了就永远传不进去。
-  - ⚠️ **两个已知代价（用户明确接受）**：① 邀请码现在等于「管理员授权」，只发给信得过的人；② `/api/auth/email-code` 对任意邮箱都会发码，**它是本服务唯一的对外发信面**，目前只有限流兜着（同邮箱 1 次/分、5 次/时；同 IP 20 次/时）——要上真 SMTP 前建议再加图形验证码或网关层限流。
-- 权限等级**只预留** `users.role` / `users.status`，还没写判定逻辑；唯一例外是邀请码管理接口的 `role == 'admin'` 准入。
-- 验证方式：`cargo test`（90 项）→ `cargo build --release` → `pwsh scripts/smoke.ps1`（24 项端到端，直连或经 8899 代理都行）。
+  - `is_plausible` 只是廉价预筛（字母数字 + `-`，去掉 `-` 后 8~32 位），刻意比生成/自定义码的校验**宽**：用途前缀 `ADMIN`/`POINTS` 含 I/O/U，而且老库里可能还有 Crockford 时代发的码。
+  - ⚠️ **两个已知代价（用户明确接受）**：① 邀请码现在等于「管理员授权」，只发给信得过的人；② `/api/auth/email-code` 对任意邮箱都会发码，**它是本服务唯一的对外发信面**，现在靠两层限流兜着（P2 起）：应用内「同邮箱 1 次/分、5 次/时」+「同 IP 200 次/时」（IP 维度刻意放宽 —— 上百人共用校园/公司出口 IP 时，旧的 20 次/时会被自己人打满），外加 Nginx 的 `limit_req`（`gx_auth` 30r/m，单个 IP）。**真要开放注册前仍建议加图形验证码。**
+- **三级权限（P0-5 定案、P1 落地）**：`user` < `admin` < `super_admin`（判定在 `models.rs` 的 `role_rank` / `can_enter_admin` / `is_super_role`，两侧的常量字符串必须逐字一致）。
+  - `admin`：管词条（`/api/words` 写接口）、看管理看板、**只读**用户列表（服务端把邮箱就地打码成 `22***@qq.com` 并回 `email_masked=true`）；
+  - `super_admin`：发码 / 停用 / 按批停用 / 整批发邮件、调角色、封禁解封、强制下线、读审计日志；
+  - 两条自锁保护：不能降级「最后一个超管」、也不能封禁「最后一个超管」（都返回 400，否则没人能进后台了）。
+- **管理接口（P1，实现在 `http/admin.rs`）**：
+
+  | 接口 | 准入 | 说明 |
+  |---|---|---|
+  | `GET /api/auth/config` | **匿名** | 只回 `{require_invite}`；注册表单靠它决定「邀请码是不是必填」（强制邀请制下没有码连验证码都发不出去） |
+  | `GET /api/auth/admin/audit?action=&actor=&from=&to=&page=&size=` | 超管 | 回 `{items,total,page,size,actions}`；**动作清单跟着列表一起回**（前端不硬编码、也不多发一个请求）；`from`/`to` 依次试 RFC3339 → `YYYY-MM-DD HH:MM:SS` → 纯日期（纯日期当当天 00:00 UTC） |
+  | `GET /api/auth/admin/users?role=&status=&keyword=&page=&size=` | 管理员（只读） | `keyword` 搜邮箱/昵称（拼 LIKE 前先剔掉 `%` 与 `_`）；非超管邮箱脱敏且 `email_masked=true`；带 `last_login_at` |
+  | `POST /api/auth/admin/invites` | 超管 | 生成邀请码。**不传 `custom_code`** = 系统随机生成 `count` 张（1~50，16 位，字符表 **A-Z 与 0-9**）；**传了 `custom_code`** = 用超管指定的那串码出 1 张（正好 16 位、只允许 A-Z 与 0-9，自动转大写并抹掉手写的 `-`，否则 400 `invalid_params`）。`expires_in_days` ≤ 0 = **永不过期**（源码里就是 `None`）。文件里那张码已存在时**不覆盖也不新建**：默认回 409 `invite_code_taken`，`data` 里带 `{code, existing}`（那张码的状态 / 已用次数 / 谁用过）；带 `allow_existing:true` 重发才**沿用**它，且只改 `max_uses` 与 `expires_at`，`used_count` / `disabled` / `grant_role` / 兑换记录一个字都不动。响应带 `{items,codes,grant_role,custom,reused}` |
+  | `POST /api/auth/admin/invites/{id}/disable` | 超管 | 停用一张码（幂等） |
+  | `POST /api/auth/admin/invite-batches/{batch_id}/disable` | 超管 | 按批停用，幂等，回 `{batch_id,disabled}`；批次不存在 → 404 |
+  | `POST /api/auth/admin/invites/{id}/reset` | 超管 | **重新启用一张已用过的码**：把 `used_count` 清零（码还能被兑换），回 `{id,cleared}`；`invite_uses` 的兑换记录**不删**（谁用过仍然查得到），每次写一条 `invite_reset` 审计；码不存在 → 404，本来没被用过 → `cleared=0`（幂等）。⚠️ 这是**主动降安全**的动作，面板上必须带风险确认 |
+  | `POST /api/auth/admin/invite-mail` | 超管 | body `{pairs:[{invite_id,email}]}`，**一对一配对**、≤50 条、逐封独立发送（一封失败不影响其余），回 `{items,sent,failed,mail_mode}` |
+  | `POST /api/auth/admin/users/{id}/logout-all` | 超管 | 吊销某人的全部会话（`revoked_reason="admin_revoke"`），审计动作 `user_logout_all` |
+
+  ⚠️ **路由命名**：`invites/{id}/disable` 与「按批停用」不能挤在同一层 —— `invites/batch/...`、`invites/email` 会让静态段与 `{id}` 冲突，症状是一类解释不清的 404；所以按批走 `invite-batches/{batch_id}/disable`、发邮件走 `invite-mail`。
+- **审计日志**：`audit_logs` 只记动作与目标，**绝不记密码、验证码、邀请码明文**（发邮件那条只记 id 与统计）。动作名就是库里的字符串，共 16 个：`register`、`login_ok`、`login_fail`、`logout`、`logout_all`、`admin_seed`、`password_change`、`invite_create`、`invite_disable`、`invite_disable_batch`、`invite_reset`、`invite_use`、`invite_email`、`role_change`、`user_status`、`user_logout_all`（注意是 `login_ok` / `login_fail`，**没有** `login` 这个动作）。面板的筛选下拉直接吃接口回的 `actions`（`SELECT DISTINCT`），所以前端不硬编码这份清单。保留期 `AUTH_AUDIT_RETENTION_DAYS`（默认 **180** 天，`0` = 永不清理）：启动时清一次，之后每 24 小时一次（`main.rs` 里的 `tokio::spawn` + `interval`，失败只记 `tracing::warn!` 不影响服务）。
+- 验证方式：`cargo test --all-targets`（**198 项全过**：76 单元 + 6（`guangxue-monitor`）+ 116 集成；其中 P1 新增 `tests/audit.rs` 15 项、`tests/invite.rs` 里自定义邀请码 6 项，P2 新增限流解析 4 项与监控命令 6 项）→ `cargo build --release` → `pwsh scripts/smoke.ps1`（24 项端到端）→ `pwsh scripts/verify-auth.ps1`（跨服务联调：脚本总计 **71 项、0 失败、约 15 秒**；其中 P1 新增 18 项、重置已用过的码 4 项、自定义邀请码 6 项，P2 新增 10 项，样式 3 项 —— 深度健康、浅检形状不变、`AUTH_RL_LOGIN_IP=2/60` 真的生效（401/401/429）、格式错拒绝启动、监控命令的 0/1 退出码与「开始故障 / 不重复提醒 / 已恢复」状态机、三份样式表都声明了 `color-scheme: light`）。
 - ⚠️ 本地没设 `AUTH_JWT_SECRET` 时每次重启都会随机生成密钥（旧令牌全失效）；`APP_ENV=production` 下必须显式提供它和管理员密码，并关闭 `AUTH_DEV_ENDPOINTS`，否则启动失败。
 
 ## 个人中心（`account/`）
@@ -93,6 +113,9 @@
 - 其余入口：后台门禁 `admin/`、站点左上角头像（点它进个人中心）。三处都只做界面层门禁，服务端判定仍是权威。
 
 - 首页头像入口与扩散过场的实现细节见 [`frontend.md`](frontend.md)。
-- 布局与后台同一套，**通用组件的写法照 `admin/admin.css` 那一套来**（卡片、按钮、表单、徽章），
-  两边各自独立、不共享样式表，改一边不会影响另一边。窄屏断点在 `920px`（侧栏横过来放到顶部）。
+- 布局与后台同一套，**通用组件的写法照 `admin/admin.css` 那一套来**（卡片、按钮、表单、徽章）。
+  两个**壳**（`account.css` / `admin.css`）各自独立、不共享样式表，改一边不会影响另一边；
+  ⚠️ **唯一的例外是管理面板模块**（`admin/panels/*.js`）：它们是壳无关的（个人中心与后台都能挂同一份），
+  所以样式跟着模块走，共用 `admin/panels/panels.css`（`pn-` 前缀，浅色卡片风，**零动效**）。
+  给面板加样式改那个文件，别改两个壳的 CSS。窄屏断点在 `920px`（侧栏横过来放到顶部）。
 - 📌 **待处理问题统一记在根目录 [`TODO.md`](../TODO.md)**：沉浸模式下的「返回」反向动画（暂缓，含三个候选方案）、头像 2.6MB 的缩略图（等用户点头，涉及素材）、转场时长的人工对齐。**接手账号 / 转场相关改动前先读它一遍**，别把已决定暂缓的事又当成漏掉的 bug。

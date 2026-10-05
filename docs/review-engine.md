@@ -49,9 +49,9 @@
 
 - **测试**：`modules/english/engine` 有 **122 项**宿主测试（`cargo test`，秒级）；账号服务那份「90 项」是另一个 crate，**别混用这两个数字**。
 - **一键验证**：仓库根跑 `pwsh scripts/verify.ps1`（Go 构建/vet/测试 + 账号服务测试 + 引擎宿主测试 + wasm32 目标检查，全绿约 35 秒，只读不改仓库）。
-- **单一循环池验收**：`pwsh scripts/verify-pool.ps1 -Browser`（**45 项**，走真实 HTTP + 真实开发库 + Edge 无头浏览器端到端，**会清空进度并自动快照**，所以可重复运行）；账号与权限回归是 `pwsh scripts/verify-auth.ps1`（18 项，起临时库与临时端口，不碰开发库）。
+- **单一循环池验收**：`pwsh scripts/verify-pool.ps1 -Browser`（**45 项**，走真实 HTTP + 真实开发库 + Edge 无头浏览器端到端，**会清空进度并自动快照**，所以可重复运行）；账号与权限回归是 `pwsh scripts/verify-auth.ps1`（**55 项**，起临时库与临时端口，不碰开发库）。
   - `-Browser` 那段跑的是 `scripts/browser-e2e.mjs`（CDP 驱动 Edge 无头），它**必须**走 `/index.html` 这个 SPA 外壳：直接开 `/modules/english/english.html` 只有 HTML 片段、没有 `main.js`，按钮点了没反应。
-  - 反复跑会撞上**登录限流**（`backend-rust/src/config.rs:150`，单 IP 20 次 / 15 分钟），表现为整片 429；计数器在 Rust 进程内存里，**重启账号服务即清零**（见 [`boundaries.md`](boundaries.md) 第 10 节）。
+  - 反复跑会撞上**登录限流**（`backend-rust/src/config.rs` 的 `AUTH_RL_LOGIN_IP`；P2 起默认已放宽到 **200 次 / 15 分钟**，此前是 20 次 —— 上百人共用出口 IP 时那个值会被自己人打满），表现为整片 429；计数器在 Rust 进程内存里，**重启账号服务即清零**（见 [`boundaries.md`](boundaries.md) 第 10 节）。
 - **`engine/pkg/` 由 wasm-bindgen 生成（已 gitignore）**，缺失时需在 `modules/english/engine/` 下重新构建，三段命令见
   [`../modules/english/engine/README.md`](../modules/english/engine/README.md)：`cargo check --target wasm32-unknown-unknown`
   → `cargo build --target wasm32-unknown-unknown --release` → `wasm-bindgen --target web --out-dir pkg --out-name guangxue_wasm

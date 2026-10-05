@@ -84,10 +84,11 @@
 - ✅ **已完成（P0-1，2026-10）** `word_reviews` 加 `user_id`，唯一索引从 `WordID` 改为 `(UserID, WordID)`。这是**语义变更**：从「这张卡在全站的状态」→「我的卡的状态」。
 - ✅ **已完成（P0-1）** `review_logs` 加 `user_id`（便于按人统计 / 导出 / 将来的参数优化）。
 - ✅ **已完成（P0-1）** handlers 全量加 `WHERE user_id = ?`：`queue` / `new` / `probes` / `due` / `submit` / `stats`（`backend-go/handlers/review_handlers.go`）。
-- **每日配额从 localStorage 迁到服务端**，而且**不需要新建表**：
-  - 今日新学 = 该用户当天 `stability_before = 0` 的日志数（现口径 `review_handlers.go:690-692`）；
-  - 今日抽查 = 当天 `is_probe = 1` 的日志数。
-  - 副作用是好的：换设备 / 清缓存不再重置。`docs/review-engine.md` 里那条「因为没有登录系统所以记在浏览器」的取舍**就此作废**，届时同步更新该文档。
+- ✅ **已完成（P2 复核，2026-10）** 每日配额**本来就是服务端算的** —— 2026-10-02 的单一循环池改造已经把前端那本配额账全删了（`localStorage.reviewDailyPlan` 不再写入）。口径：
+  - 今日新学 = 该用户当天 `stability_before = 0` 的日志数；今日抽查 = 当天 `is_probe = 1` 的日志数；
+  - 「今天哪 5 个被置顶」由**稳定哈希按 `Asia/Shanghai` 自然日**算（`poolTZName`，注释明确「**不要**改成 Local」）；
+  - 配额是**排序权重不是硬上限**：继续复习不受限（既定设计，见 `launch-plan.md` 第 14.1 节）。
+  - P2 只补了**口径测试**（`TestStatsDailyQuotaServerSide`）与**文档更正**；当年担心的「换设备/清缓存就重置」已经不成立。
 - **迁移策略**：直接 AutoMigrate 加列，把现有复习数据当**本地开发数据**处理（无真实用户、词库仅 143 KB）——加列后置 NULL 或清空重建，不写迁移脚本。
 - **前端要改**：`modules/english/english.js` 增加一次 `/api/auth/me`（现在完全不问），并据此决定未登录行为（见第 8 节待决策 2）。
 
@@ -188,6 +189,11 @@
   - 顺带查清两条上线必改项：`backend-rust/src/service.rs:367` **带邀请码注册会直接变管理员**（要改成按码的等级赋值）；Rust 侧 SMTP 发信**已经实现**，只差 `AUTH_MAIL_MODE=smtp` 与 `AUTH_SMTP_*` 配置。
 - **阶段 3 已完成一半（2026-10）**：**进度按人隔离**（上线计划里的 P0-1）已落地 —— `word_reviews` 唯一键改为 `(user_id, word_id)`、`review_logs` 加 `user_id`、handlers 16 处查询按 user 收口、新增 `cmd/migrate` 迁移工具（默认 dry-run，`-apply` 先自动快照）与启动自检（旧结构拒绝启动）；`backend-go` 测试 53 → **61 项**，`verify-auth.ps1` 13 → **18 项**（两用户复习同一个词后各自 `total_reviews=1`）。
   **剩下的是「每日配额从 localStorage 迁到服务端」**（上线计划里排在 P2；口径已定：今日新学 = 当天 `stability_before = 0` 的日志数、今日抽查 = 当天 `is_probe` 数）。
+  > ✅ **2026-10-02 单一循环池改造时已顺带落地**（见 [`review-pool-plan.md`](review-pool-plan.md) 的 D14/D15 与它的验收记录：
+  > 前端配额账全删、`localStorage.reviewDailyPlan` 为 null）；2026-10-05 的 P2 又补了一条
+  > 「客户端什么都不传时服务端也算得对」的测试，并把本文与 launch-plan 里的过时口径改掉。
+  > 阶段 3 至此**全部完成**（会话撤销那条红线仍是「跨服务不生效」，见下一行）。
+  > 阶段 3 之后的工作（限流重算、监控告警）见 [`launch-plan.md`](launch-plan.md) 第 14 节。
   ⚠️ 红线 5 只解除一半：**多用户隔离做了，但会话撤销仍未做**（登出 / 踢端之后，那张 access 令牌在有效期内仍能通过验签，见 `backend-go/middleware/auth.go` 的包注释），`/admin/` 与站点仍不要挂公网。
 
 **落地后请回来更新本文**：把已完成阶段移到上面的进度记录，把新增风险补进第 6 节。

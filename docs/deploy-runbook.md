@@ -112,10 +112,23 @@ APP_ENV=production
 SERVER_HOST=127.0.0.1               # ⚠️ 默认是 0.0.0.0，会把 8080 暴露到公网
 SERVER_PORT=8080
 DB_PATH=guangxue.db
+AUTH_DB_PATH=/opt/guangxue/backend-rust/auth.db   # ⚠️ 管理看板只读账号库；配错则看板账号侧全是 0
 AUTH_JWT_SECRET=<与上面 backend-rust 里**完全一致**的那串>
 AUTH_ALLOWED_ORIGINS=https://你的域名
 ```
 
+> ⚠️ **`AUTH_DB_PATH` 要写账号库的绝对路径**：Go 侧以只读方式（`mode=ro`）打开它，
+> 给管理看板取「今日新增用户 / 角色分布 / 发码与兑换」。它是相对**工作目录**解析的，
+> 生产上 systemd 的 `WorkingDirectory=/opt/guangxue/backend-go`，所以默认值
+> `../backend-rust/auth.db` 也指得到；写成绝对路径更不容易看错。
+> 读不到时看板**不会** 500，而是账号侧数字一律显示 0 并在响应里带原因
+> （`auth_db.error`），启动日志里也会有一条 `AUTH_DB_PATH` 告警。
+>
+> ⚠️ 它与 `deploy/systemd/guangxue-api.service` 里的 `ReadOnlyPaths=/opt/guangxue/backend-rust`
+> 是一对：那行是**显式的只读保证**（Go 侧永远不许写账号库，写入方只能有账号服务一个）。
+> 真正会让线上看板账号侧「全是 0」的是 `AUTH_DB_PATH` 配错或账号服务没起来 ——
+> 两种情况 Go 都会降级（数字 0 + `auth_db.error`），启动日志里也各有一条告警。
+>
 > ⚠️ **两处 `AUTH_ALLOWED_ORIGINS` 必须都改**：它同时是 CSRF 白名单与 CORS 依据。
 > 只改一个的现象是「能登录，但一提交复习就 403」。
 >
@@ -310,7 +323,182 @@ sudo tail -5 /var/log/nginx/guangxue.access.log
 sudo journalctl -u guangxue-api -n 20 | grep -c '\[GIN\]'    # 期望 0
 ```
 
-## 9. 上线前的最后一份清单
+## 9. 监控与告警（P2）
+
+前面几步验的都是「我敲这条命令的这一刻，服务是好的」。这一节管的是**没人在看的时候**：
+进程还活着但数据库坏了（接口回 200、功能全废）、服务挂了没人发现。
+
+两条腿，缺一条就有盲区：
+
+| 手段 | 能发现 | 发现不了 |
+|---|---|---|
+| 本机 `guangxue-monitor.timer`（每 5 分钟，能发邮件） | 两个服务的**深度**健康检查不通过（含「库坏了」） | 整台机器 / 网络挂掉 —— 它自己也在这台机器上，喊不出来 |
+| **外部** uptime 服务（打公网 URL） | 机器、网络、Nginx 死了 | 后端库坏了（除非让它探深检 URL） |
+
+### 9.1 编译并装 timer
+
+```bash
+# 第 2 步只编了账号服务，探活工具要单独编一次
+cd /opt/guangxue/backend-rust
+sudo -u guangxue cargo build --release --bin guangxue-monitor
+cp target/release/guangxue-monitor ./guangxue-monitor
+ls -l /opt/guangxue/backend-rust/guangxue-monitor     # 文件在、且可执行
+
+# 装 unit 并启用定时器（service 由 timer 拉起，不需要单独 enable）
+cd /opt/guangxue
+sudo cp deploy/systemd/guangxue-monitor.service deploy/systemd/guangxue-monitor.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now guangxue-monitor.timer
+```
+
+**验证**：
+
+```bash
+systemctl list-timers guangxue-monitor.timer     # NEXT 在 5 分钟以内（不是 n/a）
+systemctl is-enabled guangxue-monitor.timer      # enabled
+```
+
+它每 5 分钟拉起一次 oneshot 服务，探两个**回环**地址的深度健康检查
+（`http://127.0.0.1:8080/api/health?deep=1` 与 `http://127.0.0.1:8081/api/auth/health?deep=1`），
+不经过 Nginx —— 那一层交给外部 uptime 服务（见 9.5）。
+
+> ⚠️ 探活失败时这个服务以**退出码 1** 结束，所以它会出现在 `systemctl --failed` 里。
+> 这是有意的：systemd 是第一道告警，邮件是第二道。
+> ⚠️ 状态文件在 `/var/lib/guangxue-monitor/state.json`，由 unit 的
+> `StateDirectory=guangxue-monitor` 自动建好并授权，**不用手工 mkdir**。
+
+### 9.2 配收件人
+
+```bash
+sudo systemctl edit guangxue-monitor.service
+```
+
+在打开的空文件里写（这是 drop-in，会覆盖 unit 里的同名 `Environment=`）：
+
+```ini
+[Service]
+Environment=MONITOR_ALERT_TO=你的邮箱@example.com
+```
+
+也可以直接改 `deploy/systemd/guangxue-monitor.service` 里的那一行
+`Environment=MONITOR_ALERT_TO=`（改完要重新 `sudo cp` 到 `/etc/systemd/system/` 再 `daemon-reload`），
+或者把它写进 `/opt/guangxue/backend-rust/.env`（这个 unit 用 `EnvironmentFile=` 读的正是这一份）。
+
+**收件人留空 = 只写日志、不发信。** 写没写对要到 9.3 的演练里才看得出来 ——
+`⚠ 没配 MONITOR_ALERT_TO` 这行提示**只在「这一轮要发信」时**才打印。
+
+> ⚠️ 收件人配好了也不代表能发信：告警邮件走的是**账号服务那一套 SMTP 配置**
+> （`AUTH_MAIL_MODE` / `AUTH_SMTP_*`），`AUTH_MAIL_MODE=log` 时告警同样只写日志。
+> 所以**先做完第 3 步的 SMTP 配置**，再回来做下面的演练。
+
+真发一封验一验（这条命令读的是同一份 `.env`，它通了告警就通了）：
+
+```bash
+cd /opt/guangxue/backend-rust
+sudo -u guangxue cargo run --release --bin mail-test -- 你的邮箱@example.com
+```
+
+**看到什么算对**：命令行提示已发送，并且**邮箱里真收到了**这封测试邮件。
+
+### 9.3 告警通道演练（必做）
+
+**没验过的告警通道等于没有监控** —— 它坏掉的方式，恰好就是你最需要它的那一刻。
+按①②③各做一遍：
+
+```bash
+# ① 全好的时候
+sudo systemctl start guangxue-monitor.service
+journalctl -u guangxue-monitor -n 10
+```
+
+看到两行 `✓`（第一行 Go 主后端、第二行账号服务），并且**没有收到邮件** —— 这是对的：
+监控只在状态**变化**时发信。
+
+```bash
+# ② 制造真故障：把账号服务停掉，再探一次
+sudo systemctl stop guangxue-auth
+sudo systemctl start guangxue-monitor.service        # 这一条本身会返回非 0，见下面的 ⚠️
+journalctl -u guangxue-monitor -n 10                 # 应当有一行 ✗（账号服务那行）
+systemctl status guangxue-monitor.service            # code=exited, status=1/FAILURE
+```
+
+**这一遍应当真的收到一封「[广学] 服务异常：…」的邮件。** 没收到就照 journal 里的提示对号入座：
+
+- `⚠ 没配 MONITOR_ALERT_TO` → 9.2 那三处一个都没写对；
+- `⚠ AUTH_MAIL_MODE=log` → SMTP 还没配，回第 3 步；
+- `✗ 告警邮件发送失败` → SMTP 配置本身有问题，用 9.2 里那条 `mail-test` 命令单独验一遍。
+
+```bash
+# ③ 恢复：把它起回来，再探一次
+sudo systemctl start guangxue-auth
+sudo systemctl start guangxue-monitor.service
+journalctl -u guangxue-monitor -n 10                 # 两行 ✓，且收到一封「[广学] 已恢复」邮件
+```
+
+> ⚠️ 演练期间**站点的登录 / 注册会短暂不可用**（几十秒）。做完务必确认
+> `systemctl is-active guangxue-auth` 是 `active` —— 演练完忘了起回来，故障就是自己造的了。
+> ⚠️ `systemctl start` 一个失败的 oneshot 服务会返回非 0（还会打印
+> `Job for guangxue-monitor.service failed…`），那不是命令敲错了 ——
+> 这一轮的结论看 journal 里的 ✓/✗ 与邮件。
+
+### 9.4 日常怎么看
+
+```bash
+journalctl -u guangxue-monitor -n 30                  # 最近几轮
+journalctl -u guangxue-monitor --since today          # 今天
+systemctl --failed                                    # 探活失败会出现在这里
+```
+
+`/var/lib/guangxue-monitor/state.json` 里记着「上一轮是不是坏的、上次提醒是什么时候」，
+它决定「刚坏」（发信）与「一直还坏着」（不重复发）。**删掉它 = 清空历史**，
+下次故障会被当成新故障、**多发一封**（要的就是这个效果时才删）。
+
+邮件风暴防护：只在**状态变化**时发；持续故障每 `MONITOR_REPEAT_HOURS`（默认 6 小时）重发一封；
+设成 `0` 就只在状态变化时发。
+
+### 9.5 外部 uptime 服务（可选，但强烈建议）
+
+本机监控和站点是**同生共死**的：机器断电、系统盘写满、Nginx 挂了、网络断了 ——
+`guangxue-monitor` 自己也在这台机器上，它喊不出来（甚至它自己就先没了）。
+所以再找一个**免费的外部探活服务**（uptime monitor / 网站监控，哪家都行），
+加一个 HTTP 监控：
+
+| 探的地址 | 能发现 |
+|---|---|
+| `https://你的域名/healthz` | 机器、网络、Nginx 死了（Nginx 直接回 `ok`，不碰后端） |
+| `https://你的域名/api/health?deep=1` | 上面那些 + **Go 主后端也坏了**（含业务库坏） |
+| `https://你的域名/api/auth/health?deep=1` | 上面那些 + **账号服务也坏了** |
+
+颗粒度到这一步就够：**间隔 1~5 分钟**、超时 10 秒左右、
+告警发到**和上面同一个邮箱**。不必指定某一家服务，也不必和本节其它配置对齐。
+
+> ⚠️ 别只挂 `/healthz`：它是 Nginx 自己回的一个常量，两个后端全死了它照样 200。
+> 至少要再加一个深检 URL。
+
+### 9.6 本节**不覆盖**什么（别以为它在管）
+
+- **磁盘余量**：写满是另一种「悄悄坏掉」，本轮没做 —— `df -h` 自己看一眼。
+- **备份新鲜度**：备份到底跑没跑，仍然按第 7 步的办法人工核对
+  （`systemctl list-timers guangxue-backup.timer` + 看 `/srv/guangxue-backups/` 里有没有今天的时间戳，
+  以及 `systemctl status guangxue-backup`）。探活**不管这个**：
+  一台「备份目录为空但两个服务都健康」的机器，在监控眼里完全正常。
+
+### 9.7 顺带：两层限流怎么排查
+
+P2 起限流有两层：**Nginx** 有 `limit_req`（`gx_auth` 30 次/分、`gx_api` 300 次/分，按**单个 IP**），
+**应用里**还有 `AUTH_RL_*`（以**账号维度**为主：同邮箱发码 1 次/分、5 次/时；密码连错 5 次锁 15 分钟；
+口径见 `backend-rust/README.md`）。两层都回 **429**。排查顺序是先看 Nginx：
+
+```bash
+sudo grep ' 429 ' /var/log/nginx/guangxue.access.log | tail
+```
+
+有 429 → 是 Nginx 这层（同一个 IP 整体被限，常见于共享出口或脚本）；
+没有 429 但用户仍说「被限流了」→ 是应用里的账号维度，响应体里会带一句中文 message
+（`journalctl -u guangxue-auth` 里也有记录）。两层各自的量级与理由写在
+`deploy/nginx/guangxue.conf.template` 顶部的注释里（第 5 步用的就是那份模板）。
+
+## 10. 上线前的最后一份清单
 
 - [ ] `https://域名/api/health` 与 `/api/auth/health` 都 200
 - [ ] 浏览器打开站点 → 注册（要邀请码）→ 登录 → 复习 → 统计，全链路通
@@ -322,12 +510,14 @@ sudo journalctl -u guangxue-api -n 20 | grep -c '\[GIN\]'    # 期望 0
 - [ ] `systemctl --failed` 为空
 - [ ] `sudo reboot` 后两个服务与定时器自动起来（**这条一定要真做一次**）
 - [ ] `sysctl -w net.ipv4.tcp_syncookies=1`、开 ufw 只放 22/80/443（其余一律不开）
+- [ ] `guangxue-monitor.timer` 已 enable，且按上面第 9 节做过一次「停掉账号服务 → 收到告警 → 起回来 → 收到恢复」的演练
+- [ ] 已加一个外部 uptime 服务打 `/healthz`
 
-## 10. 这份手册里「本机做不到」的部分
+## 11. 这份手册里「本机做不到」的部分
 
 | 做不到的事 | 原因 | 谁来补 |
 |---|---|---|
-| 真机验收（浏览器全链路、手机 4G） | 本机没有服务器也没有域名 | 你，在第 9 步清单里 |
+| 真机验收（浏览器全链路、手机 4G） | 本机没有服务器也没有域名 | 你，在第 10 步清单里 |
 | `certbot` 拿证书与续期演练 | 需要域名与 DNS 权限 | 你，第 5 步 |
 | systemd 服务真实拉起 | Windows 上没有 systemd | 你，第 4 步 |
 | SPF / DKIM / DMARC | 需要域名 DNS 控制台 | 见 [P0-3](launch-plan.md#p0-3-打通真发邮件) 第 4 步 |
