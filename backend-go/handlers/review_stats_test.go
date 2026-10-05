@@ -286,6 +286,64 @@ func TestStatsEmptyDB(t *testing.T) {
 	assertFloat(t, stats, "retention_rate", 0)
 }
 
+// TestStatsDailyQuotaServerSide 「今日 5 个」的配额口径：**客户端什么都不传**时服务端也要算得对。
+//
+// 单一循环池改造（2026-10）之后，每天置顶哪 5 个由服务端用稳定哈希算
+// （dailyWordCount / dailyWordIDs / countTodayDaily，时区 Asia/Shanghai），
+// 前端不再记账、也不再参与抽取。所以这条用例刻意**不带任何 today / today_ms 参数**：
+//
+//   - daily_target 恒为 5（不是「池子里有几个算几个」）；
+//   - 提交一张**服务端标为 daily** 的卡之后，daily_done 由 0 变 1；
+//   - 提交一张不在今日 5 个里的卡，daily_done 不动 —— 它数的是置顶卡的完成度，
+//     不是「今天复习了几张」（否则「今日 5/5」会在用户随意翻池子时虚高）。
+//
+// 「今日置顶是哪 5 个」直接读队列返回的 daily 计算列：那是服务端自己的答案，
+// 测试不另算一遍（另算一遍只能证明两个实现一致，证明不了服务端与客户端之间没有记账依赖）。
+func TestStatsDailyQuotaServerSide(t *testing.T) {
+	router, db := setupTestRouter(t)
+
+	// 放 6 个词（比每天置顶的 5 个多一个）：多出来那个用来验证「不是整个池子都算置顶」
+	for _, word := range []string{"alpha", "bravo", "charlie", "delta", "echo", "foxtrot"} {
+		seedWord(t, db, word)
+	}
+
+	before := getStats(t, router)
+	assertInt(t, before, "daily_target", int64(dailyWordCount))
+	assertInt(t, before, "daily_done", 0)
+
+	queue, code := decodeData(t, doJSON(t, router, http.MethodGet, "/api/reviews/queue", nil))
+	if code != http.StatusOK {
+		t.Fatalf("队列的 code 期望 200，实际 %d", code)
+	}
+	var daily, rest []queueCard
+	for _, card := range readQueueCards(t, queue) {
+		if card.Daily {
+			daily = append(daily, card)
+		} else {
+			rest = append(rest, card)
+		}
+	}
+	if len(daily) != dailyWordCount {
+		t.Fatalf("今日置顶期望 %d 张（daily_target 就是它），实际 %d 张（%v）",
+			dailyWordCount, len(daily), cardIDs(daily))
+	}
+	if len(rest) == 0 {
+		t.Fatalf("6 个词里只有 %d 个被置顶，应当还剩没被置顶的卡可供对照", len(daily))
+	}
+
+	// 先提交一张**不在**今日 5 个里的卡：daily_done 必须还是 0
+	submitReview(t, router, newReviewRequest(rest[0].ID, 3, 1.5, 5, 1.5))
+	afterOther := getStats(t, router)
+	assertInt(t, afterOther, "daily_done", 0)
+	assertInt(t, afterOther, "today_reviewed", 1) // 日志确实记上了，只是不计入置顶进度
+
+	// 再提交一张置顶卡：daily_done 由 0 变 1
+	submitReview(t, router, newReviewRequest(daily[0].ID, 3, 1.5, 5, 1.5))
+	after := getStats(t, router)
+	assertInt(t, after, "daily_done", 1)
+	assertInt(t, after, "daily_target", int64(dailyWordCount))
+}
+
 // TestStatsAfterDeleteWord 删除词条后统计口径不虚高：
 // DELETE /api/words/:id 会连带删掉该词的复习状态与日志（README 明确写过），
 // 否则 total_reviews 与 retention_rate 会被指向不存在词条的脏日志撑高。

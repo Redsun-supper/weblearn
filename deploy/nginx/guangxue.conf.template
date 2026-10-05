@@ -10,11 +10,44 @@
 #   /api/*       → 127.0.0.1:8080  Go 主后端
 #   其余         → 仓库根目录的静态文件
 #
-# ⚠️ 两个坑（都真实发生过，别再踩一遍）：
+# ⚠️ 三个坑（都真实发生过，别再踩一遍）：
 #   ① `proxy_pass` 末尾**不要带 `/`**：带了会把 /api/xxx 改写成 /xxx，全线 404；
 #   ② `/api/auth/` 必须写在 `/api/` **前面**：Nginx 前缀匹配是「最长优先」没错，
-#      但两个 location 写反了之后，以后有人来加规则时极容易改错，顺序即文档。
+#      但两个 location 写反了之后，以后有人来加规则时极容易改错，顺序即文档；
+#   ③ `X-Forwarded-For` 必须由我们**覆盖**成 $remote_addr，不能追加（P2 修的真漏洞）：
+#      伪造 XFF 就能绕开账号服务里所有按 IP 的限流，理由见下面两处 location 的注释。
 # ============================================================================
+
+# ============================================================================
+# 限流（P2）
+#
+# ⚠️ 这五行**必须写在 http 上下文**，也就是任何 `server {}` 块**外面**（写在本文件顶部
+#    正好满足：本文件是被 nginx.conf 的 `http {}` 里 include 进来的）。
+#    写进 `server {}` 里 `sudo nginx -t` 会直接报错：
+#      "limit_req_zone" directive is not allowed here
+#
+# 三层防守各管各的（排查某个「被限流了」时按①→②→③的顺序想）：
+#   ① **账号维度**在 Rust 进程里（backend-rust/src/rate_limit.rs）：同邮箱发码 1 次/分、
+#      5 次/时；密码连续错 5 次锁 15 分钟 —— 这几条最严，也最不能放松；
+#   ② **IP 维度**也在应用里（`AUTH_RL_*`，见 backend-rust/.env.example），但**故意放宽**
+#      （200/900 这种量级）：IP 是共享资源，校园 / 公司 / 运营商 CGNAT 出口后面可能站着
+#      几十上百人，按「一个人一台机器」算额度会让整栋楼在早高峰一起收到 429；
+#   ③ **粗粒度洪水**交给这里：单个 IP 的脚本/爬虫/撞库在 Nginx 就被挡住，不进应用。
+#      30r/m 对正常人类操作绰绰有余，对脚本是硬墙。
+#
+# ⚠️ 两层都回 **429**。区分方法：先看 Nginx access log 里有没有 429 ——
+#    有 → 是这一层（同一个 IP 整体被限）；没有 → 是应用里的账号维度，
+#    响应体里会带一句中文 message，`journalctl -u guangxue-auth` 里也有记录。
+#
+# `limit_conn` 防的是「一个 IP 同时挂住几十条慢连接」；`limit_req` 的 burst/nodelay
+# 允许短时突发（开一个页面同时打几个接口很正常），超出的直接 429、**不排队** ——
+# 排队会把正常用户的请求一起拖慢，还会占着 worker 连接。
+# ============================================================================
+limit_req_zone $binary_remote_addr zone=gx_auth:10m rate=30r/m;
+limit_req_zone $binary_remote_addr zone=gx_api:10m  rate=300r/m;
+limit_conn_zone $binary_remote_addr zone=gx_conn:10m;
+limit_req_status 429;
+limit_conn_status 429;
 
 # HTTP：只做两件事 —— 给 certbot 的验证留个口子，其余一律跳 HTTPS
 server {
@@ -75,10 +108,30 @@ server {
     location /api/auth/ {
         # ⚠️ 末尾不带 `/`：带了就会把 /api/auth/me 改写成 /me
         proxy_pass http://127.0.0.1:8081;
+
+        # Nginx 这一层的粗粒度限流（zone 定义在文件顶部，只能在 http 上下文里定义）。
+        # 账号接口最敏感：单 IP 30 次/分、突发最多 20 条（burst=20 + nodelay，超出的直接 429）；
+        # 并发连接最多 20 条。
+        limit_req zone=gx_auth burst=20 nodelay;
+        limit_conn gx_conn 20;
+
         proxy_http_version 1.1;
         proxy_set_header Host              $host;
         proxy_set_header X-Real-IP         $remote_addr;
-        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        # ⚠️ XFF 必须是 $remote_addr，**不能**用 $proxy_add_x_forwarded_for（P2 修的真漏洞）：
+        # 后者 = 「客户端自己发来的 XFF」+ $remote_addr，客户端伪造的那段会留在**最前面**；
+        # 而 backend-rust/src/http/middleware.rs 的 client_ip() 取的是 XFF 的**第一个**值 ——
+        # 于是随手伪造一个 X-Forwarded-For 就能绕开账号服务里**所有**按 IP 的限流
+        # （登录、发码、注册，那正是撞库与邮件滥用的防线）。
+        # 我们是单层代理，$remote_addr 才是权威值：由我们**覆盖**掉客户端给的值。
+        #
+        # 将来若在前面加了 CDN / 负载均衡：改用 realip 模块（ngx_http_realip_module）
+        #   set_real_ip_from <CDN 回源网段>;
+        #   real_ip_header X-Forwarded-For;
+        #   real_ip_recursive on;
+        # 只在**可信来源**的地址上采信 XFF，别无脑信任它；
+        # realip 生效后 $remote_addr 已经是真实客户端 IP，这一行不用再改。
+        proxy_set_header X-Forwarded-For   $remote_addr;
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_set_header Cookie            $http_cookie;
         proxy_read_timeout 30s;
@@ -87,10 +140,17 @@ server {
     # ---- 2) 主后端（Go）----
     location /api/ {
         proxy_pass http://127.0.0.1:8080;
+
+        # 单 IP 300 次/分、突发最多 100 条、并发连接最多 30 条。
+        # 比账号接口宽松：打开一个页面会同时打几个接口，管太紧会把正常用户打成 429。
+        limit_req zone=gx_api burst=100 nodelay;
+        limit_conn gx_conn 30;
+
         proxy_http_version 1.1;
         proxy_set_header Host              $host;
         proxy_set_header X-Real-IP         $remote_addr;
-        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        # ⚠️ 同 /api/auth/：XFF 覆盖成 $remote_addr（理由与 CDN 场景见上面那一处注释）
+        proxy_set_header X-Forwarded-For   $remote_addr;
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_set_header Cookie            $http_cookie;
         proxy_read_timeout 30s;

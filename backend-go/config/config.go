@@ -12,12 +12,27 @@ import (
 // ——本机开发时浏览器访问的是 dev-server（127.0.0.1:8899），它会带这两个 Origin 之一。
 const defaultAllowedOrigins = "http://127.0.0.1:8899,http://localhost:8899"
 
+// 账号库（账号服务的 auth.db）默认路径。
+//
+// 相对路径是相对**进程工作目录**：生产上 systemd 把 WorkingDirectory 设成
+// /opt/guangxue/backend-go，所以 ../backend-rust/auth.db 正好指向账号库；
+// 本机在 backend-go/ 里 go run 也一样。
+// ⚠️ 从仓库根目录启动时这个默认值会指到仓库外，那时要显式配 AUTH_DB_PATH=backend-rust/auth.db。
+const defaultAuthDBPath = "../backend-rust/auth.db"
+
 // Config 服务器配置
 type Config struct {
 	Host   string
 	Port   string
 	Env    string // 运行环境：development 或 production
 	DBPath string // SQLite 数据库文件路径
+
+	// AuthDBPath AUTH_DB_PATH：账号服务（backend-rust）的 auth.db 路径。
+	// 管理看板**只读**打开它取账号侧数字（今日新增用户 / 角色分布 / 发码与兑换），
+	// 读不到时降级成 0 + 一句原因，绝不阻塞启动（见 database.AuthDB）。
+	// ⚠️ 它必须对 Go 进程**可读**：systemd 单元的 ReadOnlyPaths=/opt/guangxue/backend-rust
+	// 就是为它加的（不给那行，线上看板账号侧永远是 0）。
+	AuthDBPath string
 
 	// 以下两项与账号服务（backend-rust）共享，用于本地验签登录令牌：
 	// Go 自己用同一把密钥验签，不查库、也不回头问账号服务。
@@ -27,7 +42,8 @@ type Config struct {
 }
 
 // LoadConfig 加载配置：先读 .env 文件，再读环境变量，缺失时用默认值
-// （SERVER_HOST / SERVER_PORT / APP_ENV / DB_PATH / AUTH_JWT_SECRET / AUTH_ALLOWED_ORIGINS）
+// （SERVER_HOST / SERVER_PORT / APP_ENV / DB_PATH / AUTH_DB_PATH /
+// AUTH_JWT_SECRET / AUTH_ALLOWED_ORIGINS）
 //
 // 为什么要读 .env：AUTH_JWT_SECRET 必须与账号服务一致，而 .env 已被 .gitignore 排除，
 // 把密钥写在那里就不必每开一个终端手工 export（账号服务那边用 dotenvy 做同一件事）。
@@ -41,6 +57,7 @@ func LoadConfig() *Config {
 		Port:           getEnv("SERVER_PORT", "8080"),
 		Env:            getEnv("APP_ENV", "development"),
 		DBPath:         getEnv("DB_PATH", "guangxue.db"),
+		AuthDBPath:     getEnv("AUTH_DB_PATH", defaultAuthDBPath),
 		JWTSecret:      os.Getenv("AUTH_JWT_SECRET"),
 		AllowedOrigins: splitList(getEnv("AUTH_ALLOWED_ORIGINS", defaultAllowedOrigins)),
 	}
@@ -72,6 +89,25 @@ func (c *Config) StartupWarnings() []string {
 		warns = append(warns, "AUTH_JWT_SECRET 未配置：所有需要登录的接口都会返回 401。"+
 			"请在 backend-go/.env 里填上与账号服务 backend-rust/.env 相同的密钥（模板见 .env.example）")
 	}
+	// 账号库读不到：管理看板的账号侧数字（今日新增用户 / 角色分布 / 发码与兑换）会**静默**全变 0 ——
+	// 「今天真没人注册」与「库压根没读到」在界面上长得一模一样，事后从日志里也很难对上号，
+	// 所以启动时就要喊一声。只告警、不退出：看板少一个模块不值得让整个后端起不来，
+	// 生产环境同样只告警（口径与上面几条一致）。
+	//
+	// 判断只做「这个文件能不能打开读」，不用 SQLite 真连一次：那会在启动时落下 -shm/-wal
+	// 之类的副作用，而这里要的只是尽早提醒。真正的读失败（WAL 伴随文件缺失、库损坏）
+	// 由 database.AuthDB 在请求期降级处理。
+	//
+	// 空路径视为「这份配置不管账号库」（直接构造 Config 的场景，例如单元测试），不告警：
+	// LoadConfig 一定会给出默认值，所以真实启动路径上不会出现空值。
+	if c.AuthDBPath != "" {
+		if err := checkReadable(c.AuthDBPath); err != nil {
+			warns = append(warns, "AUTH_DB_PATH 指向的账号库读不到（"+c.AuthDBPath+"）："+
+				"管理看板的账号侧数字会不可用（今日新增用户 / 角色分布 / 发码与兑换一律显示 0），业务侧数字不受影响。"+
+				"请在 backend-go/.env 里把 AUTH_DB_PATH 配成账号库的真实路径"+
+				"（例如 /opt/guangxue/backend-rust/auth.db），并确认账号服务在运行。原因："+err.Error())
+		}
+	}
 	if c.IsProduction() {
 		// 生产应该只让 Nginx 访问，不该把 8080 暴露到公网
 		if c.Host != "127.0.0.1" && c.Host != "localhost" {
@@ -88,6 +124,15 @@ func (c *Config) StartupWarnings() []string {
 		}
 	}
 	return warns
+}
+
+// checkReadable 只检查「这个文件能不能打开读」（打不开就返回原因，供告警文案使用）
+func checkReadable(path string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	return f.Close()
 }
 
 // splitList 把 "a,b , c" 切成 ["a","b","c"]（跳过空项），用于逗号分隔的配置

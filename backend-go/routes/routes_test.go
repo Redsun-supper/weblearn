@@ -138,6 +138,77 @@ func TestRouterHealthEndpoint(t *testing.T) {
 	}
 }
 
+// TestRouterHealthDeepEndpoint 深检走**真实路由**：`GET /api/health?deep=1` 要能通到处理器。
+//
+// 装置里的 cfg 没配 AUTH_DB_PATH（空串），所以这条用例顺带钉住 P1 的口径：
+// 账号库不可用**不算故障** —— HTTP 仍 200、status 仍 ok、deep.auth_db.available=false 且带原因。
+// 业务库是好是坏由 handlers 包的用例盯（那边能精确地把库弄坏）。
+func TestRouterHealthDeepEndpoint(t *testing.T) {
+	router := setupRoutesTest(t)
+
+	rec := doRoutes(router, http.MethodGet, "/api/health?deep=1", nil, "", routesTestOrigin, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /api/health?deep=1 期望 200，实际 %d，响应体=%s", rec.Code, rec.Body.String())
+	}
+
+	var body struct {
+		Status string `json:"status"`
+		Deep   *struct {
+			Database         string `json:"database"`
+			MigrationVersion *int64 `json:"migration_version"`
+			AuthDB           struct {
+				Available bool    `json:"available"`
+				Error     *string `json:"error"`
+			} `json:"auth_db"`
+			UptimeSeconds *int64 `json:"uptime_seconds"`
+			Version       string `json:"version"`
+		} `json:"deep"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("深检响应不是合法 JSON: %v，原文=%s", err, rec.Body.String())
+	}
+	if body.Status != "ok" {
+		t.Fatalf("没配 AUTH_DB_PATH 时 status 仍应是 ok（账号库读不到只降级），实际 %q", body.Status)
+	}
+	if body.Deep == nil {
+		t.Fatalf("?deep=1 的响应里必须有 deep 对象，实际响应体=%s", rec.Body.String())
+	}
+	if body.Deep.Database != "ok" {
+		t.Fatalf("deep.database 期望 ok，实际 %q", body.Deep.Database)
+	}
+	// 信息类字段必须都在（监控按字段名取值，缺字段会让采集端整条记录失败）
+	if body.Deep.MigrationVersion == nil {
+		t.Fatal("deep.migration_version 缺失或不是数字")
+	}
+	if body.Deep.UptimeSeconds == nil {
+		t.Fatal("deep.uptime_seconds 缺失或不是数字")
+	}
+	if body.Deep.Version != "1.0.0" {
+		t.Fatalf("deep.version 期望与 /api/hello 同源（1.0.0），实际 %q", body.Deep.Version)
+	}
+	if body.Deep.AuthDB.Available {
+		t.Fatalf("本装置没配 AUTH_DB_PATH，deep.auth_db.available 应当是 false，实际 %v", body.Deep.AuthDB)
+	}
+	if body.Deep.AuthDB.Error == nil || *body.Deep.AuthDB.Error == "" {
+		t.Fatal("deep.auth_db.error 要给出账号库不可用的原因")
+	}
+}
+
+// TestRouterHealthShallowShapeUnchanged 浅检走真实路由的响应体必须**逐字**还是老样子：
+// 外部部署脚本与旧前端按这两个字段解析，多一个字段（哪怕是 deep:null）都算形状变了。
+func TestRouterHealthShallowShapeUnchanged(t *testing.T) {
+	router := setupRoutesTest(t)
+
+	rec := doRoutes(router, http.MethodGet, "/api/health", nil, "", routesTestOrigin, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /api/health 期望 200，实际 %d，响应体=%s", rec.Code, rec.Body.String())
+	}
+	const wantBody = `{"message":"服务器运行正常","status":"ok"}`
+	if got := rec.Body.String(); got != wantBody {
+		t.Fatalf("浅检响应体必须逐字保持原样\n期望：%s\n实际：%s", wantBody, got)
+	}
+}
+
 // TestRouterRegistersAllPaths 路由表回归：每条已在 README / 前端里使用的「方法 + 路径」
 // 都必须真的注册在 gin 的引擎上。
 // 这里查 router.Routes() 而不是发请求看状态码——因为 /api/words/:id 这类接口在空库下

@@ -3,10 +3,10 @@
 package main
 
 import (
-	"log"
 	"backend-go/config"
 	"backend-go/database"
 	"backend-go/routes"
+	"log"
 )
 
 // main 启动顺序：加载配置 → 打开 SQLite（首次运行自动创建 guangxue.db 并建表/迁移）

@@ -4,6 +4,7 @@ package routes
 
 import (
 	"backend-go/config"
+	"backend-go/database"
 	"backend-go/handlers"
 	"backend-go/middleware"
 	"github.com/gin-gonic/gin"
@@ -24,7 +25,12 @@ func SetupRouter(db *gorm.DB, cfg *config.Config) *gin.Engine {
 	// CSRF 闸门挂在整个 /api 上（只读方法它自己会放行），改动状态的请求必须过这道闸
 	api.Use(middleware.CSRFGuard(cfg.AllowedOrigins))
 	{
-		api.GET("/health", handlers.HealthCheck)
+		// 健康检查：浅检（默认）与深检（?deep=1）同一条路径，见 handlers/health.go。
+		// 账号库句柄同样是惰性打开的：这里只记路径，起服务时不会碰 auth.db（与看板一致）。
+		// 深检里账号库读不到**不算故障**（P1 口径），只有业务库查不了才回 503 ——
+		// 外部监控只看状态码，所以这条区分必须在服务端做掉。
+		hh := handlers.NewHealthHandler(db, database.NewAuthDB(cfg.AuthDBPath))
+		api.GET("/health", hh.Check)
 
 		api.GET("/hello", handlers.Hello)
 
@@ -57,6 +63,28 @@ func SetupRouter(db *gorm.DB, cfg *config.Config) *gin.Engine {
 		}
 		// 词条里已使用的词书 / 单元列表（后台筛选下拉用）
 		api.GET("/word-options", rv.WordOptions)
+
+		// ---- 管理看板（只读统计，见 docs/launch-plan.md §5.0）----
+		// 整组挂 RequireAdmin：没登录 401、登录了但不是 admin / super_admin 403。
+		// 用 RequireAdmin 而**不是** RequireSuperAdmin：看板只是只读统计，管理员就该能看；
+		// 发码 / 调权限 / 封号那类治理动作才收口到超管（那些接口在账号服务里）。
+		//
+		// ⚠️ `/users/progress` 与 `/users/:id/progress` 看着会撞（同一个位置既要有静态段
+		// "progress"、又要把它当 :id 用），实测 gin 1.9 允许这样写：匹配时**静态子节点优先**，
+		// 静态分支走不通才回退到 :id（tree.go 的 getValue 会给带通配子节点的位置留一份
+		// skippedNode 快照用于回溯）。于是 `/users/progress` 命中批量接口、
+		// `/users/7/progress` 命中单人接口 —— 两条路径都有路由测试钉住
+		// （routes_admin_test.go），改这段之前先跑它们。
+		// 之所以不改成 `/user-progress/:id` 之类的绕法：前端（批 3）与 launch-plan 记的就是这个形状。
+		admin := api.Group("/admin", middleware.RequireAdmin(cfg.JWTSecret))
+		{
+			// 账号库句柄是惰性打开的：这里只记路径，起服务时不会碰 auth.db
+			as := handlers.NewAdminStatsHandler(db, database.NewAuthDB(cfg.AuthDBPath))
+			admin.GET("/stats/overview", as.Overview)
+			admin.GET("/stats/trend", as.Trend)
+			admin.GET("/users/progress", as.UsersProgress)
+			admin.GET("/users/:id/progress", as.UserProgress)
+		}
 	}
 
 	return r

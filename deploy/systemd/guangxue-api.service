@@ -41,6 +41,13 @@ ProtectKernelModules=yes
 ProtectControlGroups=yes
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 ReadWritePaths=/opt/guangxue/backend-go
+# 管理看板要**只读**账号库（backend-rust/auth.db）：Go 侧以 mode=ro 打开它取账号侧数字
+# （今日新增用户 / 角色分布 / 发码与兑换）。这一行是**显式的只读保证**：
+# ProtectSystem=strict 本来就让整个文件系统只读，写出来是为了将来放宽 ReadWritePaths 时，
+# 账号目录不会被顺手开成可写 —— auth.db 的写入方只能有账号服务一个。
+# ⚠️ 真正让线上看板账号侧「全是 0」的是 AUTH_DB_PATH 配错或账号服务没起来；
+# 读不到时 Go 侧会降级（数字 0 + auth_db.error），启动日志里另有一条 AUTH_DB_PATH 告警。
+ReadOnlyPaths=/opt/guangxue/backend-rust
 
 [Install]
 WantedBy=multi-user.target

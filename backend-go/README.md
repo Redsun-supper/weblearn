@@ -85,7 +85,7 @@ go build -o server main.go
 
 | 方法 | 路径 | 权限 | 说明 |
 |------|------|------|------|
-| GET | /api/health | 公开 | 健康检查 |
+| GET | /api/health | 公开 | 健康检查（浅检；带 `?deep=1` 做深检，自身故障回 **503**，详见下表后的说明） |
 | GET | /api/hello | 公开 | 欢迎信息 |
 | GET | /api/words | 公开 | 词条列表（limit/offset/subject/book/unit/search） |
 | POST | /api/words | **管理员** | 批量添加词条（已存在的跳过） |
@@ -99,6 +99,16 @@ go build -o server main.go
 | GET | /api/reviews/probes | **需登录** | 每日抽查候选：已学词按 `due_at` **倒序**（越轮不到复习的越靠前） |
 | POST | /api/reviews/submit | **需登录** | 提交复习结果（FSRS 状态持久化） |
 | GET | /api/reviews/stats | **需登录** | 复习统计 |
+| GET | /api/admin/stats/overview | **管理员** | 管理看板总览：今日 5 个 + 累计 8 个 + 账号库可用性（P1） |
+| GET | /api/admin/stats/trend?days=7\|30 | **管理员** | 按**北京自然日**的趋势点（升序、长度恰为 days、缺日补 0） |
+| GET | /api/admin/users/progress?ids=1,2,3 | **管理员** | 批量复习进度摘要（≤100 个 id；缺席的 id 也回一行、数字全 0） |
+| GET | /api/admin/users/:id/progress | **管理员** | 单人进度摘要 + 最近 7 天 |
+
+**健康检查的两档**（`handlers/health.go`；外部监控 `guangxue-monitor` 每 5 分钟探一次、**只认 HTTP 状态码**）：
+
+- **浅检**（默认，不带参数）：`{"status":"ok","message":"服务器运行正常"}` —— 字段一个不多，旧前端与部署脚本按这个形状解析；
+- **深检**（`?deep=1` 或 `?deep=true`）：追加 `deep` 对象 —— `database`（业务库发一条真查询 `SELECT 1`）、`migration_version`（SQLite 的 `user_version`；业务库没有版本链、目前恒为 0，**纯信息项**）、`auth_db.available` / `auth_db.error`、`uptime_seconds`、`version`（与 `/api/hello` 同一个常量）；
+- 状态码口径：**只有自身检查（业务库查询）失败才回 503** + `status="degraded"`，`message` 说清是哪一项坏了；**账号库读不到仍回 200 + `status="ok"`**（P1 口径：账号侧故障只降级，不能让监控为「账号服务重启」这种事每 5 分钟报一次警）。
 
 **鉴权失败的口径**（与账号服务逐字一致，前端按 `error` 字段分支，不看 `message`）：
 
@@ -112,6 +122,23 @@ go build -o server main.go
 `AUTH_ALLOWED_ORIGINS` 里。用 `curl` 手工试接口不带 `Origin`，此时按「非浏览器」处理——
 `Content-Type` 必须是 `application/json`，否则会被 403 挡掉（`-d` 默认发的表单类型就会踩这一条，
 记得加 `-H "Content-Type: application/json"`）。
+
+### 管理统计接口（P1，供个人中心的管理看板使用）
+
+整组挂在 `/api/admin`，统一 `RequireAdmin`（`admin` 与 `super_admin` 都放行）。
+
+| 接口 | 要点 |
+|------|------|
+| `GET /api/admin/stats/overview` | **一个请求出全部数字**：`today.{new_users,active_users,reviews,new_words,probes}` + `totals.{users,admins,super_admins,invites_issued,invites_redeemed,invite_conversion,words,reviews}` + `auth_db.{available,error}` |
+| `GET /api/admin/stats/trend?days=7\|30` | `points` 升序、长度恰为 `days`、缺日补 0；`days` 只认 7 与 30（其他值 400） |
+| `GET /api/admin/users/progress?ids=1,2,3` | 当页用户的进度（≤100 个 id）：`{user_id,learned_words,total_reviews,streak_days,last_review_at}`；**请求里没出现过的 id 也回一行**（数字全 0），按请求顺序去重，无 N+1 |
+| `GET /api/admin/users/:id/progress` | 单人版 + `last7[{date,reviews}]`；id 缺失/非数字 → 400，用户无数据 → 200 + 全 0 |
+
+- **口径**：时间一律折成**北京时间（UTC+8）**再切天（账号库存 UTC 文本、复习库存带时区的时间）；今日新学 = `stability_before = 0`、今日抽查 = `is_probe`、今日活跃 = 当天有 `review_logs` 的 distinct `user_id`。
+  ⚠️ `today.new_words` 与 `/api/reviews/stats` 的 `today_new` **在「重置重学」多的日子会不一样**：前者按定案只判 `stability_before = 0`，后者还排除 `is_reset`。两处都要改的时候记得一起改。
+- **账号库是只读打开的**（`database/authdb.go`，DSN 带 `mode=ro`，驱动层面不允许写）：路径由 `AUTH_DB_PATH` 给（默认 `../backend-rust/auth.db`，只对「工作目录 = `backend-go/`」成立）。
+  **读不到时接口仍然 200**：账号侧那 6 个数字全按 0 显示 + `auth_db.available=false` + 一句可读原因（含路径），复习侧数字照常 —— 看板不会因为账号服务没起来就整页打不开。启动时 `config.StartupWarnings` 也会为这个路径喊一声。
+- ⚠️ **跨库时间比较的坑**：`guangxue.db` 里的时间由 GORM 写成带自身偏移的文本（形如 `2026-10-03 17:27:36.1460602+08:00`），拿 UTC 边界直接比字典序会**排错先后**。做法是 SQL 只做**放宽两天**的粗筛（覆盖 −12:00~+14:00 共 26 小时的文本差，只多带不漏行），精确判定在 Go 侧按真实时间点做。
 
 ### 复习队列接口说明（供学生端调度使用）
 
@@ -269,6 +296,12 @@ location /api/ {
     proxy_pass http://localhost:8080;
     proxy_set_header Host $host;
     proxy_set_header X-Real-IP $remote_addr;
-    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    # ⚠️ 别用 $proxy_add_x_forwarded_for（它保留客户端伪造的 XFF，
+    # 账号服务取第一个值 → 可绕过按 IP 的限流）。Go 自己目前不读客户端 IP，
+    # 但同一份 Nginx 配置也服务账号服务，所以这里统一覆盖成真实来源地址。
+    proxy_set_header X-Forwarded-For $remote_addr;
 }
 ```
+
+> 生产环境请让 Go **只监听回环**（`SERVER_HOST=127.0.0.1`）：外面只有 Nginx，
+> 才能保证上面这行覆盖不可绕过。启动时若「生产却监听非回环」会打告警（`config.StartupWarnings`）。

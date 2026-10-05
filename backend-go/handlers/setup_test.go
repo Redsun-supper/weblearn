@@ -20,6 +20,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 
+	"backend-go/database"
 	"backend-go/middleware"
 	"backend-go/models"
 )
@@ -51,13 +52,16 @@ const (
 // testDBCounter 给每个测试实例分配独立的内存库名字，保证用例之间互不干扰
 var testDBCounter atomic.Int64
 
-// setupTestRouter 起一套「内存 SQLite + 生产路由」的测试环境。
-// 返回的 *gorm.DB 用来直接造数据 / 核对落库结果（跨过 HTTP 层看真实写入）。
-func setupTestRouter(t *testing.T) (*gin.Engine, *gorm.DB) {
+// newTestDB 建一个「只装了生产 models 的内存库」，用例之间互不干扰。
+//
+// 口径说明（为什么这么搭）：
+//   - 建表必须走 AutoMigrate 且复用生产同款 models，不另写一份 DDL，否则测试库与线上库会悄悄漂移；
+//   - 内存库命名用「进程内自增计数」，不能用 t.Name()——测试名里带斜杠会让 DSN 的 file: 段
+//     没法按「文件名 + 查询串」解析（sqlite 驱动会直接报错），而且隔离性也不如独立名字；
+//   - 用 cache=shared 保证 GORM 连接池里新开的连接看到的是同一个内存库（mode=memory 在连接
+//     全关时会销毁，所以还要把连接池压到 1，见下面 SetMaxOpenConns 的注释）。
+func newTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
-
-	// 测试环境关掉 gin 的启动日志与请求日志，只保留 panic 兜底
-	gin.SetMode(gin.TestMode)
 
 	name := fmt.Sprintf("guangxue_test_%d", testDBCounter.Add(1))
 	dsn := "file:" + name + "?mode=memory&cache=shared"
@@ -90,7 +94,18 @@ func setupTestRouter(t *testing.T) (*gin.Engine, *gorm.DB) {
 	t.Cleanup(func() {
 		_ = sqlDB.Close()
 	})
+	return db
+}
 
+// setupTestRouter 起一套「内存 SQLite + 生产路由」的测试环境。
+// 返回的 *gorm.DB 用来直接造数据 / 核对落库结果（跨过 HTTP 层看真实写入）。
+func setupTestRouter(t *testing.T) (*gin.Engine, *gorm.DB) {
+	t.Helper()
+
+	// 测试环境关掉 gin 的启动日志与请求日志，只保留 panic 兜底
+	gin.SetMode(gin.TestMode)
+
+	db := newTestDB(t)
 	router := newTestRouter(t, db)
 	return router, db
 }
@@ -112,7 +127,8 @@ func newTestRouter(t *testing.T, db *gorm.DB) *gin.Engine {
 	api := router.Group("/api")
 	api.Use(middleware.CSRFGuard([]string{testOrigin}))
 	rv := NewReviewHandler(db)
-	api.GET("/health", HealthCheck)
+	// 健康检查走生产同款处理器（浅检 + 深检）；账号库路径给空串，深检会走「账号库不可用」的降级分支
+	api.GET("/health", NewHealthHandler(db, database.NewAuthDB("")).Check)
 	api.GET("/hello", Hello)
 	words := api.Group("/words")
 	{
@@ -132,6 +148,19 @@ func newTestRouter(t *testing.T, db *gorm.DB) *gin.Engine {
 		reviews.GET("/stats", rv.ReviewStats)
 	}
 	api.GET("/word-options", rv.WordOptions)
+
+	// ---- 管理看板（只读统计）----
+	// 生产装配见 routes/routes.go；这里同样整组挂 RequireAdmin（未登录 401、普通用户 403）。
+	// 账号库路径给空串：本装置的用例不需要真实 auth.db，看板会走「账号库不可用」的降级分支；
+	// 要真实账号库 + 固定时钟的用例（admin_stats_test.go）自己起一份引擎。
+	as := NewAdminStatsHandler(db, database.NewAuthDB(""))
+	admin := api.Group("/admin", middleware.RequireAdmin(testJWTSecret))
+	{
+		admin.GET("/stats/overview", as.Overview)
+		admin.GET("/stats/trend", as.Trend)
+		admin.GET("/users/progress", as.UsersProgress)
+		admin.GET("/users/:id/progress", as.UserProgress)
+	}
 	return router
 }
 

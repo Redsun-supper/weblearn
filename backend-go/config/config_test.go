@@ -3,6 +3,8 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -110,5 +112,67 @@ func TestStartupWarningsQuietWhenProductionIsProperlyConfigured(t *testing.T) {
 	cfg.Host = "localhost"
 	if got := cfg.StartupWarnings(); len(got) != 0 {
 		t.Fatalf("SERVER_HOST=localhost 不该告警，实际：%v", got)
+	}
+}
+
+// TestStartupWarningsAuthDBPath 账号库（管理看板的账号侧数据源）读不到要提前喊一声。
+//
+// 为什么值得一条专门的用例：配错 AUTH_DB_PATH **不会**让服务起不来，症状只是看板账号侧
+// 全是 0 —— 与「今天真没人注册」长得一模一样，事后从日志里翻很难对上号。
+func TestStartupWarningsAuthDBPath(t *testing.T) {
+	dir := t.TempDir()
+	existing := filepath.Join(dir, "auth.db")
+	if err := os.WriteFile(existing, []byte("占位文件（这一层只判断能不能打开读）"), 0o600); err != nil {
+		t.Fatalf("造临时文件失败: %v", err)
+	}
+	missing := filepath.Join(dir, "not-here.db")
+
+	cfg := &Config{Env: "development", JWTSecret: "已配", AuthDBPath: missing}
+	warns := cfg.StartupWarnings()
+	if len(warns) != 1 {
+		t.Fatalf("账号库读不到时应当正好一条告警，实际 %d 条：%v", len(warns), warns)
+	}
+	// 文案要说清三件事：哪个配置项、什么后果、去看哪里
+	for _, want := range []string{"AUTH_DB_PATH", missing, "管理看板"} {
+		if !strings.Contains(warns[0], want) {
+			t.Fatalf("告警里应当出现 %q，实际：%s", want, warns[0])
+		}
+	}
+
+	// 生产环境**同样只告警**（不是致命错误）：其余项都配好时，只多出这一条
+	cfg.Env = "production"
+	cfg.Host = "127.0.0.1"
+	cfg.AllowedOrigins = []string{"https://test.lovezmx.com"}
+	prodWarns := cfg.StartupWarnings()
+	if len(prodWarns) != 1 || !strings.Contains(prodWarns[0], "AUTH_DB_PATH") {
+		t.Fatalf("生产环境下账号库读不到也只该有这一条告警（不致命），实际：%v", prodWarns)
+	}
+
+	// 文件存在（这一层只回答「能不能打开读」）：不再告警
+	cfg.Env = "development"
+	cfg.AuthDBPath = existing
+	if got := cfg.StartupWarnings(); len(got) != 0 {
+		t.Fatalf("账号库文件读得到时不该告警，实际：%v", got)
+	}
+
+	// 空路径 = 这份配置不管账号库（直接构造 Config 的场景），不告警：
+	// LoadConfig 一定会给出默认值，所以真实启动路径上不会出现空值
+	cfg.AuthDBPath = ""
+	if got := cfg.StartupWarnings(); len(got) != 0 {
+		t.Fatalf("空路径不该告警，实际：%v", got)
+	}
+}
+
+// TestLoadConfigAuthDBPath 默认值与覆盖：默认指到账号服务的 auth.db（相对工作目录），
+// 而环境变量里配了就以配的为准。
+func TestLoadConfigAuthDBPath(t *testing.T) {
+	t.Setenv("AUTH_DB_PATH", "")
+	if got := LoadConfig().AuthDBPath; got != defaultAuthDBPath {
+		t.Fatalf("AUTH_DB_PATH 未配置时期望默认值 %q，实际 %q", defaultAuthDBPath, got)
+	}
+
+	t.Setenv("AUTH_DB_PATH", "/opt/guangxue/backend-rust/auth.db")
+	if got := LoadConfig().AuthDBPath; got != "/opt/guangxue/backend-rust/auth.db" {
+		t.Fatalf("AUTH_DB_PATH 配了就该用配的，实际 %q", got)
 	}
 }
