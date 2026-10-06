@@ -1,0 +1,76 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+<!-- Copyright (C) 2026  Redsun-supper (大冬呱 / HR_RedSun) -->
+<!DOCTYPE html>
+<!-- 法律声明页：站点的重要法律材料展示处（AGPL 第 5 条 (d) 的 Appropriate Legal Notices）。
+     版式（2026-10 用户要求「法律声明放在右边占据一半，做成右边侧栏，左边我要放东西」，
+     随后改成「换成占右边 1/3 吧」）：
+       · 右侧 1/3 = 本页主体，法律声明侧栏，**自己带滚动条**；
+       · 左侧 2/3 = 留白，等后续内容填（`.legal-left`，暂时是空容器）。
+     两处入口都指向本页（首页导航栏左上角站名「大冬呱」、个人中心顶栏「关于作者」按钮），
+     按 NOTICE 附加条款第 3 条，这些入口不得删除、隐藏或改指向 —— 改本页路径等于改条款落点，
+     动之前先看 NOTICE 与 docs/frontend.md。
+     页面背景（左上灰 → 右下半透明）与两栏布局的取舍见 legal.css 顶部说明。 -->
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>法律声明 · 广学</title>
+    <link rel="stylesheet" href="legal.css">
+</head>
+<body>
+    <div class="legal-layout">
+        <!-- 左半屏：留白（2026-10 用户：「左边我要放东西」）。这里不放任何占位文字 ——
+             空着才是「待填」，写提示语会跟将来的内容打架 -->
+        <div class="legal-left" id="legalLeft"></div>
+
+        <!-- 右半屏：法律声明侧栏 -->
+        <aside class="legal-right">
+            <div class="legal-inner">
+                <h1>法律声明</h1>
+                <p class="legal-sub">广学（Guangxue）· 学科内容展示与英语复习平台</p>
+
+                <h2>一、许可</h2>
+                <p>
+                    本程序是自由软件：你可以依照自由软件基金会发布的
+                    <strong>GNU Affero 通用公共许可证</strong>（AGPL-3.0-or-later）的条款
+                    重新发布和/或修改它。分发本项目、或把本项目（含修改版）作为服务提供给他人时，
+                    须遵守该许可证的条款。许可证全文见仓库根目录的 <code>LICENSE</code> 文件，
+                    或 <a href="https://www.gnu.org/licenses/" rel="noopener">gnu.org/licenses</a>。
+                </p>
+
+                <h2>二、署名与来源</h2>
+                <ul>
+                    <li>作者：Redsun-supper (大冬呱 / HR_RedSun)</li>
+                    <li>
+                        作者账号：<a href="https://atomgit.com/HR_RedSun" rel="noopener">atomgit.com/HR_RedSun</a>
+                        ｜ <a href="https://github.com/Redsun-supper" rel="noopener">github.com/Redsun-supper</a>
+                    </li>
+                    <li>
+                        项目仓库：<a href="https://github.com/Redsun-supper/weblearn" rel="noopener">github.com/Redsun-supper/weblearn</a>
+                    </li>
+                </ul>
+
+                <h2>三、附加条款（AGPL-3.0 第 7 条 (b) 项）</h2>
+                <p>
+                    分发本项目、或把本项目（含修改版）作为服务提供给他人时，须原样保留并显示上列作者账号与
+                    项目仓库链接，不得删除、隐藏或改指向别处。
+                </p>
+                <p>
+                    本页是作品的法律声明页，指向本页的<strong>显式入口</strong>——首页导航栏左上角的站名
+                    「大冬呱」，以及个人中心顶栏的「关于作者」按钮——同样须保留，且须无需登录即可从主界面
+                    直接到达。附加条款的完整文本见仓库根目录的 <code>NOTICE</code> 文件。
+                </p>
+
+                <h2>四、第三方组件</h2>
+                <p>
+                    复习调度使用开源的 FSRS v6 间隔复习算法（Rust 实现 <code>fsrs-rs</code>）；
+                    前后端的其余依赖与版本见仓库的 <code>go.mod</code>、<code>Cargo.toml</code> 与
+                    <code>package.json</code>。
+                </p>
+
+                <a class="legal-back" href="../index.html">← 返回首页</a>
+            </div>
+        </aside>
+    </div>
+</body>
+</html>

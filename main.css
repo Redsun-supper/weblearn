@@ -154,6 +154,30 @@ body {
 
 /* 每个字各占一行（竖排）；分开写是为了各自给字重，
    否则三个字一样粗，做成招牌会显得呆板 */
+/* 站名同时是**法律声明页的显式入口**（`<a href="legal/index.html">`，见 index.html 与 NOTICE
+   附加条款第 3 条）。链接态必须显式压回原样式：`a:link` / `a:visited` 的选择器权重比单个类高，
+   不写就会被浏览器默认的蓝色 + 下划线接管。 */
+.nav-logo:link,
+.nav-logo:visited {
+    color: #2b2b2b;
+    text-decoration: none;
+}
+
+/* 平时要像一块纯文字的招牌，但既然能点，就得给「可以点」的反馈：
+   悬停/聚焦只换文字颜色（#1565c0 与头像的焦点圈同色）。**不做位移或缩放** ——
+   这块贴着头像，动起来会撞到旁边那颗。 */
+.nav-logo:hover,
+.nav-logo:focus-visible {
+    color: #1565c0;
+}
+
+/* 键盘聚焦：与头像同款焦点圈（鼠标点击不会触发 :focus-visible） */
+.nav-logo:focus-visible {
+    outline: 3px solid #1565c0;
+    outline-offset: 3px;
+    border-radius: 4px;
+}
+
 .nav-logo > span {
     display: block;
 }

@@ -58,6 +58,12 @@
 **左侧深色侧栏**（头像 + 品牌 + 导航 + 页脚）+ **右侧主区**（顶栏 + 内容），
 内容按 **hash 路由**切换：`#/profile`（账号信息）/ `#/devices`（登录过得设备）/ `#/actions`（可用操作）。
 
+- **顶栏右侧那一排**（`.acc-topbar-right`）：服务端连通性小字 `#backendStatus` → 当前账号
+  `#topUserName` →「管理后台」按钮 `#accAdmin`（**只有管理员可见**，`hidden` 由 `account.js` 摘）
+  →「关于作者」按钮 `#accAbout`（所有登录用户可见）。**2026-10 用户要求**在个人中心顶栏右侧加
+  「关于作者」，它指向站点法律声明页 `../legal/index.html` —— 作者署名、账号与仓库链接都在那一页，
+  它同时也是 `NOTICE` 附加条款第 3 条要求保留的那个显式入口页（首页左上角「大冬呱」是同一页的
+  另一个入口，两处都不得删）。
 - **加一个页面** = `account.js` 的 `NAV_GROUPS` 加一项（`{id, name}`）+ `index.html` 里加一个
   `id="panel" + 首字母大写`（如 `panelProfile`）的 `.acc-panel`，导航与路由会自动带上它。
   面板元素 id 由 `panelIdOf()` 统一推导，不要在别处硬编码拼字符串。

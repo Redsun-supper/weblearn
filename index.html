@@ -38,8 +38,14 @@
         <!-- 站点名「大冬呱」竖排，摆在头像**左侧**（2026-10 用户先要求「在这里加上竖向的广学二字」，
              再指明「头像框的左边！」、「做好看点字大点」，最后把文字换成现在的三个字）。
              三个 span 是为了分开给字重（见 main.css 的 .nav-logo）。
-             窄屏（≤1200px）由 main.css 隐藏 —— 那时 9 个学科项要占满整行。 -->
-        <div class="nav-logo" aria-hidden="true"><span>大</span><span>冬</span><span>呱</span></div>
+             窄屏（≤1200px）由 main.css 隐藏 —— 那时 9 个学科项要占满整行。
+             2026-10：这块站名同时是**法律声明页的显式入口** —— 点它进 legal/index.html
+             （NOTICE 附加条款第 3 条：该入口须可从主界面直接到达；写全文件名而不是 /legal/，
+             是因为本地 dev-server 只在路径以 / 结尾时才补 index.html，/legal 会 404）。
+             所以它从 `<div aria-hidden="true">` 换成 `<a>`：aria-hidden 必须去掉 —— 现在是真链接，
+             读屏得念出来；光念「大冬呱」看不出通向哪儿，因此补 aria-label 与 title 说明去向。 -->
+        <a class="nav-logo" href="legal/index.html" aria-label="大冬呱 —— 法律声明与许可信息"
+           title="法律声明与许可信息"><span>大</span><span>冬</span><span>呱</span></a>
         <!-- 学科导航项：data-page 指向该学科的页面路径（有独立模块的写 modules/<学科>/，
              其余仍是 pages/ 下的占位页），点击由 main.js 加载并缓存 -->
         <div class="nav-items">

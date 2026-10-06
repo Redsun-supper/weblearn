@@ -1,0 +1,142 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+/* Copyright (C) 2026  Redsun-supper (大冬呱 / HR_RedSun) */
+/* 法律声明页（legal/index.html）专用样式。两件事：
+   1. 页面背景按 2026-10 用户的要求做成**从左上到右下、由灰色渐变到半透明**：
+      一条 135deg 的线性渐变，起点 #cfd8dc（蓝灰 200），终点是同一个颜色的 alpha=0 ——
+      「半透明」那一段是靠逐渐透出底下的白来体现的。
+      ⚠️ 正因为终点是透明的，body 的 background-color 必须是白色：想换底色就得连它一起改，
+      否则渐变会叠在别的颜色上，右下角那截会串色。
+   2. 版式是**右边三分之一**（2026-10 用户：「法律声明放在右边占据一半的网页，做成右边侧栏，
+      左边我要放东西」→ 随后改成「换成占右边 1/3 吧」）：法律声明固定在右侧 1/3，左边 2/3
+      留给后续内容。整页不滚、只有右栏自己滚 —— 与个人中心 `.acc-layout` 同一套做法
+      （固定框架 + 唯一的滚动容器），左栏将来放东西时也不会把法律声明顶走。
+      ⚠️ 左栏（.legal-left）是**空的**，它靠的就是 body 那道渐变露出来；别给它加底色。
+      ⚠️ 比例改在 `.legal-right` 的 flex-basis 上（`0 0 33.3333%` = 定宽不伸缩），
+      左栏用 `flex: 1 1 auto` 自动吃掉剩下的，两处不用互相凑数。
+   ⚠️ 本页是独立页面（不复用 main.css）：法律声明要求「可长期稳定访问」，不跟着站点重构走。 */
+
+body {
+    margin: 0;
+    font-family: Arial, "Microsoft YaHei", sans-serif;
+    line-height: 1.75;
+    color: #333;
+    background-color: #ffffff;
+    background-image: linear-gradient(135deg, #cfd8dc 0%, rgba(207, 216, 220, 0) 100%);
+    background-repeat: no-repeat;
+    background-attachment: fixed;
+}
+
+/* 两栏定高框架：height 100vh + overflow hidden = 整页不滚 */
+.legal-layout {
+    display: flex;
+    height: 100vh;
+    overflow: hidden;
+}
+
+/* 左三分之二：留白，等放内容。min-width 0 是 flex 里的老坑 —— 不写的话内容一宽就把这一栏
+   顶大，右栏就不再是固定的 1/3 */
+.legal-left {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow-y: auto;
+}
+
+/* 右三分之一：法律声明侧栏。flex-basis 33.3333% + 不伸缩 = 无论左栏放多少东西，它都是 1/3。
+   底色带一点透明（0.9），让左上角那层灰隐约透上来；边框压在左缘，作为两栏的分界 */
+.legal-right {
+    flex: 0 0 33.3333%;
+    min-width: 0;
+    overflow-y: auto;
+    background-color: rgba(255, 255, 255, 0.9);
+    border-left: 1px solid #e0e0e0;
+}
+
+/* 侧栏里的正文：栏宽只有 1/3（1440px 下约 480px），限宽在这里已经不起作用 ——
+   留它是为了超大屏（≥1920px）时正文不会拉成很长一行；水平内边距比一半版式时收窄一档 */
+.legal-inner {
+    max-width: 560px;
+    margin: 0 auto;
+    padding: 44px 28px 56px;
+}
+
+.legal-inner h1 {
+    margin: 0 0 6px;
+    font-size: 24px;
+    color: #2b2b2b;
+}
+
+.legal-sub {
+    margin: 0 0 26px;
+    font-size: 13px;
+    color: #78909c;
+}
+
+.legal-inner h2 {
+    margin: 26px 0 8px;
+    font-size: 16px;
+    color: #37474f;
+}
+
+.legal-inner p,
+.legal-inner li {
+    margin: 8px 0;
+    font-size: 14px;
+}
+
+.legal-inner ul {
+    margin: 8px 0;
+    padding-left: 22px;
+}
+
+.legal-inner code {
+    padding: 1px 5px;
+    border-radius: 3px;
+    background-color: #eceff1;
+    font-family: Consolas, "Courier New", monospace;
+    font-size: 13px;
+}
+
+.legal-inner a {
+    color: #1565c0;
+}
+
+.legal-back {
+    display: inline-block;
+    margin-top: 30px;
+    font-size: 13px;
+    color: #1565c0;
+    text-decoration: none;
+}
+
+.legal-back:hover {
+    text-decoration: underline;
+}
+
+/* 窄屏（≤960px）：两栏立起来。法律声明是这一页的正事，所以**排在前面**（左栏 order: 2 挪到后面），
+   整页恢复成普通文档流滚动 —— 一屏放不下两栏时再定高只会多出一条内滚动条。
+   断点从「一半版式」的 900px 提到 960px：右栏现在只有 1/3，再窄下去正文一行放不下几个字 */
+@media (max-width: 960px) {
+    .legal-layout {
+        flex-direction: column;
+        height: auto;
+        overflow: visible;
+    }
+
+    .legal-left {
+        order: 2;
+        flex: none;
+        min-height: 220px;
+    }
+
+    .legal-right {
+        order: 1;
+        flex: none;
+        overflow: visible;
+        border-left: 0;
+        border-bottom: 1px solid #e0e0e0;
+    }
+
+    .legal-inner {
+        padding: 28px 18px 36px;
+    }
+}

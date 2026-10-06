@@ -24,8 +24,8 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 许可全文见仓库根目录 LICENSE 文件（FSF 官方英文全文）。
 
-附加条款（AGPL-3.0 第 7 条 (b) 项）：署名与来源链接的保留
-================================================================
+附加条款（AGPL-3.0 第 7 条 (b) 项）：署名、来源链接与法律声明入口的保留
+================================================================================
 
 范围：当你分发（convey）本项目，或把本项目、其修改版作为服务提供给他人时，以下署名信息必须
 原样保留并显示，不得删除、隐藏，也不得改指向别处。
@@ -43,15 +43,22 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
      版权声明，均须原样保留；
   2. 作品的法律声明展示处 —— 作品若有页脚、「关于」页或同类声明区，须在其中显示上述作者账号与
      项目仓库链接；
-  3. 分发依附于本项目的修改版时，还须显著标明该版本为修改版、非官方版本（配合第 7 条 (c) 项）。
+  3. legal 页的显式入口 —— 站点 `legal/` 目录下的法律声明页（文件 `legal/index.html`，线上路径
+     `/legal/`）须保留其**显式入口**：该入口须位于作品的法律声明展示区（页脚、「关于」页或同类
+     声明区），且无需登录即可从主界面直接到达；不得删除、隐藏、改为登录后才可见，也不得改指向
+     别处。入口还须能被辨认出「通向许可与法律声明」—— 链接文字、`title` 或 `aria-label` 任一
+     说明其去向即可。
+     本项目的该入口：首页导航栏左上角的站名「大冬呱」，点击进入 `legal/index.html`
+     （下游保留**等效的**显式入口即可，不必照搬这一处 UI）。
+  4. 分发依附于本项目的修改版时，还须显著标明该版本为修改版、非官方版本（配合第 7 条 (c) 项）。
 
-说明：本条款只要求「保留并显示已有署名信息」，不附加任何其他条件；未在本文件列明的限制一律
+说明：本条款只要求「保留并显示已有署名信息与法律声明入口」，不附加任何其他条件；未在本文件列明的限制一律
 不构成许可条件。
 
 ---
 
-Additional terms under AGPL-3.0 section 7(b) — attribution and source links
-===========================================================================
+Additional terms under AGPL-3.0 section 7(b) — attribution, source links, and the legal-notice entry
+====================================================================================================
 
 Scope: if you convey this program, or make it (or a modified version) available
 to others as a service, the following attribution must be kept intact and
@@ -73,11 +80,22 @@ Where it must appear:
   2. in the Appropriate Legal Notices displayed by the work — if the work shows a
      footer, an "about" screen, or a comparable notice area, it must display the
      author accounts and the project repository link listed above;
-  3. in a modified version conveyed as a service, the version must additionally
+  3. the explicit entry to the legal page — the legal notice page under `legal/`
+     (file `legal/index.html`, served at `/legal/`) must keep its explicit entry:
+     the entry must sit in the work's legal-notice area (a footer, an "about"
+     screen, or a comparable notice area) and be reachable from the main interface
+     without signing in. It may not be removed, hidden, made visible only after
+     signing in, or re-pointed elsewhere. The entry must also be recognisable as
+     leading to licensing and legal notices — link text, a `title`, or an
+     `aria-label` naming the destination is enough.
+     This project's own entry is the site name at the top left of the main page's
+     navigation bar ("大冬呱"), which opens `legal/index.html`; downstream only
+     needs to keep an equivalent explicit entry, not this exact UI element.
+  4. in a modified version conveyed as a service, the version must additionally
      be marked prominently as modified and unofficial (together with section
      7(c)).
 
-Note: this term only requires preserving and displaying the attribution above and
+Note: this term only requires preserving and displaying the attribution and the legal entry listed above, and
 imposes no other conditions; no restriction that is not stated in this file forms
 part of the license terms.
 
