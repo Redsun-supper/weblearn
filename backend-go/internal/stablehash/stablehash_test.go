@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// Copyright (C) 2026  HR_RedSun (大冬呱)
+// Copyright (C) 2026  Redsun-supper (大冬呱 / HR_RedSun)
 package stablehash
 
 // 这一组测试的价值在于**把 SQLite 的溢出陷阱钉死**。

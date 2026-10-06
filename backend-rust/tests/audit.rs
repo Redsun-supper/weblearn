@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// Copyright (C) 2026  HR_RedSun (大冬呱)
+// Copyright (C) 2026  Redsun-supper (大冬呱 / HR_RedSun)
 //! P1 管理面板的服务端侧：审计查询 / 按批停用 / 踢下线 / 邮箱脱敏 / 整批发码 / 公开配置
 //!
 //! 这一批的接口都是「治理动作」，所以每个用例都同时验证两件事：

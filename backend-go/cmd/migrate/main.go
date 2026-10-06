@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// Copyright (C) 2026  HR_RedSun (大冬呱)
+// Copyright (C) 2026  Redsun-supper (大冬呱 / HR_RedSun)
 package main
 
 // P0-1 迁移工具：把复习进度从「一个单词全局一行」改成「一人一行」。

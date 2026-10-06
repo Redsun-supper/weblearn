@@ -47,7 +47,7 @@
 - 改动前**先读取目标文件**，再改动；改动后确认工作区是否被破坏。
 - 检查文件内容用 read 工具，不用 `cat`；查找用 grep/glob 工具。
 - 动画属于「必须先商量」的范围（见第四节第 5 条），不要顺手改。
-- **新建文件必须带两行署名头**（AGPL 署名，2026-10 用户拍板）：语言能写注释的源码文件，第一、二行固定为 `SPDX-License-Identifier: AGPL-3.0-or-later` 与 `Copyright (C) 2026  HR_RedSun (大冬呱)`，注释语法随文件类型（`.js`/`.mjs`/`.rs`/`.go` 用 `//`，`.css` 用 `/* */`，`.html` 用 `<!-- -->`）；**带 shebang 的脚本必须把 shebang 留在第 1 行、署名头紧随其后**（示例见 `dev-server.js`）。新建时先写明，别等事后再补 —— 补头很容易把首行内容或注释闭合符弄坏。范围与例外的完整口径见根目录 `NOTICE`：构建产物（`engine/pkg/`、`engine/target/`）与纯数据文件（`.json` 等不能写注释的）不加；仓库现有源码已在 `bca240e` 一次性补齐。
+- **新建文件必须带两行署名头**（AGPL 署名，2026-10 用户拍板）：语言能写注释的源码文件，第一、二行固定为 `SPDX-License-Identifier: AGPL-3.0-or-later` 与 `Copyright (C) 2026  Redsun-supper (大冬呱 / HR_RedSun)`，注释语法随文件类型（`.js`/`.mjs`/`.rs`/`.go` 用 `//`，`.css` 用 `/* */`，`.html` 用 `<!-- -->`）；**带 shebang 的脚本必须把 shebang 留在第 1 行、署名头紧随其后**（示例见 `dev-server.js`）。新建时先写明，别等事后再补 —— 补头很容易把首行内容或注释闭合符弄坏。范围与例外的完整口径见根目录 `NOTICE`：构建产物（`engine/pkg/`、`engine/target/`）与纯数据文件（`.json` 等不能写注释的）不加；仓库现有源码已在 `bca240e` 一次性补齐；署名主体于 2026-10 由 `HR_RedSun (大冬呱)` 全网统一改为 `Redsun-supper (大冬呱 / HR_RedSun)`，**今后新建 / 修改一律用这一形式**，不要再写回旧写法。
 
 ---
 

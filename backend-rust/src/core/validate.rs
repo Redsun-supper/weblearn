@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// Copyright (C) 2026  HR_RedSun (大冬呱)
+// Copyright (C) 2026  Redsun-supper (大冬呱 / HR_RedSun)
 //! 入参校验与文本规范化（不引正则，规则写死在代码里并逐条测试）
 
 /// 截断到 `max` 个字符（按字符而不是字节，避免截断出半个汉字）

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// Copyright (C) 2026  HR_RedSun (大冬呱)
+// Copyright (C) 2026  Redsun-supper (大冬呱 / HR_RedSun)
 //! 服务层：账号系统的全部业务规则（HTTP 与 CLI 共用同一套实现）
 //!
 //! 分层约定：

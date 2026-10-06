@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// Copyright (C) 2026  HR_RedSun (大冬呱)
+// Copyright (C) 2026  Redsun-supper (大冬呱 / HR_RedSun)
 //! `guangxue-monitor` —— 探活与告警（P2，2026-10）
 //!
 //! 服务器上由 `guangxue-monitor.timer` 每 5 分钟拉起一次：

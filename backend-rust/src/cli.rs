@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// Copyright (C) 2026  HR_RedSun (大冬呱)
+// Copyright (C) 2026  Redsun-supper (大冬呱 / HR_RedSun)
 //! 命令行参数的小工具
 //!
 //! 不引 clap：这两个命令（`seed-admin` / `invite`）参数少且固定，

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// Copyright (C) 2026  HR_RedSun (大冬呱)
+// Copyright (C) 2026  Redsun-supper (大冬呱 / HR_RedSun)
 //! 数据模型：数据库行（`*Row`）与对外输出（`*Public`）
 //!
 //! 约定：`password_hash` / `refresh_hash` / `code_hash` 只存在于 `*Row`，

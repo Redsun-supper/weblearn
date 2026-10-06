@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// Copyright (C) 2026  HR_RedSun (大冬呱)
+// Copyright (C) 2026  Redsun-supper (大冬呱 / HR_RedSun)
 //! 仅开发模式的调试接口
 //!
 //! 存在的意义：本期不接 SMTP，验证码只打到服务端日志里，本地端到端测试需要

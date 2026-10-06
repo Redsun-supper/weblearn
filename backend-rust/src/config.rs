@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// Copyright (C) 2026  HR_RedSun (大冬呱)
+// Copyright (C) 2026  Redsun-supper (大冬呱 / HR_RedSun)
 //! 配置：环境变量 → `Config`
 //!
 //! 约定与 Go 侧保持一致（`APP_ENV` / 开发默认值），额外的前缀统一是 `AUTH_`。

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// Copyright (C) 2026  HR_RedSun (大冬呱)
+// Copyright (C) 2026  Redsun-supper (大冬呱 / HR_RedSun)
 // 管理面板 · 邀请码（P1）
 //
 // 由壳动态 import 后调用 mount(container, ctx)。壳可能是个人中心（account/account.js），

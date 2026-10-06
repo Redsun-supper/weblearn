@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// Copyright (C) 2026  HR_RedSun (大冬呱)
+// Copyright (C) 2026  Redsun-supper (大冬呱 / HR_RedSun)
 package main
 
 // 复习进度清空工具（单一循环池重构的一次性配套命令，见 docs/review-pool-plan.md 的 E20）。

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// Copyright (C) 2026  HR_RedSun (大冬呱)
+// Copyright (C) 2026  Redsun-supper (大冬呱 / HR_RedSun)
 //! 管理接口：邀请码（超管）+ 用户治理（超管）
 //!
 //! 权限矩阵（见 `docs/launch-plan.md` 第 3 节）：

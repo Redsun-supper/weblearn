@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// Copyright (C) 2026  HR_RedSun (大冬呱)
+// Copyright (C) 2026  Redsun-supper (大冬呱 / HR_RedSun)
 // Package snapshot 提供 SQLite 的安全快照（`VACUUM INTO`）与快照目录的整理。
 //
 // 为什么「复制 .db 文件」不算备份：两个库都跑在 WAL 模式下，最近的写入可能还留在

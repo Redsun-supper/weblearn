@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// Copyright (C) 2026  HR_RedSun (大冬呱)
+// Copyright (C) 2026  Redsun-supper (大冬呱 / HR_RedSun)
 // Package stablehash 提供「同一个用户、同一天、同一个词 = 同一个随机位置」的确定性哈希。
 //
 // 为什么需要它：单一循环池要求池子**按用户随机排列**，但又必须满足三个硬约束：

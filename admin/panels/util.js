@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// Copyright (C) 2026  HR_RedSun (大冬呱)
+// Copyright (C) 2026  Redsun-supper (大冬呱 / HR_RedSun)
 // 管理面板共用的小工具（P1）
 //
 // 四个面板都要「把 UTC 文本按本地时间显示」「复制到剪贴板」「导出 CSV」「角色/状态的中文名」，

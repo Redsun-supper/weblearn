@@ -135,7 +135,7 @@
 3. **无一键验证 — ✅ 阶段 0 已解决**
    原来没有 Makefile / npm scripts / CI；`scripts/` 只有 `clean-build-cache.ps1`（87 行，带白名单安全闸）；`backend-rust/scripts/smoke.ps1`（225 行 / 24 项）只管账号服务。
    已加 `scripts/verify.ps1`：Go 构建/vet/测试 + 账号服务 `cargo test` + 引擎 `cargo test` + `cargo check --target wasm32-unknown-unknown`，一条命令出 PASS/FAIL 表（实测 6 步全绿、45.3 秒），加 `-IncludeSmoke` 可带上账号服务 smoke。
-4. **无 CI / 无 hook**：仓库无 CI 配置、`.git/hooks` 无自定义 hook。⚠️ GitCode 是否支持 CI 我**未确认**，需要时先查。
+4. **无 CI / 无 hook**：仓库无 CI 配置、`.git/hooks` 无自定义 hook。⚠️ GitHub 是否支持 CI 我**未确认**，需要时先查。
 5. **部署全靠文档**：仓库里没有 nginx 配置 / systemd 单元 / Dockerfile，部署步骤只存在于 `README.md:692-801` 的代码块里。→ 建议入库一个 `deploy/` 目录（nginx 站配置 + systemd 单元模板），让环境可重建。
 6. **文档口径漂移 — ✅ 阶段 0 已修**
    - 测试数已统一并实测：`backend-rust` **90 项**（41 单元 + 49 集成）、引擎 **118 项**。改的是 `docs/boundaries.md`（原先误记 118）与 `backend-rust/README.md`（原先过期记 83）；`docs/backend-auth.md` 的 90 本来是对的。

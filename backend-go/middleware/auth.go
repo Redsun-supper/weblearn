@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// Copyright (C) 2026  HR_RedSun (大冬呱)
+// Copyright (C) 2026  Redsun-supper (大冬呱 / HR_RedSun)
 // Package middleware 提供两类横切处理：
 //   - 登录态校验：RequireUser / RequireAdmin —— 用账号服务签发的 gx_access Cookie 本地验签；
 //   - CSRF 防护：CSRFGuard —— 与账号服务 backend-rust 的同名逻辑保持同一口径。

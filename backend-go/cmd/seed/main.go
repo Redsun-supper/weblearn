@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// Copyright (C) 2026  HR_RedSun (大冬呱)
+// Copyright (C) 2026  Redsun-supper (大冬呱 / HR_RedSun)
 // 命令 seed：把 JSON 词表导入 SQLite 的 words 表，供单词间隔复习使用。
 //
 // 用法（在 backend-go 目录下执行）：

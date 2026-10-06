@@ -1,5 +1,5 @@
 广学（Guangxue）
-Copyright (C) 2026  HR_RedSun (大冬呱)
+Copyright (C) 2026  Redsun-supper (大冬呱 / HR_RedSun)
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU Affero General Public License as published by
@@ -17,10 +17,10 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 ---
 
 项目：广学（Guangxue）· 学科内容展示与英语复习平台
-作者：HR_RedSun（别名：大冬呱）
-作者账号：https://gitcode.com/HR_RedSun ｜ https://github.com/Redsun-supper
+作者：Redsun-supper (大冬呱 / HR_RedSun)
+作者账号：https://atomgit.com/HR_RedSun ｜ https://github.com/Redsun-supper
 许可：AGPL-3.0-or-later（附加条款见下）
-仓库：https://gitcode.com/HR_RedSun/weblearn
+仓库：https://github.com/Redsun-supper/weblearn
 
 许可全文见仓库根目录 LICENSE 文件（FSF 官方英文全文）。
 
@@ -32,9 +32,9 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 须保留的署名信息（三处，缺一不可）：
 
-  作者账号   https://gitcode.com/HR_RedSun
+  作者账号   https://atomgit.com/HR_RedSun
              https://github.com/Redsun-supper
-  项目仓库   https://gitcode.com/HR_RedSun/weblearn
+  项目仓库   https://github.com/Redsun-supper/weblearn
              （若该地址日后失效，以版权人另行指定的后继地址为准）
 
 显示位置：
@@ -60,9 +60,9 @@ elsewhere.
 
 Attribution that must be preserved:
 
-  Author accounts  https://gitcode.com/HR_RedSun
+  Author accounts  https://atomgit.com/HR_RedSun
                    https://github.com/Redsun-supper
-  Project repo     https://gitcode.com/HR_RedSun/weblearn
+  Project repo     https://github.com/Redsun-supper/weblearn
                    (or a successor URL designated by the copyright holder)
 
 Where it must appear:

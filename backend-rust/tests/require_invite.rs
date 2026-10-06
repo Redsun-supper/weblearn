@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// Copyright (C) 2026  HR_RedSun (大冬呱)
+// Copyright (C) 2026  Redsun-supper (大冬呱 / HR_RedSun)
 //! P0-2：强制邀请码注册（`AUTH_REQUIRE_INVITE`）
 //!
 //! 这组用例只测**开关打开**时的行为（关掉时的开放注册路径在 `invite.rs` 里已有覆盖）。

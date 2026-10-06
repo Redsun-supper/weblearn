@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// Copyright (C) 2026  HR_RedSun (大冬呱)
+// Copyright (C) 2026  Redsun-supper (大冬呱 / HR_RedSun)
 package database
 
 // P0-1 迁移的回归测试：这段逻辑只能在**老结构**上验证，所以这里手工造一份 P0-1 之前的表结构

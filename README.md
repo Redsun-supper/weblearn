@@ -1007,19 +1007,19 @@ AUTH_ADMIN_PASSWORD='管理员密码' \
 
 ## 许可证
 
-Copyright (C) 2026 HR_RedSun (大冬呱)
+Copyright (C) 2026  Redsun-supper (大冬呱 / HR_RedSun)
 
-本项目以 **GNU Affero 通用公共许可证第 3 版（AGPL-3.0）** 发布。仓库根目录 [`LICENSE`](LICENSE) 是 FSF 官方英文全文的**逐字副本**，只把附录「How to Apply These Terms」里的署名占位行填成了 `Copyright (C) 2026  HR_RedSun (大冬呱)`，其余一字未改，也没有塞进任何自定义声明（项目级的许可说明是本节与 [`NOTICE`](NOTICE)）。
-署名与许可要点集中在 [`NOTICE`](NOTICE)；每个源码文件顶部两行是 SPDX 标识与版权行（`// SPDX-License-Identifier: AGPL-3.0-or-later` + `// Copyright (C) 2026  HR_RedSun (大冬呱)`），`dev-server.js` 因带 shebang 而后移两行。
+本项目以 **GNU Affero 通用公共许可证第 3 版（AGPL-3.0）** 发布。仓库根目录 [`LICENSE`](LICENSE) 是 FSF 官方英文全文的**逐字副本**，只把附录「How to Apply These Terms」里的署名占位行填成了 `Copyright (C) 2026  Redsun-supper (大冬呱 / HR_RedSun)`，其余一字未改，也没有塞进任何自定义声明（项目级的许可说明是本节与 [`NOTICE`](NOTICE)）。
+署名与许可要点集中在 [`NOTICE`](NOTICE)；每个源码文件顶部两行是 SPDX 标识与版权行（`// SPDX-License-Identifier: AGPL-3.0-or-later` + `// Copyright (C) 2026  Redsun-supper (大冬呱 / HR_RedSun)`），`dev-server.js` 因带 shebang 而后移两行。
 Cargo 清单（`backend-rust/Cargo.toml`、`modules/english/engine/Cargo.toml`）里的 SPDX 标识相应为 `AGPL-3.0-or-later`。
 
 - 你可以自由使用、修改、分发本项目；**分发（含把改过的版本挂到服务器上供人访问）时必须提供完整对应源码**，并保留版权声明与许可全文。
 - AGPL 第 13 条专门管网络服务：谁把改过的版本拿去做线上服务，谁就有义务让访问者拿到那份源码。
-- **附加条款（AGPL 第 7 条 (b) 项）已加入**：分发、或把本项目（含修改版）作为服务提供时，须保留并显示作者账号（[gitcode.com/HR_RedSun](https://gitcode.com/HR_RedSun)、[github.com/Redsun-supper](https://github.com/Redsun-supper)）与项目仓库 [gitcode.com/HR_RedSun/weblearn](https://gitcode.com/HR_RedSun/weblearn) 的链接；条款全文与显示位置见 [`NOTICE`](NOTICE)。
+- **附加条款（AGPL 第 7 条 (b) 项）已加入**：分发、或把本项目（含修改版）作为服务提供时，须保留并显示作者账号（[atomgit.com/HR_RedSun](https://atomgit.com/HR_RedSun)、[github.com/Redsun-supper](https://github.com/Redsun-supper)）与项目仓库 [github.com/Redsun-supper/weblearn](https://github.com/Redsun-supper/weblearn) 的链接；条款全文与显示位置见 [`NOTICE`](NOTICE)。
 
 ```
 广学（Guangxue）· 学科内容展示与英语复习平台
-Copyright (C) 2026  HR_RedSun (大冬呱)
+Copyright (C) 2026  Redsun-supper (大冬呱 / HR_RedSun)
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU Affero General Public License as published by
