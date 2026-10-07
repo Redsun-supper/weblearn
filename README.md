@@ -680,6 +680,12 @@ go run ./cmd/seed -file my_words.json -db guangxue.db
 - 置顶卡与旧抽查卡评分时**按新卡重算**（丢掉原 stability/difficulty、天数按 0 算），
   请求体带 `is_reset: true` / `is_probe: true`；后端把 `review_logs.stability_before` 记成 0，
   所以「今日新学」只统计**真正的第一次学**——否则循环池里天天命中已学词，新学数字会虚高。
+- 卡片里的 `stability` / `difficulty` **会下发给引擎**（2026-10 起，`poolSelectSQL` 重新 SELECT
+  `wr.stability, wr.difficulty`）：引擎靠它们累积 FSRS 状态。
+  ⚠️ 这两列删不得 —— 删掉之后**每张卡**都退回「新卡」路径（四个评分恒为
+  Again 0.21 / Hard 1.29 / Good 2.31 / Easy 8.30 天，换会话也不变），
+  365 天封顶与右上角「难度/稳定性/预计记住」面板会一起变成死代码。
+  起因、实测数字见 [`docs/review-pool-plan.md`](docs/review-pool-plan.md) 第 3 节 E18 的注。
 - 每日配额**已迁到服务端**（旧的 `localStorage.reviewDailyPlan` 这个键不再读写）。
 
 > 完整决策（20 条）、三处口径冲突、排序 SQL 与验收实测见 [`docs/review-pool-plan.md`](docs/review-pool-plan.md)；

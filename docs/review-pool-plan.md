@@ -45,9 +45,25 @@
 | D15 | 配额**迁到服务端** | 今日已学 = 当天 `stability_before = 0` 的日志条数，**现成字段，不需要新表** |
 | D16 | 一轮过完的文案改为「**整池已过一遍，继续复习不受限**」 | 现文案「本轮已过一遍 · 可以继续」在 `english.js` |
 | D17 | 顶栏改为「**今日已复习 N / 池内到期 M / 池内总数 100**」 | "剩余待学"在新模型下无意义 |
-| E18 | `word_reviews` 保留 `stability/difficulty` 等字段，但**从响应里去掉** | 顺手解决 `review_handlers.go:93-107` 那两个非指针 `float64` 把 SQL NULL 扫成 0 的坑 |
+| E18 | `word_reviews` 保留 `stability/difficulty`，响应里**也下发**（~~原先删掉~~，2026-10 改回） | 原动机只有一条：修「非指针 `float64` 把 SQL NULL 扫成 0」的坑，改用**指针**就已解决；「删列」是误读 C11 —— 重置是**按卡**判定的，删列会让**所有**卡退回新卡路径（见下表后的注） |
 | E19 | `review_logs` **保留全字段** | 它是"今日新学"与后续 FSRS 参数优化的唯一依据 |
 | E20 | 老数据**暂时丢弃**；不加 `REVIEW_MODEL` 回退开关 | 清空 `word_reviews` 与 `review_logs`，`words` 保留（词表是资产） |
+
+> ⚠️ **E18 已于 2026-10 改回下发**（`poolSelectSQL` 重新 SELECT `wr.stability` / `wr.difficulty`）。
+> 实测（探针 `.tmp-test/e18-report.mjs`，直接跑构建好的 wasm）：
+>
+> - **删列时**：一个 `due_at=昨天`、`last_review_at=5 天前` 的成熟卡，四评分恒为
+>   Again **0.2120** / Hard **1.2931** / Good **2.3065** / Easy **8.2956** 天，换一个全新会话再评，
+>   数字逐位相同（= 跨会话零累积）；右上角元信息恒为 `{"status":"new"}`。
+> - **加回后**：`stability=30`·5 天前 → Good **42.3071** 天；`stability=120`·40 天前 →
+>   Good **204.9858** 天、Easy **279.1699** 天（这才够得着 B8 的 365 天封顶，也才让
+>   「难度 / 稳定性 / 复习 / 上次 / 预计记住」五行有东西可显示）。
+> - **C11 不受影响**：置顶卡（`daily=true`）即使带着状态，Good 仍是 **2.3065** 天、
+>   `is_reset=true` —— 因为重置发生在引擎里（`session.rs` 的 `is_reset_card` → `try_rate` 的
+>   `if reset_card { (None, 0) }`），与响应带不带状态无关。
+> - **已知小瑕疵（未修）**：带状态的置顶卡会在右上角显示**旧的**难度/稳定度（`status:"probe"`），
+>   而评分按新卡算 —— 显示与计算不一致。要让两者一致，须在 `plan_day` 里对 `is_daily` 的卡也置
+>   `state: None`，并重建 `pkg/`（`ENGINE_VERSION` 记得 +1）。
 
 ## 4. 三处与现有实现的冲突（实施时必须处理）
 
@@ -116,7 +132,7 @@ bucket 3  未到期        : due_at IS NOT NULL AND due_at >  now             �
 ### 明确不做（本次范围外）
 
 - 不加 `REVIEW_MODEL` 回退开关（E20）。
-- 不动 `word_reviews` 表结构（E18：字段留、响应删）。
+- 不动 `word_reviews` 表结构（E18：字段留；**响应字段 2026-10 已改回下发**，见第 3 节的注）。
 - 不做管理面板的池子可视化（属 P1）。
 - 不动 P0-1 的按人隔离（`idx_word_reviews_user_word` 继续用）。
 

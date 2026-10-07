@@ -25,6 +25,9 @@
   - ⚠️ 「前 10 张随机抽」的窗口如果永远不往后放宽，**排在后面的卡会被饿死、轮次永远凑不齐**（踩过，`round_completes_even_when_some_cards_are_far_in_the_future` 锁住）。
 - **分页取数**：池子永不空，所以「空了再取下一页」的旧条件再也触发不了。改成按**本轮进度**预取：本轮已评分数逼近池子总量（差 ≤ `PREFETCH_MARGIN`=5）时取下一页（`maybePrefetch`）。追加只进池子（`append` 只吃一个 queue 参数）。
 - **置顶卡与抽查卡评分时按「新卡」重算**（丢掉原 stability/difficulty，天数按 0 算），等于重新体检：它的间隔会被压缩回几天，从而很快回来重新标定。请求体里带 `is_probe: true` / `is_reset: true`，后端据此把 `review_logs.stability_before` 记成 **0**（`is_reset`），使「今日新学」只统计**真正的第一次学**——循环池里「今日 5 个」经常命中已学过的词，不这样区分新学数字会天天虚高。日后做 FSRS 参数优化时要排除这两批记录。
+  - ⚠️ **反过来，非重置卡必须拿到自己真实的 `stability` / `difficulty`**：服务端 `poolSelectSQL` 从 2026-10 起重新下发这两列（`wr.stability, wr.difficulty`）。它们曾经被删掉（用户决策 E18），后果是**每一张卡**都退回上面那条的「新卡」路径 —— 四个评分恒为 Again 0.2120 / Hard 1.2931 / Good 2.3065 / Easy 8.2956 天、换会话逐位相同，B8 的 365 天封顶与右上角元信息面板一起变成死代码。
+  - ⚠️ 别把「置顶卡重置」读成「所有卡都重置」：重置是**按卡**判定的（`is_reset_card` + `try_rate` 的 `if reset_card { (None, 0) } else { (card.state, days) }`）。实测：置顶卡即使带着 `stability=120`，Good 照样是 2.3065 天且 `is_reset=true`。
+  - 已知小瑕疵（未修）：带状态的置顶卡会在右上角显示**旧的**难度/稳定度（`status:"probe"`），评分却按新卡算。要一致就得在 `plan_day` 里对 `is_daily` 的卡也置 `state: None`，并重建 `pkg/`。
 - **今日置顶进度**：分母来自池子响应的 `daily`（服务端算的），分子 = **建会话时的服务端值（基线）+ 本会话本地计数**（`state.dailyBaseline` + `state.dailyRatedSinceBaseline`，评分成功时 +1）。
   - ⚠️ 不要退化成「一个计数器 + 与服务端取大」：两者不是同一个量，取大必然**虚高** —— 实测连评 6 张时界面报 5/5「整池已过一遍」而服务端才 3/5，用户被提前告知完成。增量式写法没有这个缝：基线只在建会话 / 每次 stats 刷新时重设（`syncDailyFromStats`），本地只在评分成功时 +1。
   - ⚠️ **每次 stats 拿到手都要走 `syncDailyFromStats`**（它顺手把 `state.stats` 也更新了）。早先 `fetchDay()` 把新统计直接返回给调用方、自己没存，于是建会话时那次同步读到的仍是**上一次会话**的旧快照：实测界面从「今日置顶 2/5」起步而服务端其实是 0/5。

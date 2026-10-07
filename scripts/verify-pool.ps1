@@ -205,11 +205,15 @@ Write-Host "`n[8] 卡片字段契约"
 $sample = $after.data.items[0]
 $hasKeys = ($null -ne $sample.id) -and ($null -ne $sample.has_review) -and ($null -ne $sample.bucket)
 Check "新字段 has_review/daily/bucket 存在" $hasKeys "字段=$((($sample.PSObject.Properties | ForEach-Object { $_.Name }) -join ','))"
-$hasState = ($sample.PSObject.Properties.Name -contains 'stability')
-Check "stability/difficulty 已从响应移除" (-not $hasState) "含 stability 字段：$hasState"
 $neverSample = @($after.data.items | Where-Object { $_.has_review -eq $false })[0]
+# stability / difficulty 必须下发：引擎靠它们累积 FSRS 状态。删掉的话每张卡都退回「新卡」路径
+# （Again/Hard/Good/Easy 恒为 0.21/1.29/2.31/8.30 天），365 天封顶与元信息面板一起变成死代码。
+$neverHasState = ($neverSample.PSObject.Properties.Name -contains 'stability')
+Check "未复习的卡不带 stability/difficulty" (-not $neverHasState) "含 stability 字段：$neverHasState"
 Check "未复习的卡 due_at 为 null" ($null -eq $neverSample.due_at) "due_at=$($neverSample.due_at)"
 $studiedSample = @($after.data.items | Where-Object { $_.has_review -eq $true })[0]
+Check "已复习的卡带 stability/difficulty" (($null -ne $studiedSample.stability) -and ($null -ne $studiedSample.difficulty)) `
+    "stability=$($studiedSample.stability) difficulty=$($studiedSample.difficulty)"
 Check "已复习的卡带 due_at" ($null -ne $studiedSample.due_at) "due_at=$($studiedSample.due_at)"
 
 # ---------- 9. 浏览器端到端（可选，-Browser） ----------

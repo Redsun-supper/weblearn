@@ -540,8 +540,9 @@ func TestReviewsProbesIsPoolTail(t *testing.T) {
 // ---------- 卡片字段 ----------
 
 // TestReviewsCardFields 三个取数接口复用同一套卡片字段。
-// ⚠️ 单一循环池之后 stability / difficulty 不再回给客户端（用户决策 E18），
-// 取而代之的是 has_review / daily / bucket 三个计算列。
+// has_review / daily / bucket 是单一循环池新增的三个计算列；
+// stability / difficulty 是引擎累积 FSRS 状态所必需的（2026-10 改回来，原先按 E18 删掉过），
+// 有进度行时必须原样下发。
 func TestReviewsCardFields(t *testing.T) {
 	router, db := setupTestRouter(t)
 	wordID := seedWordWith(t, db, modelsWord())
@@ -556,7 +557,7 @@ func TestReviewsCardFields(t *testing.T) {
 	card := list[0]
 	wantKeys := []string{
 		"id", "word", "phonetic", "meaning", "example", "example_translation",
-		"senses", "subject", "due_at", "last_review_at",
+		"senses", "subject", "stability", "difficulty", "due_at", "last_review_at",
 		"has_review", "daily", "bucket",
 	}
 	for _, key := range wantKeys {
@@ -564,12 +565,11 @@ func TestReviewsCardFields(t *testing.T) {
 			t.Fatalf("卡片缺少字段 %q，实际字段=%v", key, mapKeys(card))
 		}
 	}
-	// 用户决策 E18：引擎一律按新卡口径重算，所以这两个字段不再下发
-	for _, key := range []string{"stability", "difficulty"} {
-		if _, ok := card[key]; ok {
-			t.Fatalf("字段 %q 不应再出现在响应里（用户决策 E18）", key)
-		}
-	}
+	// ⚠️ 这两列不是可有可无的信息：引擎靠它们累积 FSRS 状态。删掉它们之后每张卡都退回
+	// 「新卡」路径（Again/Hard/Good/Easy 恒为 0.21/1.29/2.31/8.30 天，换会话也不变），
+	// B8 的 365 天封顶与右上角「难度/稳定性/预计记住」面板会一起变成死代码。
+	assertFloat(t, map[string]interface{}{"stability": card["stability"]}, "stability", 4.5)
+	assertFloat(t, map[string]interface{}{"difficulty": card["difficulty"]}, "difficulty", 6.5)
 	if card["word"] != "kernel" {
 		t.Fatalf("卡片 word 期望 kernel，实际 %v", card["word"])
 	}

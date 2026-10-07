@@ -129,15 +129,22 @@ func poolOrderSQL(userID, seed int64, daily []uint, now time.Time) string {
 //   - daily：这张卡是不是「今日 5 个」之一
 //   - bucket：优先级桶序号，供前端分组展示
 //
-// ⚠️ stability / difficulty 目前**不回给客户端**（用户决策 E18：库里留着、响应里删掉），
-// 因为新模型下引擎一律按「新卡」口径重算。将来要恢复 FSRS 累积，把这两列加回 SELECT 即可。
+// ⚠️ stability / difficulty 必须**下发给引擎**（2026-10 改回来，原先按用户决策 E18 删掉过）：
+// 引擎的 FSRS 靠它们累积记忆状态，这两列一缺，每张卡都退回「新卡」路径 ——
+// 四个评分永远算出 Again 0.21 / Hard 1.29 / Good 2.31 / Easy 8.30 天，换会话也不变，
+// 于是 B8 的 365 天封顶与右上角「难度/稳定性/预计记住」面板同时成了死代码。
+//
+// ⚠️ 别把「置顶卡按新卡重算」（用户决策 C11）读成「所有卡都按新卡重算」：重置是**按卡**判定的，
+// 发生在引擎里（`session.rs` 的 `is_reset_card` → `try_rate` 的 `if reset_card { (None, 0) }`），
+// 后端只管把库里的真实状态原样送出去。同理这两列**必须是指针**：LEFT JOIN 的 NULL 要序列化成
+// `null`（引擎按新卡处理），扫成 0 就分不清「没学过」和「稳定度真的是 0」——那正是当初删它们的起因。
 func poolSelectSQL(userID, seed int64, daily []uint, now time.Time) string {
 	// ⚠️ 进度列必须写 join 的别名 `wr`，不能写 `word_reviews.due_at`：
 	// 一旦语句里的表只有一个别名，原表名就不再可引用（实测报 no such column）。
 	return fmt.Sprintf(`
 		words.id AS word_id, words.word, words.phonetic, words.meaning, words.example,
 		words.example_translation, words.senses, words.subject,
-		wr.due_at, wr.last_review_at,
+		wr.stability, wr.difficulty, wr.due_at, wr.last_review_at,
 		(wr.id IS NOT NULL) AS has_review,
 		(words.id IN %s) AS daily,
 		%s AS bucket
