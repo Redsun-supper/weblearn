@@ -19,9 +19,61 @@
 </head>
 <body>
     <div class="legal-layout">
-        <!-- 左半屏：留白（2026-10 用户：「左边我要放东西」）。这里不放任何占位文字 ——
-             空着才是「待填」，写提示语会跟将来的内容打架 -->
-        <div class="legal-left" id="legalLeft"></div>
+        <!-- 左半屏：照片底板 + 链接区（2026-10 用户的三轮要求：「左边画一个圆角矩形加右下阴影，
+             未来我要放照片」→「是圆角方形，放在我标记的大概位置」→「增设点击事件和动画，点击发生时
+             跳转到 B 站 UP「大冬呱」的个人空间」；随后又在右侧圈了一块：「我标注的这块区域加几个按钮」）。
+             底板是空的，只有圆角与右下投影，尺寸配色都在 legal.css 的 .legal-photo。
+             放照片时只在 <a> 里加一行
+                 <img class="legal-photo-img" src="…" alt="…">
+             底板样式不用动 —— 图片按 object-fit: cover 裁进圆角里。
+             ⚠️ 点底板是**新标签页**打开作者的 B 站空间，且（用户拍板方案 B）动画走完才跳，逻辑在 legal.js。
+             ⚠️ 链接里的「个人博客」「演示网站」是**还没有地址**的占位：它们是 `<span aria-disabled>`，
+             不是 `<a>`，所以点了没反应（用户拍板「显示但置灰不可点」）。搭好之后把整个 `<span>` 换成
+             `<a href="…" target="_blank" rel="noopener">` 即可，class 一个字都不用改。 -->
+        <div class="legal-left" id="legalLeft">
+            <a class="legal-photo" id="legalPhoto"
+               href="https://space.bilibili.com/3546606504773744"
+               target="_blank" rel="noopener"
+               title="前往 B 站：大冬呱 的个人空间"
+               aria-label="前往 B 站：大冬呱 的个人空间（新标签页打开）"></a>
+
+            <!-- 照片右侧：6 个按钮分三组，竖排。全部 target="_blank" —— 都是外站，不把用户带离广学 -->
+            <nav class="legal-links" aria-label="作者与项目链接">
+                <div class="legal-links-group">
+                    <h2 class="legal-links-title">站点</h2>
+                    <span class="legal-link is-todo" aria-disabled="true" title="还未搭建">
+                        <span>个人博客</span><span class="legal-link-note">还未搭建</span>
+                    </span>
+                    <span class="legal-link is-todo" aria-disabled="true" title="还未搭建">
+                        <span>演示网站</span><span class="legal-link-note">还未搭建</span>
+                    </span>
+                </div>
+
+                <div class="legal-links-group">
+                    <h2 class="legal-links-title">代码库</h2>
+                    <a class="legal-link" href="https://atomgit.com/HR_RedSun/weblearn"
+                       target="_blank" rel="noopener" title="https://atomgit.com/HR_RedSun/weblearn">
+                        <span>AtomGit（国内加速）</span><span class="legal-link-note">↗</span>
+                    </a>
+                    <a class="legal-link" href="https://github.com/Redsun-supper/weblearn"
+                       target="_blank" rel="noopener" title="https://github.com/Redsun-supper/weblearn">
+                        <span>GitHub</span><span class="legal-link-note">↗</span>
+                    </a>
+                </div>
+
+                <div class="legal-links-group">
+                    <h2 class="legal-links-title">作者主页</h2>
+                    <a class="legal-link" href="https://atomgit.com/HR_RedSun"
+                       target="_blank" rel="noopener" title="https://atomgit.com/HR_RedSun">
+                        <span>AtomGit（国内加速）</span><span class="legal-link-note">↗</span>
+                    </a>
+                    <a class="legal-link" href="https://github.com/Redsun-supper"
+                       target="_blank" rel="noopener" title="https://github.com/Redsun-supper">
+                        <span>GitHub</span><span class="legal-link-note">↗</span>
+                    </a>
+                </div>
+            </nav>
+        </div>
 
         <!-- 右半屏：法律声明侧栏 -->
         <aside class="legal-right">
@@ -68,9 +120,15 @@
                     <code>package.json</code>。
                 </p>
 
-                <a class="legal-back" href="../index.html">← 返回首页</a>
+                <!-- 页内导航：两处都是**站内**跳转 —— 当前页打开、不带 ↗ 角标
+                     （与左栏链接区那 6 个外链正好相反）。个人中心有登录门禁，未登录点过去是整屏登录页 -->
+                <nav class="legal-back-links" aria-label="页内导航">
+                    <a class="legal-back" href="../index.html">← 返回首页</a>
+                    <a class="legal-back" href="../account/">← 返回个人中心</a>
+                </nav>
             </div>
         </aside>
     </div>
+    <script src="legal.js"></script>
 </body>
 </html>
