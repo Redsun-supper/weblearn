@@ -342,10 +342,10 @@ account/               ✅ 管理面板的宿主：个人中心侧栏多出「�
 | GET | `/api/word-options` | 已有词书 / 单元列表 | ✅ 可用 |
 | GET | `/api/reviews/due` | 到期复习卡列表（只给已到期的） | ✅ 可用 |
 | GET | `/api/reviews/new` | ⚠️ **已废弃**：单一循环池后返回空列表 + `legacy: true`（保留字段兼容） | 🚫 废弃 |
-| GET | `/api/reviews/queue` | 复习池：**整库按四桶排序**（今日置顶 → 已过期 → 从未复习 → 未到期），分页；`?today=YYYYMMDD` 固定「今日 5 个」 | ✅ 可用 |
+| GET | `/api/reviews/queue` | 复习池：**整库按五桶排序**（今日置顶 → 已过期 → 顽固词 → 从未复习 → 未到期），分页；置顶数量按复习量自适应，响应带 `desired_retention`（期望保持率，下发给引擎） | ✅ 可用 |
 | GET | `/api/reviews/probes` | ⚠️ 降级为**池尾诊断**：到期最远的已学词，不参与编排 | 🔧 诊断 |
-| POST | `/api/reviews/submit` | 提交复习结果（持久化 FSRS 状态）；请求体可带 `is_reset`，响应含截断后的 `interval_days` 与 `capped` | ✅ 可用 |
-| GET | `/api/reviews/stats` | 复习统计（`pool_size` / `pool_due` / `daily_target` / `daily_done` + 兼容字段 `total_words` / `new_words` / `due_cards`） | ✅ 可用 |
+| POST | `/api/reviews/submit` | 提交复习结果（持久化 FSRS 状态）；请求体可带 `is_daily`（置顶抽样标记），响应含截断后的 `interval_days` 与 `capped` | ✅ 可用 |
+| GET | `/api/reviews/stats` | 复习统计（`pool_size` / `pool_due` / `daily_target` / `daily_done` / `leech_count` + 兼容字段 `total_words` / `new_words` / `due_cards`） | ✅ 可用 |
 | GET | `/api/admin/stats/overview` | 管理看板总览：今日 5 个 + 累计 8 个 + 账号库可用性（**要管理员**） | ✅ 可用 |
 | GET | `/api/admin/stats/trend?days=7\|30` | 按北京自然日的趋势（升序、缺日补 0） | ✅ 可用 |
 | GET | `/api/admin/users/progress?ids=1,2,3` | 批量复习进度摘要（≤100 个 id，缺席的补 0） | ✅ 可用 |
@@ -657,29 +657,38 @@ go run ./cmd/seed -file my_words.json -db guangxue.db
 - 存储：多释义在 SQLite 里是 `words.senses` 一列 JSON 文本（`models.WordSenses`），
   不单开子表——释义永远跟着词条一起读写，存 JSON 省掉一次 join，传输也少带 `id`/`word_id`。
 
-### 单一循环池：整库一个池子 + 每天随机置顶 5 个（2026-10-02 起）
+### 单一循环池：整库一个池子 + 每天置顶抽样（2026-10-02 起）
 
 **模型变了**：不再有「新词 / 抽查 / 复习区」三段拼接，也**没有「已学 / 未学」之分**——
 整库只有一个循环池，一个词的进度就是 `word_reviews` 里的一行（没有行＝从未复习）。
-服务端把整池按**四桶**排好序分页下发：
+服务端把整池按**五桶**排好序分页下发：
 
 | 桶 | 内容 | 桶内顺序 |
 |----|------|----------|
-| 0 | **今日置顶 5 个**：按 (user, 当地日期, word) 的稳定哈希从**全池**抽出（可能命中已学过的词） | 哈希值 |
-| 1 | 已过期的卡（`due_at ≤ now`） | `due_at` 升序（越久越前） |
-| 2 | 从未复习的卡 | 稳定哈希 |
-| 3 | 未到期的卡 | `due_at` 升序（越近越前） |
+| 0 | **今日置顶抽样**：按 (user, 当地日期, word) 的稳定哈希从**全池**抽出（可能命中已学过的词）；**数量按复习量自适应**（下限 5、上限 30） | 稳定哈希 |
+| 1 | 已过期的卡（`due_at ≤ now`） | 稳定哈希 |
+| 2 | 顽固词（`lapses ≥ 8`，且还没到期） | 稳定哈希 |
+| 3 | 从未复习的卡 | 稳定哈希 |
+| 4 | 未到期的卡 | 稳定哈希 |
 
-- 「今日 5 个」是**起步量**不是上限：学完照样能一直往下翻，左下角文案是
-  「今日置顶 N/5 · 继续复习不受限」，评完就变成「整池已过一遍，继续复习不受限」。
-- 同一天内这 5 个**固定不变**（刷新、翻页、换设备都一样，服务端按哈希算）；
-  **跨零点自然换一批**。前端请求要带 `?today=YYYYMMDD`，否则服务器会用它的当地日期。
+> ⚠️ 桶内一律**先按稳定哈希**排（`poolOrderSQL` 的实际行为），`due_at` 只是次级键 ——
+> 这与「已过期越久越靠前」的设计意图有出入，属既有实现，待拍板是否调整。
+
+- 「今日置顶」是**起步量**不是上限：学完照样能一直往下翻，左下角文案是
+  「今日置顶 N/N · 继续复习不受限」，评完就变成「整池已过一遍，继续复习不受限」。
+  N 按用户近 7 天的**日均复习量自适应**（`dailyCount`：日均 × 5%，夹在 5~30 之间）——
+  大词库下固定 5 个对整库的抽样覆盖率太低，复习量大的人按比例放大才有意义。
+- 同一天内这批置顶**固定不变**（刷新、翻页、换设备都一样，服务端按哈希算）；
+  **跨零点自然换一批**。「今天」由**服务端**按 `Asia/Shanghai` 定（2026-10 起），前端不再传 `?today`；
+  `?today=YYYYMMDD` 降级为显式覆盖，只给测试 / 排障用。
 - 用户的池子「只记复习时间和 id」，词条真身始终在 `words` 表——池子用 LEFT JOIN 拼出来，不复制数据。
 - 评分间隔**封顶 365 天**（下限仍是 10 分钟）：FSRS 连续 Easy 会把间隔推到几年，
   那正是「记得牢的词再也不出现、无法无限学下去」的根源。
-- 置顶卡与旧抽查卡评分时**按新卡重算**（丢掉原 stability/difficulty、天数按 0 算），
-  请求体带 `is_reset: true` / `is_probe: true`；后端把 `review_logs.stability_before` 记成 0，
-  所以「今日新学」只统计**真正的第一次学**——否则循环池里天天命中已学词，新学数字会虚高。
+- **置顶卡走正常复习**（2026-10 起）：它和普通卡一样用自己真实的 `stability` / `difficulty`
+  累积记忆状态，提交时带 `is_daily`（只用于日志留痕）。早先的做法是「丢掉状态、按新卡重算」，
+  为的是不让循环池里的重学把「今日新学」冲高 —— 但那等于用摧毁记忆状态去凑一个统计口径；
+  现在统计只看 `stability_before = 0`（该用户此前从没复习过这个词就是 0），口径天然正确。
+- 顽固词（`lapses ≥ 8`）在池子里单独成桶、优先露面，卡片元信息里带 `leech` 标记。
 - 卡片里的 `stability` / `difficulty` **会下发给引擎**（2026-10 起，`poolSelectSQL` 重新 SELECT
   `wr.stability, wr.difficulty`）：引擎靠它们累积 FSRS 状态。
   ⚠️ 这两列删不得 —— 删掉之后**每张卡**都退回「新卡」路径（四个评分恒为
@@ -947,7 +956,7 @@ AUTH_ADMIN_PASSWORD='管理员密码' \
 - [ ] 响应式优化
 - [x] 复习页面 UI（简单版：`modules/english/english.html` + WASM 引擎）
 - [x] 英语模块独立成 `modules/english/`（页面/样式/逻辑/引擎集中管理）
-- [x] 计算下沉 Rust：会话编排、日期换算、FSRS 调度、进度统计移入引擎（现为 118 个单元测试）
+- [x] 计算下沉 Rust：会话编排、日期换算、FSRS 调度、进度统计移入引擎（现为 125 个单元测试）
 - [x] 通用后台骨架 `admin/`（布局 / 导航 / 路由 / 通用组件 + 登录鉴权预留位）
 - [x] 英语后台：词条增删改查 + 批量导入（粘贴词表 → Rust 解析 → 预览 → 分批导入）
 - [x] 词书 / 单元分组（`words.book` / `words.unit` + 列表筛选）
@@ -964,10 +973,10 @@ AUTH_ADMIN_PASSWORD='管理员密码' \
       每天随机置顶 5 个（稳定哈希，同日固定、跨天换批）；间隔封顶 365 天；
       每日配额从 localStorage 迁到服务端。定案与实测见 [`docs/review-pool-plan.md`](docs/review-pool-plan.md)
 - [x] 无限复习：评完的卡按新到期时间插回池子，没有结束页；过完一整轮时轻提示「整池已过一遍，继续复习不受限」
-- [x] 重置重学标记（`review_logs.is_reset`）：置顶/抽查卡按新卡重算，`stability_before` 记 0，
-      使「今日新学」只统计真正的第一次学、不被循环池冲高
-- [x] 抽查卡按新卡重算记忆状态，`review_logs.is_probe` 留痕（供日后排除出参数拟合）；
-      新模型下 `/api/reviews/probes` 降级为池尾诊断
+- [x] 置顶抽样标记（`review_logs.is_daily`）：置顶卡走**正常复习**（用自己真实的记忆状态），
+      `stability_before` 记真实旧值，使「今日新学」天然只统计真正的第一次学、不被循环池冲高
+- [x] 抽查历史标记 `review_logs.is_probe` 留痕（供日后排除出参数拟合）；
+      新模型下 `/api/reviews/probes` 降级为池尾诊断（引擎不再调用）
 - [x] 左下角今日置顶进度小字 + 置顶走完后的动效切换；顶栏改为「今日已复习 / 池内到期 / 池内总数」
 - [x] 单一循环池验收脚本 `scripts/verify-pool.ps1`（28 项，真 HTTP + 真库、可重复运行）
 - [x] 例句变形匹配（`applied` 也能对应词条 `apply`；原形优先）
@@ -997,6 +1006,10 @@ AUTH_ADMIN_PASSWORD='管理员密码' \
       （IP 维度 20→200，邮箱维度不变），Nginx 补 `limit_req`/`limit_conn` 并**修掉 XFF 可伪造**（`$remote_addr`）；
       两个服务新增 `?deep=1` 深度健康检查；新增 `guangxue-monitor`（每 5 分钟探活，故障与恢复各发一封邮件，
       只在状态变化时发）。见 [`docs/launch-plan.md`](docs/launch-plan.md) 第 14 节
+- [x] **复习算法改进**（2026-10）：① 置顶卡不再重置记忆状态（改 `is_daily` 标记 + `stability_before` 口径）、
+      ② 今日置顶数按复习量自适应（`dailyCount`，5~30）、③ 顽固词（`lapses ≥ 8`）单独成桶并打标、
+      ④ 「今天」改由服务端按 `Asia/Shanghai` 定（前端不再传 `?today`）、
+      ⑤ FSRS 期望记忆保持率可配（`GX_DESIRED_RETENTION`，默认 0.9，经 queue 下发给引擎）
 - [ ] 改密 / 找回密码 / 多方式登录（`user_identities` 表已预留）
 - [ ] 复习页面 UI（进阶：完整词义卡交互、统计曲线图表等）
 - [ ] FSRS 参数优化（基于 review_logs 的 compute_parameters）

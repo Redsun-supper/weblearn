@@ -533,8 +533,8 @@ func (h *AdminStatsHandler) Overview(c *gin.Context) {
 		today.Reviews++
 		activeUsers[row.UserID] = struct{}{}
 		// 今日新学 = 当天 stability_before = 0 的日志数（docs/launch-plan.md §5.0 的口径）。
-		// ⚠️ 与 /api/reviews/stats 的 today_new 有一处差异：那边还排除了 is_reset（重置重学），
-		// 看板按定案只认 stability_before = 0，两者在「重置重学」多的日子会不一样。
+		// 与 /api/reviews/stats 的 today_new 现在是**同一口径**：2026-10 起置顶卡不再重置，
+		// stability_before = 0 天然只命中「真正第一次学」，两边不再有差异。
 		if row.StabilityBefore == 0 {
 			today.NewWords++
 		}

@@ -22,14 +22,26 @@ import (
 // ReviewHandler 词汇间隔复习（FSRS）相关处理器
 type ReviewHandler struct {
 	db *gorm.DB
+	// desiredRetention FSRS 期望记忆保持率，由 main/routes 从配置注入（config.Config.DesiredRetention）。
+	//
+	// ⚠️ 服务端**不参与** FSRS 计算：这个值只是经 /api/reviews/queue 下发给浏览器里的
+	// WASM 引擎（引擎据此算间隔）。缺省 0.9，与引擎侧常量 DESIRED_RETENTION 一致。
+	desiredRetention float64
 }
+
+// defaultDesiredRetention 期望记忆保持率的缺省值（与 config.defaultDesiredRetention 一致）。
+const defaultDesiredRetention = 0.9
 
 // localDayKey 返回「按当地自然日」的哈希种子（例如 2026-10-02 → 20261002）。
 //
-// ⚠️ 浏览器与服务端必须用同一套「今天」，否则跨零点前后会出现两套「今日 5 个」。
-// 契约：客户端传 `?today=YYYYMMDD`（它才知道用户的本地日期）；不传则回落 `Asia/Shanghai`。
-// 这里刻意**不解析 tz=+08:00 这类偏移**：固定偏移在夏令时地区会在切换当天错一小时，
-// 而这件事正是「哪一天」要避免的误差。
+// 「今天」以**服务端**为准（2026-10 起）：默认按 Asia/Shanghai 算，不再依赖前端传参。
+// 早先的契约是「客户端传 `?today=YYYYMMDD`（它才知道用户的本地日期），不传则回落」，
+// 但前端总是带着浏览器的本地日期，于是浏览器与服务端时区不一致时两边会算出不同的「今天」，
+// 跨零点前后出现两套「今日置顶」批次。
+//
+// `?today=YYYYMMDD` 现在**只是显式覆盖**（留给测试与排障，例如 Go 单测固定 `poolTestDay`），
+// 正常请求不带它。这里刻意**不解析 tz=+08:00 这类偏移**：固定偏移在夏令时地区会在切换当天
+// 错一小时，而这件事正是「哪一天」要避免的误差。
 func localDayKey(c *gin.Context, now time.Time) int64 {
 	if v := strings.TrimSpace(c.Query("today")); len(v) == 8 {
 		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
@@ -42,9 +54,19 @@ func localDayKey(c *gin.Context, now time.Time) int64 {
 	return daySeed(now)
 }
 
-// NewReviewHandler 创建处理器实例
+// NewReviewHandler 创建处理器实例（期望记忆保持率取默认 0.9，可再 SetDesiredRetention 覆盖）
 func NewReviewHandler(db *gorm.DB) *ReviewHandler {
-	return &ReviewHandler{db: db}
+	return &ReviewHandler{db: db, desiredRetention: defaultDesiredRetention}
+}
+
+// SetDesiredRetention 注入期望记忆保持率（来自 GX_DESIRED_RETENTION）。
+//
+// 非法值（不在 (0,1) 开区间）**忽略**并保留当前值：这里不报错、不 panic，
+// 提醒由 config.StartupWarnings 在启动时统一发出。
+func (h *ReviewHandler) SetDesiredRetention(v float64) {
+	if v > 0 && v < 1 {
+		h.desiredRetention = v
+	}
 }
 
 // ---------- 单一循环池的公共口径（docs/review-pool-plan.md） ----------
@@ -53,8 +75,21 @@ func NewReviewHandler(db *gorm.DB) *ReviewHandler {
 // 本地测试与线上容器可能不一致，会让「今天」的含义随部署环境漂移。
 const poolTZName = "Asia/Shanghai"
 
-// dailyWordCount 每天置顶的随机词数（用户决策 A2：从整个池子里抽 5 个放最前面）
-const dailyWordCount = 5
+// 今日置顶抽样的词数（用户决策 A2：从整个池子里抽若干个放最前面）。
+//
+// 2026-10 起**不再固定 5 个**：大词库下每天 5 个对整库的抽样覆盖率太低（3500 词的词库要
+// 700 天才覆盖一遍），改为按用户近 7 天的日均复习量自适应 —— 复习量大的人按比例放大，
+// 见 dailyCount()。下限保证新人也有抽样，上限防止高活跃用户被置顶卡淹没。
+const (
+	minDailyWordCount = 5
+	maxDailyWordCount = 30
+	// dailySampleRatio 置顶数 = 近 7 天日均复习量 × 这个比例
+	dailySampleRatio = 0.05
+)
+
+// leechThreshold 顽固词阈值：遗忘（Again）累计到这个次数就标成顽固词。
+// 取 8 与 Anki 的默认 leech 阈值一致；顽固词在池子里单独成桶优先出（见 poolBucketSQL）。
+const leechThreshold = 8
 
 // maxIntervalDays 下次到期时间的**上限**（用户决策 B8：封顶一年）。
 //
@@ -102,21 +137,28 @@ func dailyInSQL(ids []uint) string {
 
 // poolBucketSQL 返回优先级桶表达式：
 //
-//	0 = 今日 5 个（置顶）  1 = 已过期  2 = 从未复习  3 = 未到期
+//	0 = 今日置顶抽样  1 = 已过期  2 = 顽固词  3 = 从未复习  4 = 未到期
 //
-// 用户决策 C10 定的顺序：今日 5 个 → 已过期（越久越前）→ 未复习过 → 未到期。
+// 用户决策 C10 定的基础顺序：今日置顶 → 已过期（越久越前）→ 未复习过 → 未到期；
+// 2026-10 在「已过期」之后插入**顽固词**桶（`lapses >= leechThreshold` 且还没到期的），
+// 让反复记不住的词优先露面（否则它们会和普通未到期卡一样沉在池尾）。
+// ⚠️ 没有进度行时 `wr.lapses` 是 NULL，`NULL >= 8` 为 NULL 而非真，会自然落到后面的桶。
 func poolBucketSQL(daily []uint, now time.Time) string {
 	return fmt.Sprintf(`(CASE
 		WHEN words.id IN %s THEN 0
 		WHEN wr.due_at IS NOT NULL AND wr.due_at <= '%s' THEN 1
-		WHEN wr.id IS NULL THEN 2
-		ELSE 3 END)`, dailyInSQL(daily), now.Format("2006-01-02 15:04:05"))
+		WHEN wr.lapses >= %d THEN 2
+		WHEN wr.id IS NULL THEN 3
+		ELSE 4 END)`, dailyInSQL(daily), now.Format("2006-01-02 15:04:05"), leechThreshold)
 }
 
-// poolOrderSQL 返回池子的稳定排序：先按优先级桶，再按桶内键。
+// poolOrderSQL 返回池子的稳定排序：先按优先级桶，再依次按 稳定哈希 → due_at → 词 id。
 //
-// 桶 0 / 2（没有到期时间可比）用**稳定哈希**排；桶 1 / 3 用 due_at 排。
-// 哈希负责「按用户随机但同一天固定」，due_at 负责「越久没过期越靠前」。
+// 哈希放在最前：保证「同一用户同一天两次请求拿到同一顺序」，并让没有有意义到期顺序的
+// 桶（0 置顶抽样、3 从未复习）呈现**随机但固定**的排列；due_at 是次级键。
+// ⚠️ 注意：哈希对**所有**桶都先起作用（不只桶 0/3），所以「已过期越久越靠前」实际上
+// 是哈希优先 —— 这一点与 docs/review-pool-plan.md 里「桶 1 按 due_at 升序」的说法不一致，
+// 属于既有实现，尚未拍板要不要调整（改动排序会影响线上体验）。
 func poolOrderSQL(userID, seed int64, daily []uint, now time.Time) string {
 	return fmt.Sprintf(`%s, %s, wr.due_at ASC, words.id ASC`,
 		poolBucketSQL(daily, now), stablehash.SQLHashExpr("words.id", userID, seed))
@@ -126,7 +168,7 @@ func poolOrderSQL(userID, seed int64, daily []uint, now time.Time) string {
 //
 // has_review / daily / bucket 都是**计算列**：
 //   - has_review：LEFT JOIN 之后判断这一侧到底有没有进度行（NULL 说明从没复习过）
-//   - daily：这张卡是不是「今日 5 个」之一
+//   - daily：这张卡是不是「今日置顶抽样」之一
 //   - bucket：优先级桶序号，供前端分组展示
 //
 // ⚠️ stability / difficulty 必须**下发给引擎**（2026-10 改回来，原先按用户决策 E18 删掉过）：
@@ -134,21 +176,24 @@ func poolOrderSQL(userID, seed int64, daily []uint, now time.Time) string {
 // 四个评分永远算出 Again 0.21 / Hard 1.29 / Good 2.31 / Easy 8.30 天，换会话也不变，
 // 于是 B8 的 365 天封顶与右上角「难度/稳定性/预计记住」面板同时成了死代码。
 //
-// ⚠️ 别把「置顶卡按新卡重算」（用户决策 C11）读成「所有卡都按新卡重算」：重置是**按卡**判定的，
-// 发生在引擎里（`session.rs` 的 `is_reset_card` → `try_rate` 的 `if reset_card { (None, 0) }`），
-// 后端只管把库里的真实状态原样送出去。同理这两列**必须是指针**：LEFT JOIN 的 NULL 要序列化成
-// `null`（引擎按新卡处理），扫成 0 就分不清「没学过」和「稳定度真的是 0」——那正是当初删它们的起因。
+// ⚠️ 置顶卡走**正常复习**（2026-10 起）：引擎不再「丢掉状态、按新卡重算」，所以这两列
+// 必须是指针：LEFT JOIN 的 NULL 要序列化成 `null`（引擎按新卡处理），扫成 0 就分不清
+// 「没学过」和「稳定度真的是 0」——那正是当初删它们的起因（用户决策 E18）。
+//
+// lapses / leech 供前端标出「顽固词」（`lapses` 达 leechThreshold）：leech 用 COALESCE 包一层，
+// 没有进度行时是 0 而不是 NULL（NULL 扫进 Go 的 bool 会报错）。
 func poolSelectSQL(userID, seed int64, daily []uint, now time.Time) string {
 	// ⚠️ 进度列必须写 join 的别名 `wr`，不能写 `word_reviews.due_at`：
 	// 一旦语句里的表只有一个别名，原表名就不再可引用（实测报 no such column）。
 	return fmt.Sprintf(`
 		words.id AS word_id, words.word, words.phonetic, words.meaning, words.example,
 		words.example_translation, words.senses, words.subject,
-		wr.stability, wr.difficulty, wr.due_at, wr.last_review_at,
+		wr.stability, wr.difficulty, wr.due_at, wr.last_review_at, wr.lapses,
+		COALESCE(wr.lapses >= %d, 0) AS leech,
 		(wr.id IS NOT NULL) AS has_review,
 		(words.id IN %s) AS daily,
 		%s AS bucket
-	`, dailyInSQL(daily), poolBucketSQL(daily, now))
+	`, leechThreshold, dailyInSQL(daily), poolBucketSQL(daily, now))
 }
 
 // currentUser 取本次请求的用户 id；取不到就按未登录回 401 并返回 false。
@@ -209,17 +254,17 @@ type submitReviewRequest struct {
 	Difficulty    float64 `json:"difficulty"`
 	IntervalDays  float64 `json:"interval_days"` // 引擎算出的下次间隔（天）
 	DesiredRetain float64 `json:"desired_retention"`
-	// IsProbe 标记「每日抽查」卡：这类卡评分时引擎按**新卡**重算记忆状态（相当于重新体检）。
-	// 记这个标记是为了日后做 FSRS 参数优化时能排除这批「间隔被大幅压缩」的记录。
+	// IsProbe 标记「每日抽查」卡（旧模型遗留，新引擎不再产出）。
 	IsProbe bool `json:"is_probe"`
-	// IsReset 标记「重置重学」：单一循环池里，今日 5 个可能命中**已经学过**的词，
-	// 引擎按新卡口径重算（见 docs/review-pool-plan.md 的 C11）。
+	// IsReset 历史字段：旧引擎对置顶卡 / 抽查卡「重置重学」时会带 true。
 	//
-	// ⚠️ 它对统计有直接影响：日志里的 stability_before 会被强制写成 0，
-	// 于是「今日新学」不会把这种循环重学算成新学（用户决策：统计只认真正的第一次学）。
-	// 旧模型只有抽查会重置，所以当时靠「stability_before 取库里的真实旧值」就够了；
-	// 新模型里重置是常态，必须有显式标记。
+	// 2026-10 起引擎**不再重置**（置顶卡走正常复习、用自己真实的记忆状态），新请求恒为 false；
+	// 保留它只为兼容还没更新的旧客户端 —— 后端只把它照记进日志，**不再**据此把
+	// stability_before 写 0（那正是「用摧毁记忆状态去凑统计口径」的旧做法）。
 	IsReset bool `json:"is_reset"`
+	// IsDaily 本次提交的是不是「今日置顶抽样」的那几张之一。
+	// 只用于日志留痕（供日后单独分析置顶抽样的效果），不参与记忆状态计算。
+	IsDaily bool `json:"is_daily"`
 }
 
 // 复习卡（单词 + FSRS 记忆状态）。
@@ -231,10 +276,10 @@ type submitReviewRequest struct {
 //   - 早先这几个字段是**非指针 float64**，LEFT JOIN 的 NULL 会被扫成 0 —— 于是「没学过」和
 //     「学过但稳定度算出来是 0」无法区分。改成指针后这个坑一并解决（用户决策 E18）。
 //
-// daily / bucket 是单一循环池新增的排序信息：
-//   - daily：这张卡属于「今日随机抽出的 5 个」之一（置顶）。引擎对这类卡按新卡口径重算，
-//     提交时带 is_reset，使统计不把它记成「今日新学」。
-//   - bucket：0 = 今日 5 个，1 = 已过期，2 = 从未复习，3 = 未到期。界面可据此分组。
+// daily / bucket / leech 是单一循环池新增的排序信息：
+//   - daily：这张卡属于「今日置顶抽样」之一。引擎走**正常复习**，提交时带 is_daily 供统计区分。
+//   - leech：`lapses` 达阈值的顽固词（池子里单独成桶，优先出）。
+//   - bucket：0 = 今日置顶，1 = 已过期，2 = 顽固词，3 = 从未复习，4 = 未到期。界面可据此分组。
 type dueCard struct {
 	ID                 uint              `json:"id" gorm:"column:word_id"`
 	Word               string            `json:"word" gorm:"column:word"`
@@ -249,6 +294,8 @@ type dueCard struct {
 	DueAt              *time.Time        `json:"due_at" gorm:"column:due_at"`
 	LastReviewAt       *time.Time        `json:"last_review_at" gorm:"column:last_review_at"`
 	Reps               *uint             `json:"reps,omitempty" gorm:"column:reps"`
+	Lapses             *uint             `json:"lapses,omitempty" gorm:"column:lapses"`
+	Leech              bool              `json:"leech" gorm:"column:leech"`
 	HasReview          bool              `json:"has_review" gorm:"column:has_review"`
 	Daily              bool              `json:"daily" gorm:"column:daily"`
 	Bucket             int               `json:"bucket" gorm:"column:bucket"`
@@ -633,20 +680,24 @@ func (h *ReviewHandler) NewWords(c *gin.Context) {
 }
 
 // QueueReviews 复习队列 = **整个循环池**（`words` 全表 + 该用户的到期状态）。
-// GET /api/reviews/queue?limit=100&offset=0&now=<ms>&today=<YYYYMMDD>
+// GET /api/reviews/queue?limit=100&offset=0&now=<ms>[&today=<YYYYMMDD> 显式覆盖，正常不带]
 //
-// 排序由服务端一次定死（用户决策 C10），四个优先级桶：
+// 排序由服务端一次定死（用户决策 C10），五个优先级桶：
 //
-//	0 = 今日随机抽出的 5 个（置顶，每次刷新都是同一批 —— 见 stablehash 的稳定哈希）
-//	1 = 已过期（due_at <= now，越久越靠前）
-//	2 = 从未复习过（没有进度行）
-//	3 = 未到期（due_at ASC）
+//	0 = 今日置顶抽样（每次刷新都是同一批 —— 见 stablehash 的稳定哈希）
+//	1 = 已过期（due_at <= now）
+//	2 = 顽固词（lapses 达阈值，且还没到期）
+//	3 = 从未复习过（没有进度行）
+//	4 = 未到期（due_at ASC）
 //
-// 桶内键：桶 1/3 用 due_at，桶 0/2 用「按 (user, 当天, word) 的稳定哈希」——
+// 桶内键：稳定哈希 → due_at → 词 id（哈希在前，见 poolOrderSQL 的说明）——
 // 于是池子对每个用户是**随机但稳定**的排列，翻页不会重叠或漏卡。
 //
 // 分页：`total` 是**池子总词数**（= 词表行数），不再是「已学词数」。
-// 想一直学下去就一路往下翻：桶 3 的卡即使没到期也会照常返回（用户决策 B9）。
+// 想一直学下去就一路往下翻：桶 4 的卡即使没到期也会照常返回（用户决策 B9）。
+//
+// 响应里还带 `desired_retention`（期望记忆保持率，来自 GX_DESIRED_RETENTION，缺省 0.9）：
+// 服务端不参与 FSRS 计算，只是把它下发给浏览器里的引擎（前端只做透传，见 english.js）。
 func (h *ReviewHandler) QueueReviews(c *gin.Context) {
 	userID, ok := currentUser(c)
 	if !ok {
@@ -689,12 +740,13 @@ func (h *ReviewHandler) QueueReviews(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"code": 200, "message": "获取成功", "data": gin.H{
-		"items":  cards,
-		"total":  total,
-		"limit":  limit,
-		"offset": offset,
-		"now":    nowParsed.UnixMilli(),
-		"daily":  dailyWordCount,
+		"items":             cards,
+		"total":             total,
+		"limit":             limit,
+		"offset":            offset,
+		"now":               nowParsed.UnixMilli(),
+		"daily":             h.dailyCount(userID),
+		"desired_retention": h.desiredRetention,
 	}})
 }
 
@@ -788,9 +840,12 @@ func (h *ReviewHandler) SubmitReview(c *gin.Context) {
 	dueSeconds := math.Max(intervalDays*86400, 600)
 	dueAt := now.Add(time.Duration(dueSeconds * float64(time.Second)))
 
+	// 期望记忆保持率：优先用引擎回传的（它才知道这次评分**实际**用的值）；
+	// 缺失 / 非法时回落到服务端配置（`GX_DESIRED_RETENTION`，缺省 0.9），而**不是**硬编码 0.9 ——
+	// 否则运营把配置改成 0.95 之后，库里这一列却仍记 0.9，将来做 FSRS 参数拟合会拿到错的自变量。
 	desiredRetention := req.DesiredRetain
 	if desiredRetention <= 0 || desiredRetention >= 1 {
-		desiredRetention = 0.9
+		desiredRetention = h.desiredRetention
 	}
 
 	var review models.WordReview
@@ -803,12 +858,10 @@ func (h *ReviewHandler) SubmitReview(c *gin.Context) {
 	}
 
 	// 复习前的稳定度（用于日志）：取库里的真实旧值。
-	// ⚠️ 新模型下「重置重学」是常态（今日 5 个可能命中已学词），必须靠 is_reset 把这类记录
-	// 的 stability_before 记成 0，否则「今日新学」会被当天的循环重学冲高。
+	// ⚠️ 置顶卡走**正常复习**（2026-10 起），这里不再按 is_reset 把它写成 0 ——
+	// 于是 `stability_before = 0` 天然就等于「该用户此前从没复习过这个词」：
+	// 真正第一次学是 0，学过的词是它自己的稳定度，「今日新学」据此统计即可。
 	stabilityBefore := review.Stability
-	if req.IsReset {
-		stabilityBefore = 0
-	}
 	if isNew {
 		review = models.WordReview{UserID: userID, WordID: req.WordID}
 	}
@@ -844,6 +897,7 @@ func (h *ReviewHandler) SubmitReview(c *gin.Context) {
 			ReviewedAt:      now,
 			IsProbe:         req.IsProbe,
 			IsReset:         req.IsReset,
+			IsDaily:         req.IsDaily,
 		}
 		return tx.Create(&log).Error
 	})
@@ -864,19 +918,22 @@ func (h *ReviewHandler) SubmitReview(c *gin.Context) {
 }
 
 // ReviewStats 复习统计
-// GET /api/reviews/stats?today=YYYYMMDD
+// GET /api/reviews/stats
 //
 // 单一循环池模型下的口径（用户决策 D17）：
 //
 //	pool_size      池子总词数（= 整个词表；不再有「未学词」这个概念）
 //	pool_due       池内**现在到期**的卡数（引擎用来决定「今天有没有活干」）
 //	reviewed_words 你已经复习过的词数（进度行数，纯信息）
-//	today_new      今日**真正第一次学**的词数（stability_before = 0 且不是重置重学）
-//	today_reviewed 今日提交的总复习数（含重置重学）
+//	today_new      今日**真正第一次学**的词数（stability_before = 0）
+//	today_reviewed 今日提交的总复习数
+//	leech_count    顽固词总数（lapses 达阈值）
+//	daily_target / daily_done 今日置顶抽样的目标数与已完成数
 //	streak_days / retention_rate 习惯指标（口径不变）
 //
-// ⚠️ 与旧版的区别：`new_words`（未学词数）已无意义并被移除；`today_new` 不再会被
-// 「重置重学」冲高（靠 review_logs.is_reset 区分）。
+// ⚠️ 与旧版的区别：`new_words`（未学词数）已无意义并被移除；`today_new` 的口径从
+// 「stability_before=0 且非重置重学」简化为「stability_before=0」—— 因为置顶卡不再重置，
+// 这个值天然只命中真正的第一次学（详见 SubmitReview 里对 stability_before 的说明）。
 func (h *ReviewHandler) ReviewStats(c *gin.Context) {
 	userID, ok := currentUser(c)
 	if !ok {
@@ -884,11 +941,11 @@ func (h *ReviewHandler) ReviewStats(c *gin.Context) {
 	}
 
 	now := time.Now()
-	// 今日零点（当地时区），用于统计「今日已复习」。
-	// 客户端可传 ?today=YYYYMMDD 指定它自己的自然日（见 localDayKey）。
+	// 今日零点按**服务端**的 Asia/Shanghai 算（2026-10 起）：前端不再参与，跨设备口径一致。
+	// `?today_ms` 只是显式覆盖（留给测试与排障），正常请求不带。
 	startOfToday := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 	if todayMs, err := strconv.ParseInt(c.Query("today_ms"), 10, 64); err == nil && todayMs > 0 {
-		// 客户端直接给出「它当地今天零点」的时间戳时优先采用（跨时区用户也准）
+		// 调用方直接给出「它当地今天零点」的时间戳时优先采用（例如固定日期的测试）
 		startOfToday = time.UnixMilli(todayMs)
 		now = now.In(startOfToday.Location())
 	} else {
@@ -918,11 +975,13 @@ func (h *ReviewHandler) ReviewStats(c *gin.Context) {
 		Where("user_id = ? AND reviewed_at >= ?", userID, startOfToday).
 		Count(&todayReviewed)
 
-	// 今日新学：首次复习的日志里 stability_before 为 0，**且不是重置重学**。
-	// 旧模型靠「抽查卡记库里的真实旧值」就能区分；新模型里重置是常态，必须看 is_reset。
+	// 今日新学 = 今天真正第一次学的词：日志里 `stability_before = 0`。
+	// 置顶卡走正常复习后不再强写 0，所以这个条件天然只命中「该用户此前从没复习过这个词」的记录
+	// （学过的词 stability_before 是它自己的稳定度）。旧日志里被强制写 0 的置顶记录只落在历史某天，
+	// 而本口径只统计「今天」，不受影响。
 	var todayNew int64
 	h.db.Model(&models.ReviewLog{}).
-		Where("user_id = ? AND reviewed_at >= ? AND stability_before = 0 AND is_reset = ?", userID, startOfToday, false).
+		Where("user_id = ? AND reviewed_at >= ? AND stability_before = 0", userID, startOfToday).
 		Count(&todayNew)
 
 	todayReview := todayReviewed - todayNew
@@ -930,8 +989,15 @@ func (h *ReviewHandler) ReviewStats(c *gin.Context) {
 		todayReview = 0
 	}
 
-	// 今日完成「每日 5 个」的进度：今日 5 个里已经评过几个（不分新学 / 重置）
+	// 今日完成「置顶抽样」的进度：今天置顶的那几个里已经评过几个
 	dailyDone := h.countTodayDaily(c, userID, startOfToday, now)
+
+	// 今日置顶目标数（按复习量自适应）与顽固词总数
+	dailyCount := h.dailyCount(userID)
+	var leechCount int64
+	h.db.Model(&models.WordReview{}).
+		Where("user_id = ? AND lapses >= ?", userID, leechThreshold).
+		Count(&leechCount)
 
 	var againTotal int64
 	h.db.Model(&models.ReviewLog{}).Where("user_id = ? AND rating = ?", userID, 1).Count(&againTotal)
@@ -950,8 +1016,9 @@ func (h *ReviewHandler) ReviewStats(c *gin.Context) {
 		"today_reviewed": todayReviewed,
 		"today_new":      todayNew,
 		"today_review":   todayReview,
-		"daily_target":   dailyWordCount,
+		"daily_target":   dailyCount,
 		"daily_done":     dailyDone,
+		"leech_count":    leechCount,
 		"streak_days":    h.calcStreakDays(userID, startOfToday),
 		"retention_rate": retentionRate,
 		// 兼容字段：旧前端读 total_words / new_words / due_cards。
@@ -963,7 +1030,7 @@ func (h *ReviewHandler) ReviewStats(c *gin.Context) {
 	}})
 }
 
-// countTodayDaily 统计「今日 5 个」里已经评过几个。
+// countTodayDaily 统计「今日置顶抽样」里已经评过几个。
 //
 // 判定方式：先按稳定哈希取出今日那 5 个 word_id，再看今天这些词有没有提交记录。
 // 不用「进度行是否已存在」来判断——用户可能在别的日子就学过它（循环池的正常情况）。
@@ -980,18 +1047,43 @@ func (h *ReviewHandler) countTodayDaily(c *gin.Context, userID uint, startOfToda
 	return done
 }
 
-// dailyWordIDs 取出「今日 5 个」的 word_id 列表（按稳定哈希排序取前 5）。
+// dailyWordIDs 取出「今日置顶抽样」的 word_id 列表（按稳定哈希排序取前 N 个，N 见 dailyCount）。
 //
-// 与队列里的 daily 桶用的是同一套哈希与同一个种子，所以列表必然一致 ——
-// 两处口径若不同步，界面上的「今日 3/5」就会与实际置顶的卡对不上。
+// 与队列里的 daily 桶用的是同一套哈希、同一个种子、同一个数量，所以列表必然一致 ——
+// 两处口径若不同步，界面上的「今日 3/N」就会与实际置顶的卡对不上。
 func (h *ReviewHandler) dailyWordIDs(userID uint, seed int64) []uint {
 	var ids []uint
 	h.db.Model(&models.Word{}).
 		Select("words.id").
 		Order(stablehash.SQLHashExpr("words.id", int64(userID), seed)).
-		Limit(dailyWordCount).
+		Limit(h.dailyCount(userID)).
 		Pluck("words.id", &ids)
 	return ids
+}
+
+// dailyCount 今日置顶抽样的词数：按用户近 7 天的日均复习量自适应。
+//
+// 公式：clamp(round(近 7 天日均复习数 × dailySampleRatio), [minDailyWordCount, maxDailyWordCount])。
+//
+// 为什么按复习量而不是按词库大小：抽样体检的目的是「让长期不露面的词露面」，
+// 而用户一天能看多少张是相对固定的 —— 复习量越大，置顶抽样按比例放大才有意义
+// （3500 词的词库里固定 5 个要 700 天才覆盖一遍）。新人（近 7 天无记录）拿下限 5，
+// 高活跃用户被上限 30 兜住，不至于被置顶卡淹没。
+func (h *ReviewHandler) dailyCount(userID uint) int {
+	since := time.Now().AddDate(0, 0, -7)
+	var recent int64
+	h.db.Model(&models.ReviewLog{}).
+		Where("user_id = ? AND reviewed_at >= ?", userID, since).
+		Count(&recent)
+
+	n := int(math.Round(float64(recent) / 7.0 * dailySampleRatio))
+	if n < minDailyWordCount {
+		n = minDailyWordCount
+	}
+	if n > maxDailyWordCount {
+		n = maxDailyWordCount
+	}
+	return n
 }
 
 // calcStreakDays 计算**某个用户**的连续复习天数

@@ -95,8 +95,8 @@ go build -o server main.go
 | GET | /api/word-options | 公开 | 词条中已使用的词书 / 单元列表（后台筛选下拉用） |
 | GET | /api/reviews/due | **需登录** | 到期复习卡列表（limit/now） |
 | GET | /api/reviews/new | **需登录** | 尚未加入复习的新词 |
-| GET | /api/reviews/queue | **需登录** | 复习队列：**所有已学词**按 `due_at` 升序（**含未到期**），分页带 `total` |
-| GET | /api/reviews/probes | **需登录** | 每日抽查候选：已学词按 `due_at` **倒序**（越轮不到复习的越靠前） |
+| GET | /api/reviews/queue | **需登录** | 复习池：**整库（含未学）按五桶排序**（今日置顶 → 已过期 → 顽固词 → 从未复习 → 未到期），分页带 `total` |
+| GET | /api/reviews/probes | **需登录** | 池尾诊断：已学词按 `due_at` **倒序**（只读，不参与编排） |
 | POST | /api/reviews/submit | **需登录** | 提交复习结果（FSRS 状态持久化） |
 | GET | /api/reviews/stats | **需登录** | 复习统计 |
 | GET | /api/admin/stats/overview | **管理员** | 管理看板总览：今日 5 个 + 累计 8 个 + 账号库可用性（P1） |
@@ -135,28 +135,31 @@ go build -o server main.go
 | `GET /api/admin/users/:id/progress` | 单人版 + `last7[{date,reviews}]`；id 缺失/非数字 → 400，用户无数据 → 200 + 全 0 |
 
 - **口径**：时间一律折成**北京时间（UTC+8）**再切天（账号库存 UTC 文本、复习库存带时区的时间）；今日新学 = `stability_before = 0`、今日抽查 = `is_probe`、今日活跃 = 当天有 `review_logs` 的 distinct `user_id`。
-  ⚠️ `today.new_words` 与 `/api/reviews/stats` 的 `today_new` **在「重置重学」多的日子会不一样**：前者按定案只判 `stability_before = 0`，后者还排除 `is_reset`。两处都要改的时候记得一起改。
+  ⚠️ `today.new_words` 与 `/api/reviews/stats` 的 `today_new` **现在是同一口径**（都只判 `stability_before = 0`）：2026-10 起置顶卡不再重置，`stability_before = 0` 天然只命中「真正第一次学」，两处不再有差异。
 - **账号库是只读打开的**（`database/authdb.go`，DSN 带 `mode=ro`，驱动层面不允许写）：路径由 `AUTH_DB_PATH` 给（默认 `../backend-rust/auth.db`，只对「工作目录 = `backend-go/`」成立）。
   **读不到时接口仍然 200**：账号侧那 6 个数字全按 0 显示 + `auth_db.available=false` + 一句可读原因（含路径），复习侧数字照常 —— 看板不会因为账号服务没起来就整页打不开。启动时 `config.StartupWarnings` 也会为这个路径喊一声。
 - ⚠️ **跨库时间比较的坑**：`guangxue.db` 里的时间由 GORM 写成带自身偏移的文本（形如 `2026-10-03 17:27:36.1460602+08:00`），拿 UTC 边界直接比字典序会**排错先后**。做法是 SQL 只做**放宽两天**的粗筛（覆盖 −12:00~+14:00 共 26 小时的文本差，只多带不漏行），精确判定在 Go 侧按真实时间点做。
 
 ### 复习队列接口说明（供学生端调度使用）
 
-`queue` 与 `probes` 是同一份数据的两端：
+`queue` 是学生端唯一的取数入口：**整库（含从未学过的词）按五桶排好序**下发
+（桶 0 今日置顶 → 桶 1 已过期 → 桶 2 顽固词 → 桶 3 从未复习 → 桶 4 未到期）。
 
-- `queue` 给「整库按紧迫度排好序」的列表（`due_at ASC`），客户端引擎在这里面切「已过期 / 未到期」，
-  再做梯度乱序（未到期每 10 个一块、块内打乱）。**到期与否只影响顺序，不影响是否有资格出现**——
-  想多学就能一直往下翻，所以它同时承担了「到期卡」和「未到期但想提前复习」两种需求。
-- `probes` 给「到期最远」的那几个，用于**每日抽查**：每天固定抽 5 个最轮不到复习的词提前确认，
-  避免「总是快要过期的那些天天出现、间隔长的永远不出现」。客户端还会按 localStorage 里
-  最近抽过的词再过滤一次，所以这里按 `due_at DESC` 多给几条候选。
-- 两者字段与 `/api/reviews/due` 一致（复用 `dueCard` 结构），客户端解析代码无需区分。
+- **到期与否只影响顺序，不影响是否有资格出现**：想多学就能一直往下翻，
+  所以它同时承担了「到期卡」和「未到期但想提前复习」两种需求。
+- 桶 0 是**今日置顶抽样**：按 (user, 当地日期, word) 的稳定哈希从全池抽出（可能命中已学过的词），
+  数量按用户近 7 天日均复习量自适应（`dailyCount`：日均 × 5%，夹在 5~30）；同日固定、跨天换批。
+- 桶 2 是**顽固词**（`lapses ≥ leechThreshold`，即 8 次遗忘）：单独成桶优先露面，池卡带 `leech` 标记。
+- 桶内排序一律**先按稳定哈希**（`poolOrderSQL` 的实际行为），`due_at` 是次级键。
+- `probes` 已降级为**只读诊断**（池尾视图，到期最远的前几个），引擎不再调用它；
+  `new` 在新模型下**已废弃**（返回空列表 + `legacy: true`），池子就是整个词库。
 
-`POST /api/reviews/submit` 请求体多一个 `is_probe`（默认 `false`）：抽查卡按新卡重算记忆状态，
-其 `stability_after` 会明显低于 `before`。日志里记下这个标记，日后做 FSRS 参数优化
-（`compute_parameters`）时应当排除这批记录，否则参数会被带偏。
-⚠️ 日志里的 `stability_before` 取的是**库里那一行的真实旧值**，不是引擎的输入状态——
-所以抽查不会被「今日新学」的统计（按 `stability_before = 0` 判定）误算成新词。
+`POST /api/reviews/submit` 请求体里：
+
+- `is_daily`（2026-10 起）：这次提交的是不是「今日置顶抽样」之一，只用于日志留痕。
+- `is_probe`：旧模型遗留（引擎不再产出）；`is_reset`：历史字段，新请求恒为 false。
+- ⚠️ **置顶卡走正常复习**，不再「丢掉状态按新卡重算」；日志的 `stability_before` 取库里真实旧值，
+  所以「今日新学」（按 `stability_before = 0` 判定）天然只统计真正的第一次学。
 
 ### 词条管理接口说明（供后台使用）
 
@@ -280,6 +283,7 @@ curl -X POST http://localhost:8080/api/words -H "Content-Type: application/json"
 | DB_PATH | SQLite 数据库文件路径 | guangxue.db |
 | AUTH_JWT_SECRET | 与账号服务（`backend-rust`）**逐字相同**的 JWT 密钥，用于本地验签 `gx_access` | **无默认值** |
 | AUTH_ALLOWED_ORIGINS | CSRF 闸门的 Origin 白名单，逗号分隔 | `http://127.0.0.1:8899,http://localhost:8899` |
+| GX_DESIRED_RETENTION | FSRS 期望记忆保持率（(0,1) 之间的小数）。服务端不算，只经 `/api/reviews/queue` 下发给浏览器引擎；值越大间隔越短 | `0.9` |
 
 ⚠️ `AUTH_JWT_SECRET` 为空时**不报错**，但所有 `/api/reviews/*` 与词条写接口都会返回 401，启动日志里有一行 `⚠️ AUTH_JWT_SECRET 未配置` 提醒。
 改密钥要**同时改两份 `.env`（本目录与 `../backend-rust/`）并重启两个服务**，否则一侧签的 Cookie 另一侧不认。

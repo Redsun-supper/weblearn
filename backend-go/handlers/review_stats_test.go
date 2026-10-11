@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"gorm.io/gorm"
+
 	"backend-go/models"
 )
 
@@ -286,29 +288,29 @@ func TestStatsEmptyDB(t *testing.T) {
 	assertFloat(t, stats, "retention_rate", 0)
 }
 
-// TestStatsDailyQuotaServerSide 「今日 5 个」的配额口径：**客户端什么都不传**时服务端也要算得对。
+// TestStatsDailyQuotaServerSide 「今日置顶」的配额口径：**客户端什么都不传**时服务端也要算得对。
 //
-// 单一循环池改造（2026-10）之后，每天置顶哪 5 个由服务端用稳定哈希算
-// （dailyWordCount / dailyWordIDs / countTodayDaily，时区 Asia/Shanghai），
-// 前端不再记账、也不再参与抽取。所以这条用例刻意**不带任何 today / today_ms 参数**：
+// 单一循环池改造（2026-10）之后，每天置顶哪几个由服务端用稳定哈希算
+// （dailyCount / dailyWordIDs / countTodayDaily，时区 Asia/Shanghai），
+// 前端不再记账、也不再参与抽取。置顶数按用户复习量自适应，测试用户没有历史 → 取下限 5。
 //
-//   - daily_target 恒为 5（不是「池子里有几个算几个」）；
+//   - daily_target 恒为置顶数下限 5（不是「池子里有几个算几个」）；
 //   - 提交一张**服务端标为 daily** 的卡之后，daily_done 由 0 变 1；
-//   - 提交一张不在今日 5 个里的卡，daily_done 不动 —— 它数的是置顶卡的完成度，
-//     不是「今天复习了几张」（否则「今日 5/5」会在用户随意翻池子时虚高）。
+//   - 提交一张不在今日置顶里的卡，daily_done 不动 —— 它数的是置顶卡的完成度，
+//     不是「今天复习了几张」（否则「今日 N/N」会在用户随意翻池子时虚高）。
 //
-// 「今日置顶是哪 5 个」直接读队列返回的 daily 计算列：那是服务端自己的答案，
+// 「今日置顶是哪几个」直接读队列返回的 daily 计算列：那是服务端自己的答案，
 // 测试不另算一遍（另算一遍只能证明两个实现一致，证明不了服务端与客户端之间没有记账依赖）。
 func TestStatsDailyQuotaServerSide(t *testing.T) {
 	router, db := setupTestRouter(t)
 
-	// 放 6 个词（比每天置顶的 5 个多一个）：多出来那个用来验证「不是整个池子都算置顶」
+	// 放 6 个词（比置顶数下限 5 多一个）：多出来那个用来验证「不是整个池子都算置顶」
 	for _, word := range []string{"alpha", "bravo", "charlie", "delta", "echo", "foxtrot"} {
 		seedWord(t, db, word)
 	}
 
 	before := getStats(t, router)
-	assertInt(t, before, "daily_target", int64(dailyWordCount))
+	assertInt(t, before, "daily_target", int64(minDailyWordCount))
 	assertInt(t, before, "daily_done", 0)
 
 	queue, code := decodeData(t, doJSON(t, router, http.MethodGet, "/api/reviews/queue", nil))
@@ -323,15 +325,15 @@ func TestStatsDailyQuotaServerSide(t *testing.T) {
 			rest = append(rest, card)
 		}
 	}
-	if len(daily) != dailyWordCount {
+	if len(daily) != minDailyWordCount {
 		t.Fatalf("今日置顶期望 %d 张（daily_target 就是它），实际 %d 张（%v）",
-			dailyWordCount, len(daily), cardIDs(daily))
+			minDailyWordCount, len(daily), cardIDs(daily))
 	}
 	if len(rest) == 0 {
 		t.Fatalf("6 个词里只有 %d 个被置顶，应当还剩没被置顶的卡可供对照", len(daily))
 	}
 
-	// 先提交一张**不在**今日 5 个里的卡：daily_done 必须还是 0
+	// 先提交一张**不在**今日置顶里的卡：daily_done 必须还是 0
 	submitReview(t, router, newReviewRequest(rest[0].ID, 3, 1.5, 5, 1.5))
 	afterOther := getStats(t, router)
 	assertInt(t, afterOther, "daily_done", 0)
@@ -341,7 +343,93 @@ func TestStatsDailyQuotaServerSide(t *testing.T) {
 	submitReview(t, router, newReviewRequest(daily[0].ID, 3, 1.5, 5, 1.5))
 	after := getStats(t, router)
 	assertInt(t, after, "daily_done", 1)
-	assertInt(t, after, "daily_target", int64(dailyWordCount))
+	assertInt(t, after, "daily_target", int64(minDailyWordCount))
+}
+
+// TestStatsTodayNewNotInflatedByDailyCard 置顶卡不再重置（2026-10）：
+// 对**已经学过**的词再复习，哪怕它是今日置顶抽样，也只算「今日复习」；
+// 只有该用户此前从没复习过的词才算「今日新学」。这就是「用 stability_before 天然区分」
+// 取代旧「重置重学」的地方。
+func TestStatsTodayNewNotInflatedByDailyCard(t *testing.T) {
+	router, db := setupTestRouter(t)
+	veteran := seedWord(t, db, "veteran")
+	rookie := seedWord(t, db, "rookie")
+
+	// veteran 已有稳定度 30 天的进度行
+	past := time.Now().Add(-24 * time.Hour)
+	seedReview(t, db, veteran, 30.0, 4.0, &past, 5, 0)
+
+	// 当作今日置顶抽样再评一次：is_daily=true，但状态用真实值（不再重置）
+	dailyReq := newReviewRequest(veteran, 3, 35.0, 4.0, 35)
+	dailyReq.IsDaily = true
+	submitReview(t, router, dailyReq)
+
+	// 新词第一次学
+	submitReview(t, router, newReviewRequest(rookie, 3, 2.3, 5.0, 2.3))
+
+	stats := getStats(t, router)
+	assertInt(t, stats, "today_new", 1) // 只有 rookie 是真正的第一次学
+	assertInt(t, stats, "today_reviewed", 2)
+
+	logs := logsOf(t, db, veteran)
+	if len(logs) != 1 {
+		t.Fatalf("veteran 期望 1 条日志，实际 %d 条", len(logs))
+	}
+	if logs[0].StabilityBefore != 30.0 {
+		t.Fatalf("置顶卡的 stability_before 应取库里真实旧值 30.0，实际 %v", logs[0].StabilityBefore)
+	}
+	if !logs[0].IsDaily {
+		t.Fatalf("is_daily=true 应记进日志")
+	}
+}
+
+// TestDailyCountScalesWithVolume 置顶数按用户近 7 天的日均复习量自适应：
+// 下限 5、上限 30，中间按 5% 缩放（dailySampleRatio）。
+func TestDailyCountScalesWithVolume(t *testing.T) {
+	_, db := setupTestRouter(t)
+	h := NewReviewHandler(db)
+
+	if got := h.dailyCount(testUserID); got != minDailyWordCount {
+		t.Fatalf("没有复习历史时应取下限 %d，实际 %d", minDailyWordCount, got)
+	}
+
+	// 日均 200 → 200 × 5% = 10
+	seedRecentLogs(t, db, testUserID, 1400)
+	if got := h.dailyCount(testUserID); got != 10 {
+		t.Fatalf("日均 200 时期望置顶 10 个，实际 %d", got)
+	}
+
+	// 继续加到日均 ~900 → 触到上限 30
+	seedRecentLogs(t, db, testUserID, 5000)
+	if got := h.dailyCount(testUserID); got != maxDailyWordCount {
+		t.Fatalf("高活跃用户应被上限 %d 兜住，实际 %d", maxDailyWordCount, got)
+	}
+}
+
+// seedRecentLogs 造 n 条「刚刚发生」的复习日志（dailyCount 只数近 7 天）。
+// 分批插入，避免单条 SQL 的参数个数超过 SQLite 上限。
+func seedRecentLogs(t *testing.T, db *gorm.DB, userID uint, n int) {
+	t.Helper()
+	now := time.Now()
+	const batch = 200
+	for start := 0; start < n; start += batch {
+		end := start + batch
+		if end > n {
+			end = n
+		}
+		rows := make([]models.ReviewLog, 0, end-start)
+		for i := start; i < end; i++ {
+			rows = append(rows, models.ReviewLog{
+				UserID:     userID,
+				WordID:     uint(i + 1),
+				Rating:     3,
+				ReviewedAt: now,
+			})
+		}
+		if err := db.Create(&rows).Error; err != nil {
+			t.Fatalf("造复习日志失败: %v", err)
+		}
+	}
 }
 
 // TestStatsAfterDeleteWord 删除词条后统计口径不虚高：

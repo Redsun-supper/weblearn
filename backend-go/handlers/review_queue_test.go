@@ -16,20 +16,23 @@ import (
 // 本文件覆盖**单一循环池**（docs/review-pool-plan.md）的取数口径。
 //
 // 与旧版的根本区别：池子 = `words` 全表，不再有「已学 / 未学」的身份差别。
-// 排序由服务端一次定死，四个优先级桶（用户决策 C10）：
+// 排序由服务端一次定死，五个优先级桶（用户决策 C10；2026-10 加了顽固词桶）：
 //
-//	0 = 今日随机抽出的 5 个（置顶，全天固定 —— 稳定哈希）
+//	0 = 今日置顶抽样（全天固定 —— 稳定哈希）
 //	1 = 已过期（due_at <= now，越久越靠前）
-//	2 = 从未复习过（没有进度行）
-//	3 = 未到期（due_at ASC）
+//	2 = 顽固词（lapses 达阈值，且还没到期）
+//	3 = 从未复习过（没有进度行）
+//	4 = 未到期（due_at ASC）
 //
-// 桶内键：桶 1/3 用 due_at；桶 0/2 用按 (user, 当天, word) 的稳定哈希。
+// 桶内键：桶 1/4 用 due_at；桶 0/3 用按 (user, 当天, word) 的稳定哈希。
 //
 // ⚠️ 这里用的是真 HTTP + 真 SQLite（setupTestRouter），所以也顺带覆盖了
 // 「哈希表达式在 SQL 里能不能跑」——SQLite 的整数溢出陷阱就藏在这一层。
 
 // poolTestDay 固定「今天」的种子，避免测试跨零点抖动。
-// 全部池用例都显式带 `?today=<这个值>`，与服务端的 Asia/Shanghai 回退解耦。
+// 全部池用例都显式带 `?today=<这个值>`：`?today` 现在是服务端的**显式覆盖**
+// （正常请求不带，服务端按 Asia/Shanghai 自己定「今天」，见 localDayKey），
+// 测试借它把「今天」钉死，从而与运行时的真实日期解耦。
 const poolTestDay = "20260101"
 
 // cardWordIDs 取出卡片列表里的 word_id（响应里的字段名是 id，见 dueCard 结构）
@@ -104,7 +107,8 @@ func wantedDailyIDs(wordIDs []uint, userID uint, seed int64) []uint {
 	for _, id := range wordIDs {
 		all = append(all, kv{id, stablehash.Hash(int64(userID), int64(id), seed)})
 	}
-	n := dailyWordCount
+	// 测试用户没有复习历史 → dailyCount 落在下限（minDailyWordCount）
+	n := minDailyWordCount
 	if len(all) < n {
 		n = len(all)
 	}
@@ -142,6 +146,7 @@ type queueCard struct {
 	Bucket    int
 	Daily     bool
 	HasReview bool
+	Leech     bool
 	DueAt     *int64
 }
 
@@ -155,6 +160,7 @@ func readQueueCards(t *testing.T, data map[string]interface{}) []queueCard {
 			Bucket:    toInt(t, item["bucket"]),
 			Daily:     item["daily"] == true,
 			HasReview: item["has_review"] == true,
+			Leech:     item["leech"] == true,
 		}
 		if raw, ok := item["due_at"]; ok && raw != nil {
 			if s, ok := raw.(string); ok {
@@ -188,7 +194,7 @@ func findCard(t *testing.T, cards []queueCard, id uint) queueCard {
 	return queueCard{}
 }
 
-// assertBucketOrder 断言四个桶按 0→1→2→3 的次序出现（桶内不做断言）
+// assertBucketOrder 断言桶按 0→1→2→3→4 的次序出现（桶内不做断言）
 func assertBucketOrder(t *testing.T, cards []queueCard, label string) {
 	t.Helper()
 	last := -1
@@ -240,11 +246,11 @@ func TestPoolContainsEveryWord(t *testing.T) {
 	}
 }
 
-// TestPoolBucketOrderAndOverdueFirst 校验四个桶的次序与桶内规则：
-// 今日 5 个最前 → 已过期（越久越前）→ 从未复习 → 未到期（越近越前）。
+// TestPoolBucketOrderAndOverdueFirst 校验五个桶的次序与桶内规则：
+// 今日置顶 → 已过期（越久越前）→ 顽固词 → 从未复习 → 未到期（越近越前）。
 //
 // ⚠️ 两个必须遵守的约束（都实测踩过）：
-//  1. 池子里的词必须**多于 5 个**，否则「今日 5 个」把全池盖住，四个桶退化成只剩桶 0；
+//  1. 池子里的词必须**多于置顶数**，否则「今日置顶」把全池盖住，桶退化成只剩桶 0；
 //  2. 断言桶内次序时只能看**非置顶**卡 —— 置顶卡一律进桶 0，哪怕它已经过期
 //     （今天恰好抽到一张过期的卡时，它的 bucket 就是 0 而不是 1）。
 func TestPoolBucketOrderAndOverdueFirst(t *testing.T) {
@@ -285,7 +291,7 @@ func TestPoolBucketOrderAndOverdueFirst(t *testing.T) {
 			t.Fatalf("今日置顶词 %d 应当是 bucket=0 且 daily=true，实际 bucket=%d daily=%v", id, c.Bucket, c.Daily)
 		}
 	}
-	assertInt(t, data, "daily", int64(dailyWordCount))
+	assertInt(t, data, "daily", int64(minDailyWordCount))
 
 	// 桶 1 = 已过期且**不在今日置顶**的词。本夹具里只有 overdue 一个，
 	// 所以「桶 1 恰好是它」同时钉住了两件事：过期进桶 1、置顶优先级高于过期。
@@ -301,10 +307,11 @@ func TestPoolBucketOrderAndOverdueFirst(t *testing.T) {
 	}
 
 	// 确定没有置顶的 8 个未来卡：按 due_at 升序（越近越前）
+	// 新桶编号下「未到期」是桶 4（桶 3 让给了「从未复习」）。
 	posFar, posNear := -1, -1
 	futureBucketOrder := []uint{}
 	for i, c := range cards {
-		if c.Bucket != 3 || c.Daily {
+		if c.Bucket != 4 || c.Daily {
 			continue
 		}
 		futureBucketOrder = append(futureBucketOrder, c.ID)
@@ -316,9 +323,9 @@ func TestPoolBucketOrderAndOverdueFirst(t *testing.T) {
 		}
 	}
 	if len(futureBucketOrder) == 0 {
-		t.Fatalf("桶 3 不应为空，实际顺序=%v", cardIDs(cards))
+		t.Fatalf("桶 4 不应为空，实际顺序=%v", cardIDs(cards))
 	}
-	// 桶 3 内部按 due_at 升序：futureNear(+2h) 之后才是 futureFar(+72h)
+	// 桶 4 内部按 due_at 升序：futureNear(+2h) 之后才是 futureFar(+72h)
 	if posFar >= 0 && posNear >= 0 && posNear > posFar {
 		t.Fatalf("未到期卡应按 due_at 升序（越近越前），实际顺序=%v", cardIDs(cards))
 	}
@@ -329,6 +336,72 @@ func TestPoolBucketOrderAndOverdueFirst(t *testing.T) {
 	}
 	if c := findCard(t, cards, overdue); !c.HasReview {
 		t.Fatalf("有进度行的词 %d 的 has_review 应为 true", overdue)
+	}
+}
+
+// TestPoolLeechBucket 顽固词（lapses 达阈值）单独成桶：排在已过期之后、未复习之前。
+//
+// ⚠️ 置顶抽样是随机的，所以这里**先离线算出今日置顶**，再挑两个没被置顶的词挂上
+// 顽固 / 对照状态 —— 否则若顽固词恰好被置顶，它进的是桶 0，测的就不是桶 2 了。
+func TestPoolLeechBucket(t *testing.T) {
+	router, db := setupTestRouter(t)
+	now := time.Now()
+	future := now.Add(72 * time.Hour)
+
+	ids := make([]uint, 0, 20)
+	for i := 0; i < 20; i++ {
+		id := seedWord(t, db, "leechfill"+itoa(int64(i)))
+		seedReview(t, db, id, 1, 5, &future, 1, 0)
+		ids = append(ids, id)
+	}
+
+	daily := wantedDailyIDs(ids, testUserID, mustSeed(t, poolTestDay))
+	isDaily := func(id uint) bool {
+		for _, d := range daily {
+			if d == id {
+				return true
+			}
+		}
+		return false
+	}
+
+	leech, plain := uint(0), uint(0)
+	for _, id := range ids {
+		if isDaily(id) {
+			continue
+		}
+		if leech == 0 {
+			leech = id
+		} else if plain == 0 {
+			plain = id
+		}
+	}
+	if leech == 0 || plain == 0 {
+		t.Fatal("找不到两个未被置顶的词，无法构造顽固 / 普通对照")
+	}
+
+	// 顽固词：遗忘次数达阈值；对照词：差一次不到阈值
+	if err := db.Model(&models.WordReview{}).
+		Where("user_id = ? AND word_id = ?", testUserID, leech).
+		Update("lapses", leechThreshold).Error; err != nil {
+		t.Fatalf("设置顽固词 lapses 失败: %v", err)
+	}
+	if err := db.Model(&models.WordReview{}).
+		Where("user_id = ? AND word_id = ?", testUserID, plain).
+		Update("lapses", leechThreshold-1).Error; err != nil {
+		t.Fatalf("设置对照词 lapses 失败: %v", err)
+	}
+
+	data, _ := decodeData(t, doJSON(t, router, "GET", withDay("/api/reviews/queue?limit=100"), nil))
+	cards := readQueueCards(t, data)
+	assertBucketOrder(t, cards, "池子")
+
+	if c := findCard(t, cards, leech); c.Bucket != 2 || !c.Leech {
+		t.Fatalf("顽固词 %d 应进桶 2 且 leech=true，实际 bucket=%d leech=%v", leech, c.Bucket, c.Leech)
+	}
+	if c := findCard(t, cards, plain); c.Bucket == 2 || c.Leech {
+		t.Fatalf("遗忘 %d 次（未达阈值 %d）不应算顽固词，实际 bucket=%d leech=%v",
+			leechThreshold-1, leechThreshold, c.Bucket, c.Leech)
 	}
 }
 
@@ -396,7 +469,7 @@ func TestPoolOrderChangesNextDay(t *testing.T) {
 			same++
 		}
 	}
-	if same == dailyWordCount {
+	if same == minDailyWordCount {
 		t.Fatalf("跨天后的置顶词完全没变（%d 个全相同），稳定哈希的日期维度没生效", same)
 	}
 }
@@ -447,12 +520,12 @@ func TestPoolStillServesWhenEverythingIsFarFuture(t *testing.T) {
 		t.Fatalf("整池都在未来时仍应返回全部 6 张，实际 %d", len(cards))
 	}
 	for _, c := range cards {
-		// 桶 0（今日置顶）优先于一切，所以命中置顶的卡不算违反「全部未到期 → 桶 3」
+		// 桶 0（今日置顶）优先于一切，所以命中置顶的卡不算违反「全部未到期 → 桶 4」
 		if c.Bucket == 0 {
 			continue
 		}
-		if c.Bucket != 3 {
-			t.Fatalf("全部未到期时非置顶卡都应是 bucket=3，实际词 %d bucket=%d", c.ID, c.Bucket)
+		if c.Bucket != 4 {
+			t.Fatalf("全部未到期时非置顶卡都应是 bucket=4，实际词 %d bucket=%d", c.ID, c.Bucket)
 		}
 	}
 	// due 池仍只给「真正已过期」的
@@ -475,23 +548,24 @@ func TestPoolNeverReviewedSortedByHash(t *testing.T) {
 		t.Fatalf("期望 10 张，实际 %d", len(cards))
 	}
 
-	// 桶 0（今日 5 个）之外的桶 2 词，必须按哈希升序
+	// 桶 0（今日置顶）之外的桶 3 词（从未复习），必须按哈希升序
 	seed := mustSeed(t, poolTestDay)
 	lastHash := int64(-1)
 	counted := 0
 	for _, c := range cards {
-		if c.Bucket != 2 {
+		if c.Bucket != 3 {
 			continue
 		}
 		h := stablehash.Hash(1, int64(c.ID), seed)
 		if h < lastHash {
-			t.Fatalf("桶 2 的词没按哈希升序：词 %d 的哈希 %d 小于前一个 %d", c.ID, h, lastHash)
+			t.Fatalf("桶 3 的词没按哈希升序：词 %d 的哈希 %d 小于前一个 %d", c.ID, h, lastHash)
 		}
 		lastHash = h
 		counted++
 	}
-	if counted != 5 {
-		t.Fatalf("10 个未复习词里应有 5 个落在桶 2（另外 5 个是今日置顶），实际 %d", counted)
+	if counted != 10-minDailyWordCount {
+		t.Fatalf("10 个未复习词里应有 %d 个落在桶 3（另外 %d 个是今日置顶），实际 %d",
+			10-minDailyWordCount, minDailyWordCount, counted)
 	}
 }
 
@@ -743,6 +817,41 @@ func TestSeedReviewHelperStillWorks(t *testing.T) {
 }
 
 var _ = gorm.ErrRecordNotFound
+
+// TestQueueExposesDesiredRetention 队列响应必须带 `desired_retention`：
+// 服务端不参与 FSRS 计算，只把配置（GX_DESIRED_RETENTION）下发给浏览器引擎，前端透传。
+// 未注入时是默认 0.9。
+func TestQueueExposesDesiredRetention(t *testing.T) {
+	router, db := setupTestRouter(t)
+	seedWord(t, db, "alpha")
+
+	data, code := decodeData(t, doJSON(t, router, http.MethodGet, "/api/reviews/queue", nil))
+	if code != http.StatusOK {
+		t.Fatalf("queue 的 code 期望 200，实际 %d", code)
+	}
+	assertFloat(t, data, "desired_retention", defaultDesiredRetention)
+}
+
+// TestSetDesiredRetentionValidates 注入口径：合法值生效，非法值（≤0 / ≥1）被忽略、保留原值。
+// 非法值不 panic、不报错——提醒由 config.StartupWarnings 在启动时统一发出。
+func TestSetDesiredRetentionValidates(t *testing.T) {
+	h := NewReviewHandler(nil)
+	if h.desiredRetention != defaultDesiredRetention {
+		t.Fatalf("默认期望 %v，实际 %v", defaultDesiredRetention, h.desiredRetention)
+	}
+
+	h.SetDesiredRetention(0.8)
+	if h.desiredRetention != 0.8 {
+		t.Fatalf("合法值 0.8 应生效，实际 %v", h.desiredRetention)
+	}
+
+	for _, bad := range []float64{0, 1, 1.5, -0.2} {
+		h.SetDesiredRetention(bad)
+		if h.desiredRetention != 0.8 {
+			t.Fatalf("非法值 %v 应被忽略（保留 0.8），实际 %v", bad, h.desiredRetention)
+		}
+	}
+}
 
 
 

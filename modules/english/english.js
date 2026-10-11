@@ -39,6 +39,9 @@ var state = {
     rounds: null,
     queueOffset: 0,
     queueTotal: 0,
+    // 期望记忆保持率：服务端按 GX_DESIRED_RETENTION 下发（缺省 0.9），建会话时透传给引擎。
+    // 取到之前先用默认值，取到之后以服务端为准（见 parseQueueMeta / buildPlanOptions）。
+    desiredRetention: 0.9,
     started: false,
     holdAutoSpeak: false
 };
@@ -75,7 +78,7 @@ var ROUND_FLASH_MS = 2600;
 // 光重建 `pkg/` 是**看不见效果**的 —— 重建完打开页面，跑的还是旧引擎，
 // 而且不报任何错（真踩过：修好的置顶排序在页面上毫无反应，排查了半天）。
 // 任何改了 `engine/src/` 的重建，都要把这个数字 +1。
-var ENGINE_VERSION = 5;
+var ENGINE_VERSION = 7;
 var WASM_MODULE_URL = './engine/pkg/guangxue_wasm.js?v=' + ENGINE_VERSION;
 
 // 换卡过渡 / 计划文案切换的时长（毫秒）：必须与 english.css 的 studyOut、planOut 保持一致
@@ -202,7 +205,6 @@ function beginReview() {
     // 起始页先留在原地，只把按钮压成「准备中」（文案 + 变淡，见 english.css 的 :disabled）
     setPreparing(true);
 
-    var plan = buildPlanOptions();
     state.planPhase = '';
 
     loadEngine().then(function(wasm) {
@@ -228,23 +230,28 @@ function beginReview() {
             syncDailyFromStats(statsRes.data);
         }
 
+        // ⚠️ 必须先解析池子元信息再建会话：`desired_retention`（期望记忆保持率）由服务端
+        // 在池子响应里下发，建会话时要透传给引擎（见 parseQueueMeta / buildPlanOptions）。
+        // 早先这里是「先建会话、后解析元信息」，于是引擎只能拿到前端写死的 0.9。
+        var meta = parseQueueMeta(results[0]);
+        state.queueOffset = meta.count;
+        state.queueTotal = meta.total;
+        state.dailyTarget = meta.dailyTarget;
+        state.desiredRetention = meta.desiredRetention;
+
         // 队列编排（池子排序 + 四桶优先级 + 日期换算）全部在引擎内完成：
         // 本文件只把接口返回的 JSON 原文递进去，不再自己解析与保存卡片数组。
         //
         // ⚠️ 单一循环池之后不再有「新词候选 / 抽查候选」两个入参：
-        // 服务端把整池按 桶0（今日 5 个）→ 桶1（已过期）→ 桶2（从未复习）→ 桶3（未到期）
+        // 服务端把整池按 桶0（今日 5 个）→ 桶1（已过期）→ 桶2（顽固词）→ 桶3（从未复习）→ 桶4（未到期）
         // 排好序，引擎按这个顺序抽卡即可。两个空数组仍然要传，位置参数不能省。
         state.session = new state.wasm.ReviewSession(
             results[0], // 池子：整库按四桶优先级升序（含未复习与未到期）
             '{"data":{"items":[]}}', // 新词候选：已废弃（保留位置）
             '{"data":{"items":[]}}', // 抽查候选：已废弃（保留位置）
-            JSON.stringify(plan)
+            JSON.stringify(buildPlanOptions())
         );
 
-        var meta = parseQueueMeta(results[0]);
-        state.queueOffset = meta.count;
-        state.queueTotal = meta.total;
-        state.dailyTarget = meta.dailyTarget;
         state.planInfo = JSON.parse(state.session.plan_json());
 
         // 卡片是在起始页还盖着的时候渲染的（复习界面此时仍是 display:none），
@@ -394,13 +401,14 @@ export function unmount() {
 // 旧的两个候选接口（/new、/probes）已经退出编排：前者返回空列表（保留字段兼容），
 // 后者降级成「池尾诊断」（到期最远的已学词，只用于排查）。
 //
-// `today=YYYYMMDD` 必须带：服务端用它当「今日 5 个」的哈希种子，不带就用服务器当地日期——
-// 浏览器与服务器不在同一时区时，两边会算出不同的「今天」（见 docs/review-pool-plan.md 冲突②）。
+// ⚠️ 「今天」由**服务端**按 Asia/Shanghai 决定（2026-10 起），前端**不再传** `?today`。
+// 早先前端会带浏览器的本地日期，于是浏览器与服务端不在同一时区时两边会算出不同的「今天」
+// （见 docs/review-pool-plan.md 冲突②）；现在统一以服务端的自然日为准，跨设备/跨时区口径一致。
+// 服务端仍接受 `?today=YYYYMMDD` 作为**显式覆盖**，但只留给测试与排障用，正常请求不带。
 function fetchDay(queueOffset) {
-    var today = todayParam();
     return Promise.all([
-        fetchText('/api/reviews/queue?limit=' + QUEUE_PAGE_SIZE + '&offset=' + queueOffset + '&today=' + today),
-        fetchJson('/api/reviews/stats?today=' + today)
+        fetchText('/api/reviews/queue?limit=' + QUEUE_PAGE_SIZE + '&offset=' + queueOffset),
+        fetchJson('/api/reviews/stats')
     ]).then(function(res) {
         // ⚠️ 这一步不能省，也不能只调用不存：`[1]` 是刚取回来的统计，必须
         // ① 落进 state.stats、② 重设「今日置顶」基线。早先这里直接返回原始数组、
@@ -412,11 +420,11 @@ function fetchDay(queueOffset) {
 }
 
 // 只取池子的下一页（翻到底之后用），并顺手刷新顶部统计
+// ⚠️ 与 fetchDay 同一口径：不带 `?today`，「今天」由服务端按 Asia/Shanghai 决定。
 function fetchQueuePage(offset) {
-    var today = todayParam();
     return Promise.all([
-        fetchText('/api/reviews/queue?limit=' + QUEUE_PAGE_SIZE + '&offset=' + offset + '&today=' + today),
-        fetchJson('/api/reviews/stats?today=' + today)
+        fetchText('/api/reviews/queue?limit=' + QUEUE_PAGE_SIZE + '&offset=' + offset),
+        fetchJson('/api/reviews/stats')
     ]).then(function(res) {
         // ⚠️ 与 fetchDay 同理：新拿到的统计必须**落进 state 并重设基线**，
         // 否则下一轮 dailyProgress() 用的还是旧基线（分母也会退回 0）。
@@ -430,7 +438,8 @@ function fetchQueuePage(offset) {
 // 单一循环池之后这里不再记账（配额与「今日 5 个」都由服务端算，见文件顶部注释），
 // 只保留两件读的事：① 解析池子响应里的 total / daily；② 换算左下角文案。
 
-// 解析池子响应：这一页多少张、整池多少张、今天置顶几个、这一页里有几个是置顶卡。
+// 解析池子响应：这一页多少张、整池多少张、今天置顶几个、这一页里有几个是置顶卡、
+// 期望记忆保持率（服务端下发，缺省 0.9）。
 // 解析失败时按 0 处理：取数异常不该让整个复习页打不开。
 function parseQueueMeta(queueText) {
     try {
@@ -445,10 +454,11 @@ function parseQueueMeta(queueText) {
             count: items.length,
             total: data.total || items.length,
             dailyTarget: data.daily || 0,
-            dailyInPage: dailyInPage
+            dailyInPage: dailyInPage,
+            desiredRetention: typeof data.desired_retention === 'number' ? data.desired_retention : 0.9
         };
     } catch (e) {
-        return { count: 0, total: 0, dailyTarget: 0, dailyInPage: 0 };
+        return { count: 0, total: 0, dailyTarget: 0, dailyInPage: 0, desiredRetention: 0.9 };
     }
 }
 
@@ -497,21 +507,16 @@ function syncDailyFromStats(stats) {
 // ⚠️ 单一循环池之后新词 / 抽查都由服务端编排（池子已按四桶排好序），
 // 所以这里把两个 limit 都置 0、冷却名单留空，交给引擎走「一段池子」的路径；
 // now_ms 仍然要传 —— 引擎用它换算「距上次复习多少天」。
-// 本地日期键（按浏览器本地自然日，跨零点即新的一天）——服务端用它算「今日 5 个」的种子：
-// 同一天内翻页、刷新、换设备都必须得到同一批，跨零点自然换一批。
-function todayParam() {
-    var d = new Date();
-    var m = d.getMonth() + 1;
-    var day = d.getDate();
-    return '' + d.getFullYear() + (m < 10 ? '0' + m : m) + (day < 10 ? '0' + day : day);
-}
-
+// ⚠️ 不再传 today：`?today` 已降级为服务端侧的显式覆盖，正常请求以服务端的自然日为准。
 function buildPlanOptions() {
     return {
         new_limit: 0,
         probe_limit: 0,
         probed_ids: [],
-        now_ms: Date.now()
+        now_ms: Date.now(),
+        // 期望记忆保持率：服务端按 GX_DESIRED_RETENTION 下发（缺省 0.9，见 parseQueueMeta）。
+        // 引擎据此算 FSRS 间隔；缺失或非法值（不在 (0,1)）由引擎回落到 0.9。
+        desired_retention: state.desiredRetention
     };
 }
 
@@ -694,6 +699,7 @@ function renderCardNow() {
 function sourceLabelOf(source) {
     if (source === 'new') return '新词';
     if (source === 'probe') return '抽查';
+    if (source === 'daily') return '置顶';
     return '复习';
 }
 
@@ -883,12 +889,14 @@ function renderMeta(meta) {
 
     if (meta.status === 'new') {
         line('状态', '新词');
+        if (meta.leech) line('标记', '顽固词');
         return;
     }
     if (typeof meta.difficulty === 'number') line('难度', formatNumber(meta.difficulty, 1));
     if (typeof meta.stability === 'number') line('稳定性', formatNumber(meta.stability, 1) + ' 天');
-    // 抽查：这个词本来是几十天后才轮到，被提前抽出来「体检」的
-    line('状态', meta.status === 'probe' ? '抽查' : '复习');
+    // 状态：置顶抽样（今天恰好抽到你）/ 旧抽查（提前体检）/ 普通复习
+    line('状态', meta.status === 'daily' ? '置顶' : (meta.status === 'probe' ? '抽查' : '复习'));
+    if (meta.leech) line('标记', '顽固词');
     if (typeof meta.reps === 'number') line('复习', meta.reps + ' 次');
     if (typeof meta.days_since_last === 'number') line('上次', meta.days_since_last + ' 天');
     if (typeof meta.retrievability === 'number') {
@@ -1190,7 +1198,9 @@ function handleReviewRating(rating) {
     } catch (e) {
         body = null;
     }
-    markDailyRated(!!(body && (body.source === 'daily' || body.is_reset)));
+    // 置顶抽样的判定：引擎在请求体里带 source='daily' 与 is_daily。
+    // （旧字段 is_reset 已停用，保留判断只为兼容可能还在浏览器缓存里的旧引擎。）
+    markDailyRated(!!(body && (body.source === 'daily' || body.is_daily || body.is_reset)));
 
     advanceCard(); // 带动效推进到下一张（内部会先上锁，防止过渡期间重复评分）
 
@@ -1218,10 +1228,10 @@ function handleReviewRating(rating) {
     });
 }
 
-// 刷新统计（每次提交复习成功后调用）。带 today 与池子请求同一口径，
-// 否则跨时区时「今日已复习」会和「今日置顶」对不上。
+// 刷新统计（每次提交复习成功后调用）。与池子请求同一口径（不带 ?today，服务端定「今天」），
+// 否则「今日已复习」会和「今日置顶」对不上。
 function loadReviewStats() {
-    return fetchJson('/api/reviews/stats?today=' + todayParam())
+    return fetchJson('/api/reviews/stats')
         .then(function(data) {
             if (data && data.code === 200 && data.data) {
                 state.stats = data.data;

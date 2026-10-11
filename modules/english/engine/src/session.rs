@@ -39,11 +39,11 @@
 //! 队列走完后还能继续往下翻（未到期的也允许提前复习），靠分页取数 +
 //! [`ReviewSession::append_page`] 追加。
 //!
-//! ⚠️ 「重置重学」是**按卡判定**的（[`is_reset_card`]），不是一刀切：只有置顶 5 个
-//! （以及旧模型下发过的抽查卡）在评分时丢掉状态、按新卡口径重算（用户决策 C11），
-//! 其余卡用的是**自己真实的** `stability` / `difficulty`。
-//! 不过服务端目前不回传这两列（用户决策 E18），所以端到端看起来「每张卡都是新卡」——
-//! 这一处口径差要先拍板再动，别照着自己的判断改。
+//! ⚠️ 置顶卡走**正常复习**（2026-10 起）：它和别的卡一样用自己真实的
+//! `stability` / `difficulty` 累积记忆状态，不再「丢掉状态、按新卡重算」。
+//! 早先的「重置重学」是为了不让循环池里的重学把「今日新学」冲高（用户决策 C11），
+//! 但那等于用摧毁记忆状态去凑一个统计口径 —— 现在改为：日志照记真实旧值，
+//! 统计只看 `stability_before = 0`（真正第一次学），并用 `is_daily` 单独标记置顶抽样。
 //!
 //! ## 关于 `fsrs` 依赖的一个事实
 //!
@@ -63,7 +63,10 @@ use crate::fsrs_engine::{
 };
 use crate::randomizer::{random_sample, random_seed};
 
-/// 期望记忆保持率（与原前端一致，固定 0.9）
+/// 期望记忆保持率（FSRS 参数的**默认值**）。
+///
+/// 可由服务端经 `/api/reviews/queue` 的 `desired_retention` 覆盖（见 [`PlanOptions`]）：
+/// 缺省 / 非法值时回落到这里。0.9 是 Anki / FSRS 的常用默认。
 const DESIRED_RETENTION: f32 = 0.9;
 
 /// 抽卡窗口大小：未到期的卡在「最靠前的 10 张」里随机抽一张（局部乱序、整体仍按紧迫度递减）
@@ -146,23 +149,28 @@ pub struct ApiCard {
     /// 上次复习时间（ISO 8601）
     #[serde(default)]
     pub last_review_at: Option<String>,
-    /// 累计复习次数（仅到期卡有）
+    /// 累计复习次数
     #[serde(default)]
     pub reps: Option<u32>,
-    /// 是否属于「今日随机抽出的 5 个」（单一循环池的置顶卡）。
+    /// 遗忘（Again）累计次数；没有进度行时为 null
+    #[serde(default)]
+    pub lapses: Option<u32>,
+    /// 是否属于「今日置顶抽样」（单一循环池）。
     ///
-    /// 服务端按 (user, 当地日期, word) 的稳定哈希算出这 5 个并把它们排在池子最前，
-    /// 同时把这个标记置为 true。引擎对它们按**新卡**口径重算（`is_reset`），
-    /// 于是「循环池里再次遇到已学过的词」不会把「今日新学」统计冲高
-    /// （见 docs/review-pool-plan.md 的 C11 与 D15）。
+    /// 服务端按 (user, 当地日期, word) 的稳定哈希抽出这几个并把它们排在池子最前，
+    /// 同时把这个标记置为 true。引擎把它们标成 `Daily` 来源、排在所有普通卡之前，
+    /// 但评分时**走正常复习**（用自己真实的记忆状态，不再重置）。
     ///
     /// ⚠️ **JSON 键名是 `daily`，不是 `is_daily`**（Go 侧 `dueCard.Daily` 带 tag `json:"daily"`）。
     /// 这里曾经写成 `is_daily`，配合 `#[serde(default)]` 的后果是**静默失效**：反序列化
-    /// 永远拿到 `false`（没有报错、没有告警），于是 5 张置顶卡被当成普通卡埋进池子里，
+    /// 永远拿到 `false`（没有报错、没有告警），于是置顶卡被当成普通卡埋进池子里，
     /// 「今日置顶 N/5」永远停在 0~1。Rust 侧的单元测试也没发现，因为测试夹具是按
     /// 结构体字段手写 JSON 的 —— 只有走真实服务端响应的端到端才会暴露。
     #[serde(default, rename = "daily")]
     pub is_daily: bool,
+    /// 是否为「顽固词」（服务端按 `lapses >= 阈值` 算好下发），界面据此打标。
+    #[serde(default)]
+    pub leech: bool,
 }
 
 /// `{"data":{"items":[...]}}` 外层信封
@@ -229,16 +237,16 @@ pub enum CardSource {
     ///
     /// 存在的意义：只按到期时间出题时，那些间隔被拉到几十天的词永远轮不到，
     /// 长期不露面就成了盲区。每天固定抽查几张，等于给整库做抽样体检。
-    /// 评分时按**新卡**重算记忆状态（见 [`ReviewSession::try_rate`]）。
     ///
     /// ⚠️ 单一循环池上线后，这个来源**只在旧数据/旧调用下出现**：新模型把「让冷门词露面」
     /// 的职责交给了整个循环池（用户决策 C12），服务端不再单独下发抽查候选。
     /// 保留它只为兼容旧队列响应与历史日志语义。
     Probe,
-    /// 今日置顶的 5 个（单一循环池，用户决策 A2/A3）。
+    /// 今日置顶抽样（单一循环池，用户决策 A2/A3）。
     ///
     /// 它们由服务端按稳定哈希从**整个池子**里抽出（可能命中已经学过的词），
-    /// 排在响应最前面。评分时同样按新卡口径重算，并在提交时带 `is_reset`。
+    /// 排在响应最前面。评分时**走正常复习**（不再重置记忆状态），
+    /// 提交时带 `is_daily` 供日志留痕。
     Daily,
 }
 
@@ -275,6 +283,13 @@ pub struct PlanOptions {
     /// 当前时间（epoch 毫秒），用于切分「已过期 / 未到期」
     #[serde(default)]
     pub now_ms: f64,
+    /// 期望记忆保持率（FSRS 参数），由服务端经 `/api/reviews/queue` 下发
+    /// （`GX_DESIRED_RETENTION`，缺省 0.9）。
+    ///
+    /// 缺省 / 非法（不在 (0,1) 开区间）时回落到 [`DESIRED_RETENTION`]。
+    /// 值越大 → 间隔越短、复习越密（记得更牢但更累）；越小 → 间隔越长、复习越疏。
+    #[serde(default)]
+    pub desired_retention: Option<f32>,
 }
 
 /// 今日计划 + 复习区
@@ -433,16 +448,20 @@ pub fn progress_percent(done: u32, total: u32) -> u32 {
 
 /// 依据计划卡与当前时间生成记忆元信息。
 ///
-/// 新词（无记忆状态）只给 `status = "new"`；到期卡给出难度、稳定度、复习次数、
+/// 新词（无记忆状态）只给 `status = "new"`；有状态的卡给出难度、稳定度、复习次数、
 /// 距上次天数，并用 FSRS 可提取率算「预计记住」。
 ///
-/// 抽查卡给 `status = "probe"`：它同样带上**旧的**难度/稳定度/复习次数，
-/// 但界面上标成「抽查」而不是「已到期」，让人看得出这个词为什么反常地提前出现。
+/// 置顶抽样给 `status = "daily"`（旧抽查给 `"probe"`）：让人看得出这个词为什么提前出现。
+/// 顽固词（`lapses` 达阈值）额外带上 `leech`，界面据此打标。
 fn card_meta(card: &PlannedCard, now_ms: f64) -> CardMetaOut {
+    let leech = card.card.leech;
+    let lapses = card.card.lapses;
     let state = match card.state {
         None => {
             return CardMetaOut {
                 status: "new",
+                leech,
+                lapses,
                 ..Default::default()
             }
         }
@@ -453,18 +472,18 @@ fn card_meta(card: &PlannedCard, now_ms: f64) -> CardMetaOut {
         None => 0,
     };
     CardMetaOut {
-        status: if is_reset_card(card) {
-            // 置顶卡与抽查卡都是「重置重学」：界面上标成 probe 而不是「已到期」，
-            // 让人看得出这个词为什么反常地提前出现
-            "probe"
-        } else {
-            "due"
+        status: match card.source {
+            CardSource::Daily => "daily",
+            CardSource::Probe => "probe",
+            _ => "due",
         },
         difficulty: Some(state.difficulty),
         stability: Some(state.stability),
         reps: card.card.reps,
+        lapses,
         days_since_last: Some(days),
         retrievability: Some(compute_retrievability(&state, days as f32)),
+        leech,
     }
 }
 
@@ -478,16 +497,20 @@ struct SubmitPayload {
     stability: f32,
     difficulty: f32,
     interval_days: f32,
-    /// 是否为每日抽查卡：后端记进 `review_logs.is_probe`，
-    /// 供日后做 FSRS 参数优化时排除这批「间隔被压缩」的记录
-    is_probe: bool,
-    /// 本次是否为「重置重学」（抽查卡 / 今日置顶卡）。
+    /// 本次评分用的期望记忆保持率（服务端经 queue 下发，见 [`PlanOptions`]）。
     ///
-    /// ⚠️ 后端据此把日志的 `stability_before` 记成 0，使「今日新学」只统计**真正的第一次学**：
-    /// 单一循环池里「今日 5 个」经常命中已经学过的词，不区分的话新学数字会天天虚高。
-    /// 见 docs/review-pool-plan.md 的 4.3 与 D15。
-    is_reset: bool,
-    /// 这张卡的来源（`due` / `new` / `probe` / `daily`），前端用来记「今日置顶 N/5」的账。
+    /// 后端把它记进 `word_reviews.desired_retention`：将来做 FSRS 参数拟合时，
+    /// 每个样本必须与它**当时**的期望保持率对应，不能事后拿一个全局值去套。
+    desired_retention: f32,
+    /// 是否为每日抽查卡（旧模型遗留）：后端记进 `review_logs.is_probe`
+    is_probe: bool,
+    /// 本次提交的是不是「今日置顶抽样」的那几张之一：后端记进 `review_logs.is_daily`，
+    /// 只用于留痕（供日后分析置顶抽样效果），**不参与记忆状态计算**。
+    ///
+    /// ⚠️ 置顶卡走**正常复习**、不再重置记忆状态，旧字段 `is_reset` 已停用
+    /// （后端不再据此把 `stability_before` 写 0；统计只看 stability_before 是否为 0）。
+    is_daily: bool,
+    /// 这张卡的来源（`due` / `new` / `probe` / `daily`），前端用来记「今日置顶 N/N」的账。
     ///
     /// ⚠️ 由**引擎**在算好的同一刻写进请求体，前端不要再去猜：早先前端是读界面上
     /// `state.card.source`，而换卡过渡期间那可能是下一张卡（或首张卡还没赋值），
@@ -496,22 +519,13 @@ struct SubmitPayload {
     source: &'static str,
 }
 
-/// 这张卡评分时是否按「新卡」口径重算（丢掉旧的 stability/difficulty、天数按 0）。
-///
-/// 两种卡都会重置：
-///   - `Daily`：今日置顶的 5 个（可能命中已学过的词）
-///   - `Probe`：旧的每日抽查（新模型下服务端不再下发）
-fn is_reset_card(card: &PlannedCard) -> bool {
-    matches!(card.source, CardSource::Probe | CardSource::Daily)
-}
-
 /// 卡片的记忆元信息（界面右上角展示，与参考产品的「难度/稳定性/预计记住」对应）
 ///
 /// 新词没有记忆状态，因此除 `status` 外全部省略（`skip_serializing_if`），
 /// 前端据此决定是否显示这一块。
 #[derive(Debug, Default, Serialize)]
 struct CardMetaOut {
-    /// "due"（到期复习卡）| "new"（新词）
+    /// "due"（到期复习卡）| "new"（新词）| "daily"（今日置顶抽样）| "probe"（旧抽查）
     status: &'static str,
     /// 记忆难度 1~10
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -522,12 +536,17 @@ struct CardMetaOut {
     /// 累计复习次数
     #[serde(skip_serializing_if = "Option::is_none")]
     reps: Option<u32>,
+    /// 累计遗忘（Again）次数
+    #[serde(skip_serializing_if = "Option::is_none")]
+    lapses: Option<u32>,
     /// 距上次复习天数
     #[serde(skip_serializing_if = "Option::is_none")]
     days_since_last: Option<u32>,
     /// 预计记住（0~1）：FSRS 可提取率，即此刻还能回忆起来的概率
     #[serde(skip_serializing_if = "Option::is_none")]
     retrievability: Option<f32>,
+    /// 是否为顽固词（遗忘次数达阈值）：界面据此打标
+    leech: bool,
 }
 
 /// 一块释义（界面上一行：词性标签 + 释义正文，可带自己的例句与译文）
@@ -730,7 +749,10 @@ impl ReviewSession {
             round_seen: HashSet::new(),
             rounds: 0,
             rng_seed: seed ^ 0x2545_F491,
-            desired_retention: DESIRED_RETENTION,
+            desired_retention: opts
+                .desired_retention
+                .filter(|v| v.is_finite() && *v > 0.0 && *v < 1.0)
+                .unwrap_or(DESIRED_RETENTION),
             plan_len: plan.plan_len,
             new_count: plan.new_count,
             probe_count: plan.probe_count,
@@ -875,12 +897,10 @@ impl ReviewSession {
             None => 0,
         };
 
-        // 重置卡按**新卡**重算：丢掉原来的 stability/difficulty，天数按 0 算。
-        // 抽查卡是「重新体检」；今日置顶卡是「今天恰好抽到你」（用户决策 C11）。
-        let reset_card = is_reset_card(card);
-        let (state, days) = if reset_card { (None, 0) } else { (card.state, days) };
-
-        let states = compute_next_states(state, self.desired_retention, days)
+        // ⚠️ 一律用卡片**自己真实的**记忆状态与天数（2026-10 起）：置顶卡不再「重置重学」，
+        // 它和普通卡一样按 FSRS 累积。旧做法（丢掉状态、天数按 0）等于用摧毁记忆状态去凑
+        // 「今日新学」的统计口径；现在改由日志的 stability_before 天然区分（真正第一次学是 0）。
+        let states = compute_next_states(card.state, self.desired_retention, days)
             .map_err(|e| format!("FSRS 计算失败: {e}"))?;
         let chosen = pick_branch(states, rating)
             .ok_or_else(|| format!("无对应的评分分支: {rating}"))?;
@@ -899,8 +919,9 @@ impl ReviewSession {
             stability: chosen.memory.stability,
             difficulty: chosen.memory.difficulty,
             interval_days,
-            is_probe: reset_card,
-            is_reset: reset_card,
+            desired_retention: self.desired_retention,
+            is_probe: matches!(card.source, CardSource::Probe),
+            is_daily: card.is_daily,
             source: match card.source {
                 CardSource::Due => "due",
                 CardSource::New => "new",
@@ -1163,7 +1184,9 @@ mod tests {
             due_at: None,
             last_review_at: None,
             reps: None,
+            lapses: None,
             is_daily: false,
+            leech: false,
         }
     }
 
@@ -1210,6 +1233,7 @@ mod tests {
             probe_limit,
             probed_ids: Vec::new(),
             now_ms,
+            desired_retention: None,
         }
     }
 
@@ -2040,16 +2064,13 @@ mod tests {
         assert_eq!(s.total(), 0, "没有队列就没有池子");
     }
 
-    // ---------- 抽查：按新卡重置 ----------
+    // ---------- 单一循环池：置顶抽样走正常复习（2026-10 起不再重置） ----------
 
     #[test]
-    fn probe_rating_resets_memory_state() {
-        // 一张已经稳定到 60 天的卡：正常复习会得到很长的间隔，
-        // 但**今日置顶卡**应按新卡重算（Good → 初始稳定度 2.3065 天）。
-        //
-        // ⚠️ 原来是拿「抽查卡」测的（那时它走的是已废弃的三段编排）；抽查降级为只读诊断后，
-        // 唯一还会走「重置重学」路径的就是服务端标了 `daily` 的置顶卡，所以这里换成它。
-        // 同一条口径的另一半（is_probe / is_reset 标记）见 `daily_card_is_marked_and_resets_memory_state`。
+    fn daily_card_keeps_memory_state() {
+        // 一张已经稳定到 60 天的卡，今天恰好被置顶抽样抽中：
+        // 它走**正常复习** —— 用自己真实的记忆状态继续外推，得到长间隔；
+        // 而不是旧做法那样丢掉状态、按新卡给 2.3065 天（那是用摧毁记忆状态去凑统计口径）。
         let matured = 60.0f32;
         let queue = vec![QueueInput {
             card: daily_card(1, "mature", matured, 3.0),
@@ -2073,26 +2094,22 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&payload).unwrap();
         let interval = v["interval_days"].as_f64().unwrap();
         assert!(
-            (interval - 2.3065).abs() < 1e-3,
-            "置顶卡应按新卡重算（Good → 2.3065 天），得到 {interval}"
+            interval > 30.0,
+            "置顶卡应按真实记忆状态外推（稳定度 60 天 → 长间隔），而不是退回新卡的 2.3 天，得到 {interval}"
         );
-        assert_eq!(v["is_probe"], true, "重置重学必须在请求体里标记，供后端记进日志");
-        assert_eq!(v["is_reset"], true, "同上");
-        assert_eq!(v["source"], "daily", "前端据此记「今日置顶 N/5」");
+        assert_eq!(v["is_daily"], true, "置顶卡在请求体里带 is_daily，供后端记进 review_logs");
+        assert_eq!(v["is_probe"], false, "置顶卡不是抽查，不应带 is_probe");
+        assert_eq!(v["source"], "daily", "前端据此记「今日置顶 N/N」");
     }
 
-    // ---------- 单一循环池：今日置顶卡与间隔封顶 ----------
-
     #[test]
-    fn daily_card_is_marked_and_resets_memory_state() {
-        // 已经稳定到 60 天的词，今天恰好被「今日 5 个」抽中：
-        // 应当按新卡口径重算（不是按 60 天继续外推），并在提交时带 is_reset
-        let matured = 60.0f32;
+    fn daily_card_is_marked_as_daily_in_payload() {
+        // 置顶卡与普通卡的区别只剩「来源」与日志标记，记忆状态一律用真实值
         let queue = vec![QueueInput {
-            card: daily_card(1, "mature", matured, 3.0),
-            last_ms: Some(10.0 * MS_PER_DAY - MS_PER_DAY),
+            card: daily_card(1, "mature", 60.0, 3.0),
+            last_ms: Some(9.0 * MS_PER_DAY),
             due_ms: Some(10.0 * MS_PER_DAY),
-            }];
+        }];
         let mut s = ReviewSession::build(
             queue,
             Vec::new(),
@@ -2108,13 +2125,9 @@ mod tests {
 
         let payload = s.try_rate(3, 10.0 * MS_PER_DAY).unwrap();
         let v: serde_json::Value = serde_json::from_str(&payload).unwrap();
-        let interval = v["interval_days"].as_f64().unwrap();
-        assert!(
-            (interval - 2.3065).abs() < 1e-3,
-            "置顶卡应按新卡重算（Good → 2.3065 天），得到 {interval}"
-        );
-        assert_eq!(v["is_reset"], true, "置顶卡必须在请求体里带 is_reset，否则「今日新学」会被冲高");
-        assert_eq!(v["is_probe"], true, "重置类卡同时按抽查口径记账");
+        assert_eq!(v["is_daily"], true, "置顶卡必须带 is_daily 供后端留痕");
+        assert_eq!(v["is_probe"], false);
+        assert_eq!(v["source"], "daily");
     }
 
     #[test]
@@ -2168,13 +2181,12 @@ mod tests {
             v["interval_days"]
         );
         assert_eq!(v["is_probe"], false);
+        assert_eq!(v["is_daily"], false, "普通复习卡不带置顶标记");
     }
 
     #[test]
-    fn probe_meta_is_marked_as_probe() {
-        // ⚠️ 原来是用已废弃的 `probes` 入参造卡的；抽查降级为只读诊断后，
-        // 界面上唯一的「重置重学」来源就是服务端标了 `daily` 的置顶卡 —— 换成它，
-        // 断言的东西不变（status=probe + 仍展示旧记忆状态供参考）。
+    fn daily_card_meta_status_is_daily() {
+        // 置顶抽样在元信息里标成 daily（旧抽查才标 probe），且仍展示自己的记忆状态
         let queue = vec![QueueInput {
             card: ApiCard {
                 stability: Some(60.0),
@@ -2194,9 +2206,72 @@ mod tests {
             5,
         );
         let v: serde_json::Value = serde_json::from_str(&s.current_json(10.0 * MS_PER_DAY)).unwrap();
-        assert_eq!(v["meta"]["status"], "probe", "界面要能看出这是抽查而不是到期");
-        assert_eq!(v["meta"]["reps"], 9, "抽查仍展示原有的复习次数供参考");
+        assert_eq!(v["meta"]["status"], "daily", "置顶抽样要能一眼看出来");
+        assert_eq!(v["meta"]["reps"], 9, "仍展示原有的复习次数");
         assert!((v["meta"]["stability"].as_f64().unwrap() - 60.0).abs() < 1e-3);
+        assert_eq!(v["meta"]["leech"], false, "非顽固词不带 leech");
+    }
+
+    #[test]
+    fn leech_card_meta_is_flagged() {
+        // 顽固词：元信息带 leech=true 与 lapses，界面据此打标
+        let queue = vec![QueueInput {
+            card: ApiCard {
+                stability: Some(5.0),
+                difficulty: Some(9.0),
+                lapses: Some(12),
+                leech: true,
+                ..card(1, "stubborn")
+            },
+            last_ms: Some(1.0 * MS_PER_DAY),
+            due_ms: Some(2.0 * MS_PER_DAY),
+        }];
+        let s = ReviewSession::build(
+            queue,
+            Vec::new(),
+            Vec::new(),
+            plan_opts(0, 0, 10.0 * MS_PER_DAY),
+            5,
+        );
+        let v: serde_json::Value = serde_json::from_str(&s.current_json(10.0 * MS_PER_DAY)).unwrap();
+        assert_eq!(v["meta"]["leech"], true, "顽固词要在元信息里标出来");
+        assert_eq!(v["meta"]["lapses"], 12, "并带上遗忘次数");
+    }
+
+    #[test]
+    fn desired_retention_from_plan_options_shortens_interval() {
+        // 期望保持率越高 → 间隔越短（复习越密）。它由服务端经 queue 下发，引擎在 build 时采用。
+        let mut intervals = Vec::new();
+        for retention in [0.8f32, 0.95] {
+            let queue = vec![learned(1, "mature", 60.0, 3.0, 5.0 * MS_PER_DAY)];
+            let mut opts = plan_opts(0, 0, 10.0 * MS_PER_DAY);
+            opts.desired_retention = Some(retention);
+            let mut s = ReviewSession::build(queue, Vec::new(), Vec::new(), opts, 5);
+            let payload = s.try_rate(3, 10.0 * MS_PER_DAY).unwrap();
+            let v: serde_json::Value = serde_json::from_str(&payload).unwrap();
+            intervals.push(v["interval_days"].as_f64().unwrap());
+        }
+        assert!(
+            intervals[1] < intervals[0],
+            "0.95 的间隔应短于 0.8，实际 {:?}",
+            intervals
+        );
+    }
+
+    #[test]
+    fn invalid_desired_retention_falls_back_to_default() {
+        // 非法值（≥1 / ≤0 / NaN）一律回落到默认 0.9，不能让 FSRS 拿到坏参数
+        for bad in [1.5f32, 0.0, -0.2, f32::NAN] {
+            let queue = vec![learned(1, "mature", 60.0, 3.0, 5.0 * MS_PER_DAY)];
+            let mut opts = plan_opts(0, 0, 10.0 * MS_PER_DAY);
+            opts.desired_retention = Some(bad);
+            let s = ReviewSession::build(queue, Vec::new(), Vec::new(), opts, 5);
+            assert!(
+                (s.desired_retention - DESIRED_RETENTION).abs() < 1e-6,
+                "非法期望保持率 {bad} 应回落到默认 0.9，实际 {}",
+                s.desired_retention
+            );
+        }
     }
 
     #[test]

@@ -40,6 +40,8 @@ func SetupRouter(db *gorm.DB, cfg *config.Config) *gin.Engine {
 
 		// ---- 词汇间隔复习（FSRS）相关路由 ----
 		rv := handlers.NewReviewHandler(db)
+		// 期望记忆保持率（GX_DESIRED_RETENTION，缺省 0.9）随队列响应下发给浏览器引擎
+		rv.SetDesiredRetention(cfg.DesiredRetention)
 		// 词条管理：集合用 GET/POST，单条用 GET/PUT/DELETE（供后台增删改查）
 		// 读接口保持公开（后台列表与筛选下拉不需要登录），写接口要求管理员
 		words := api.Group("/words")

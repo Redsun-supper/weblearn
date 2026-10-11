@@ -30,9 +30,11 @@ await init(); // wasm-bindgen --target web 产物必须先实例化
 //   queueText：/api/reviews/queue  —— 整库按紧迫度升序（含未到期）
 //   newText  ：/api/reviews/new    —— 新词候选
 //   probeText：/api/reviews/probes —— 到期最远的候选（每日抽查用）
-//   planText ：{new_limit, probe_limit, probed_ids, now_ms}
-//              ⚠️ 两个 limit 是「今天还剩多少额度」，不是每日上限本身；
-//              额度记在浏览器 localStorage 里（没有登录系统，服务端分不清是谁的）
+//   planText ：{new_limit, probe_limit, probed_ids, now_ms, desired_retention}
+//              ⚠️ 单一循环池之后 new_limit / probe_limit / probed_ids 是**已废弃的三段编排遗留**，
+//              前端固定传 0 / 0 / []（编排全在服务端）；now_ms 仍要用（换算「距上次几天」）。
+//              desired_retention（期望记忆保持率，缺省 0.9）由服务端经 queue 响应下发，
+//              决定 FSRS 间隔：值越大间隔越短；缺省 / 非法值回落 0.9。
 const session = new ReviewSession(queueText, newText, probeText, planText);
 
 // 队列总张数（池中待抽 + 手上这一张）；无限复习下它不会归零
@@ -49,11 +51,12 @@ session.plan_json();         // {"new_target":5,"probe_target":5,"plan_len":10}
 
 session.current_json(Date.now());
 // 当前卡片展示数据：
-//   word / phonetic / source（"new" | "probe" | "due"）
+//   word / phonetic / source（"new" | "probe" | "daily" | "due"）
 //   example_parts  主例句按目标词切分的片段（空 = 该词条没有例句，前端整块不渲染）
 //   example_translation  主例句的中文翻译（空则不输出该字段）
 //   senses         释义块数组 [{pos, meaning, example_parts?, translation?}]，有释义时至少一块
-//   meta           记忆元信息（难度/稳定性/复习次数/距上次天数/预计记住；抽查卡的 status 是 "probe"）
+//   meta           记忆元信息（难度/稳定性/复习次数/距上次天数/预计记住/是否顽固词 leech；
+//                  置顶抽样的 status 是 "daily"，旧抽查是 "probe"）
 // 说明：卡片 JSON 刻意不带冗余字段（meaning/example 原文、下标等），多释义本来就比单词条重，
 //       JS 那边也不再需要它们。
 //
@@ -66,9 +69,11 @@ session.current_json(Date.now());
 // 评分：1=Again 2=Hard 3=Good 4=Easy；now_ms 传 Date.now()
 const body = session.rate(3, Date.now());
 // body 就是 POST /api/reviews/submit 的请求体：
-// {"word_id":42,"rating":3,"stability":2.3065,"difficulty":2.1181,"interval_days":2.3065,"is_probe":false}
-// ⚠️ 抽查卡（source === "probe"）在引擎里**按新卡重算**：丢掉原 stability/difficulty、天数按 0 算，
-//    请求体里 is_probe 为 true。所以一张稳定到 60 天的卡被抽查时，Good 也只给 2.3065 天。
+// {"word_id":42,"rating":3,"stability":2.3065,"difficulty":2.1181,"interval_days":2.3065,"desired_retention":0.9,"is_daily":false,"is_probe":false}
+// ⚠️ desired_retention 是本次评分**实际**用的期望保持率（服务端经 queue 下发，见上）；
+//    后端把它记进 word_reviews.desired_retention，将来做 FSRS 参数拟合时每个样本要对得上。
+// ⚠️ 所有卡（含今日置顶抽样）都**按自己真实的记忆状态**累积（2026-10 起不再重置）：
+//    置顶卡只在请求体里带 is_daily=true 供日志留痕，记忆状态与普通卡一视同仁。
 // ⚠️ 评分不只是算状态：它还会把这张卡**按新的到期时间插回池子**（见下面的「无限复习」）。
 
 // 取复习区的下一页塞进池子（按到期时间插好），返回实际新增数量
@@ -191,7 +196,7 @@ wasm-bindgen --target web --out-dir pkg --out-name guangxue_wasm `
 ## 单元测试
 
 ```powershell
-cargo test            # 118 个测试：每日计划 / 抽卡规则 / 插回池子 / 轮次 / 天数换算 / 解析 / FSRS / 多释义 / 词形匹配
+cargo test            # 125 个测试：每日计划 / 抽卡规则 / 插回池子 / 轮次 / 天数换算 / 解析 / FSRS / 多释义 / 词形匹配 / 置顶不重置 / 顽固词 / 期望保持率
 cargo test -- --nocapture
 ```
 

@@ -5,12 +5,19 @@ package config
 import (
 	"bufio"
 	"os"
+	"strconv"
 	"strings"
 )
 
 // 允许来源（CSRF 白名单）默认值：与账号服务 backend-rust/src/config.rs 的默认值保持一致
 // ——本机开发时浏览器访问的是 dev-server（127.0.0.1:8899），它会带这两个 Origin 之一。
 const defaultAllowedOrigins = "http://127.0.0.1:8899,http://localhost:8899"
+
+// defaultDesiredRetention FSRS 期望记忆保持率的默认值（与引擎侧写死的 0.9 一致）。
+//
+// 含义：希望每个词在「下次复习前」被记住的概率。值越大 → 间隔越短、复习越密
+// （记得更牢但更累）；越小 → 间隔越长、复习越疏。0.9 是 Anki / FSRS 的常用默认。
+const defaultDesiredRetention = 0.9
 
 // 账号库（账号服务的 auth.db）默认路径。
 //
@@ -39,6 +46,13 @@ type Config struct {
 	// 口径与理由见 docs/backend-auth.md 与 docs/roadmap.md 第 2 节。
 	JWTSecret      string   // AUTH_JWT_SECRET：HS256 共享密钥，必须与账号服务完全一致
 	AllowedOrigins []string // AUTH_ALLOWED_ORIGINS：CSRF 白名单（浏览器 Origin）
+
+	// DesiredRetention GX_DESIRED_RETENTION：FSRS 的期望记忆保持率（默认 0.9，取值需在 (0,1)）。
+	//
+	// 它由浏览器里的 WASM 引擎在算复习间隔时使用，服务端**不参与计算**，只负责经
+	// /api/reviews/queue 下发（见 handlers.ReviewHandler.SetDesiredRetention）。
+	// 非法值（≤0、≥1 或解析失败）回落到默认 0.9，并由 StartupWarnings 提醒。
+	DesiredRetention float64
 }
 
 // LoadConfig 加载配置：先读 .env 文件，再读环境变量，缺失时用默认值
@@ -53,13 +67,14 @@ func LoadConfig() *Config {
 	loadEnvFile()
 
 	cfg := &Config{
-		Host:           getEnv("SERVER_HOST", "0.0.0.0"),
-		Port:           getEnv("SERVER_PORT", "8080"),
-		Env:            getEnv("APP_ENV", "development"),
-		DBPath:         getEnv("DB_PATH", "guangxue.db"),
-		AuthDBPath:     getEnv("AUTH_DB_PATH", defaultAuthDBPath),
-		JWTSecret:      os.Getenv("AUTH_JWT_SECRET"),
-		AllowedOrigins: splitList(getEnv("AUTH_ALLOWED_ORIGINS", defaultAllowedOrigins)),
+		Host:             getEnv("SERVER_HOST", "0.0.0.0"),
+		Port:             getEnv("SERVER_PORT", "8080"),
+		Env:              getEnv("APP_ENV", "development"),
+		DBPath:           getEnv("DB_PATH", "guangxue.db"),
+		AuthDBPath:       getEnv("AUTH_DB_PATH", defaultAuthDBPath),
+		JWTSecret:        os.Getenv("AUTH_JWT_SECRET"),
+		AllowedOrigins:   splitList(getEnv("AUTH_ALLOWED_ORIGINS", defaultAllowedOrigins)),
+		DesiredRetention: getEnvFloat("GX_DESIRED_RETENTION", defaultDesiredRetention),
 	}
 	return cfg
 }
@@ -69,6 +84,22 @@ func getEnv(key, defaultValue string) string {
 		return value
 	}
 	return defaultValue
+}
+
+// getEnvFloat 读一个浮点配置；缺失、空串或解析失败都回落默认值。
+//
+// 非法值**不在这里报错**（服务照常起），具体提醒交给 StartupWarnings —— 与其它
+// 「配错也能起来、只是行为不对」的项保持同一套口径。
+func getEnvFloat(key string, defaultValue float64) float64 {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return defaultValue
+	}
+	v, err := strconv.ParseFloat(raw, 64)
+	if err != nil {
+		return defaultValue
+	}
+	return v
 }
 
 // IsProduction 是否生产环境。
@@ -106,6 +137,17 @@ func (c *Config) StartupWarnings() []string {
 				"管理看板的账号侧数字会不可用（今日新增用户 / 角色分布 / 发码与兑换一律显示 0），业务侧数字不受影响。"+
 				"请在 backend-go/.env 里把 AUTH_DB_PATH 配成账号库的真实路径"+
 				"（例如 /opt/guangxue/backend-rust/auth.db），并确认账号服务在运行。原因："+err.Error())
+		}
+	}
+	// GX_DESIRED_RETENTION 配错**不会让服务起不来**：非法值会被 getEnvFloat 悄悄回落到 0.9，
+	// 表现只是「复习间隔莫名变长 / 变短」，事后从日志里很难对上号，所以显式告警。
+	// 判据直接看**环境变量原文**（而不是 cfg.DesiredRetention）：回落之后字段永远是合法值，
+	// 那样就分不清「没配」与「配错了」。
+	if raw := strings.TrimSpace(os.Getenv("GX_DESIRED_RETENTION")); raw != "" {
+		v, err := strconv.ParseFloat(raw, 64)
+		if err != nil || v <= 0 || v >= 1 {
+			warns = append(warns, "GX_DESIRED_RETENTION 非法（"+raw+"）：必须是 (0,1) 之间的小数，"+
+				"已回落到默认值 0.9。它决定 FSRS 的复习间隔——值越大复习越密")
 		}
 	}
 	if c.IsProduction() {

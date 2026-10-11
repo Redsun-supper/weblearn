@@ -153,11 +153,16 @@ type ReviewLog struct {
 	// 其 stability_after 会明显低于 before（相当于把间隔压缩了）。
 	// 日后做 FSRS 参数优化（compute_parameters）时应当排除这批记录，否则参数会被带偏。
 	IsProbe bool `json:"is_probe"`
-	// IsReset 是否为「重置重学」：单一循环池里「今日 5 个」可能命中已经学过的词，
-	// 引擎按新卡口径重算（docs/review-pool-plan.md 的 C11）。
-	// 这类记录的 stability_before 会被强制记成 0，使「今日新学」只统计真正的第一次学；
-	// 做 FSRS 参数优化时同样必须排除。
+	// IsReset 历史列：旧引擎会把「置顶卡 / 抽查卡」按新卡口径重算，并把 stability_before
+	// 强制记成 0。2026-10 起引擎**不再重置**（置顶卡走正常复习、用自己真实的记忆状态），
+	// 新记录恒为 false；保留该列只为读旧数据与兼容还没更新的旧客户端。
 	IsReset bool `json:"is_reset"`
+	// IsDaily 这条记录是否来自「今日置顶抽样」（服务端按稳定哈希从整池抽出的那几个）。
+	//
+	// 置顶卡现在走**正常复习**，所以 stability_before 就是库里真实旧值：真正的第一次学是 0、
+	// 学过的词是它自己的稳定度 —— 「今日新学」据此天然正确（不再需要靠重置去凑口径）。
+	// 记这一列是为了日后能单独分析「置顶抽样」的效果。
+	IsDaily bool `json:"is_daily"`
 }
 
 // TableName 指定数据库表名

@@ -688,16 +688,19 @@ AUTH_DB_PATH=/var/lib/guangxue/auth.db
 - 事实：前端已无配额账 —— `modules/english/english.js` 顶部注释即写明「单一循环池之后，这里不再有配额账」，
   旧的 `PLAN_KEY` / `loadTodayPlan` / `markPlanDone` / `remainingQuota` / `probedIdsInCooldown` 已无引用，
   `localStorage.reviewDailyPlan` 不再写入。今日进度 = 服务端 `stats.daily_done` + 本会话增量；
-  「今日 5 个」与「今日完成几个」都由 `backend-go/handlers/review_handlers.go` 的稳定哈希算
-  （`dailyWordCount = 5` / `dailyWordIDs` / `countTodayDaily`）。
+  「今日置顶」与「今日完成几个」都由 `backend-go/handlers/review_handlers.go` 的稳定哈希算
+  （`dailyCount`（按复习量自适应，5~30）/ `dailyWordIDs` / `countTodayDaily`）。
 - 剩下的 localStorage 只有两件**本该在本地**的东西：自动朗读开关、沉浸模式开关。
 - 时区口径：`poolTZName = "Asia/Shanghai"`（`review_handlers.go`，注释明确「**不要**改成 Local」）。
   客户端可以传 `?today=YYYYMMDD` 指定自己的自然日 —— 它只影响「今天哪 5 个被置顶」；
   因为配额不强制，所以不构成「换个日期就多刷一轮」的漏洞。
-- 本轮补的测试：`backend-go/handlers/review_stats_test.go` 证明**客户端什么都不传时** `daily_target` 恒为 5、
+  （2026-10 起「今天」默认由**服务端**按该时区定，前端不再传 `?today`；该参数降级为显式覆盖，
+  留给测试 / 排障。）
+- 本轮补的测试：`backend-go/handlers/review_stats_test.go` 证明**客户端什么都不传时** `daily_target` 恒为下限 5、
   提交一张 daily 卡后 `daily_done` 由 0 变 1。
-- ⚠️ 与 P1 看板的口径差异：看板的「今日新学」只判 `stability_before = 0`，而 `/api/reviews/stats` 的 `today_new`
-  还排除 `is_reset` —— 「重置重学」多的日子两个数字会不一样（两处注释互相指认，别当成 bug）。
+- ✅ 与 P1 看板的口径**现已统一**（2026-10）：看板与 `/api/reviews/stats` 的 `today_new` 都只判 `stability_before = 0`
+  —— 置顶卡不再重置后，这个值天然只命中「真正第一次学」，两边不再有差异。
+  （`daily_target` 也不再恒为 5：2026-10 起按用户复习量自适应，下限 5、上限 30。）
 
 ### 14.2 限流：先让 `AUTH_RL_*` 真的可配，再按上百人重算
 
@@ -964,7 +967,7 @@ AUTH_DB_PATH=/var/lib/guangxue/auth.db
 - **路由冲突是实测过的**：gin 1.9.1 下 `/users/progress` 与 `/users/:id/progress` 两种注册顺序都**不 panic**，两条各走各的处理器（`tree.go` 里 `skippedNodes` 回溯那套），所以保留了计划里的路径形状，并用 `TestRouterAdminProgressPathsCoexist` 钉住（批量看响应里有没有 `items`、单看有没有 `last7`）。
 - ⚠️ **跨库时间的字典序陷阱**：`guangxue.db` 的时间是带自身偏移的文本（形如 `2026-10-03 17:27:36.1460602+08:00`），拿 UTC 边界直接比字典序会**排错先后** → SQL 只做**放宽两天**的粗筛（覆盖 −12:00~+14:00 的文本差，只多不漏），精确判定在 Go 侧按真实时间点做；另外 `MAX(reviewed_at)` 会被驱动当**文本**返回，必须扫成 `*string` 再解析（扫进 `*time.Time` 会得到零值而不报错）。
 - 实测：`go test ./... -count=1` 各包 ok（新增 25 个 Test 函数）、`go vet ./...` 干净。
-- 口径提醒：`today.new_words`（按定案只判 `stability_before = 0`）与 `/api/reviews/stats` 的 `today_new`（还排除 `is_reset`）**在「重置重学」多的日子会不一样**，两处注释互相指认。
+- 口径提醒（2026-10 更新）：`today.new_words` 与 `/api/reviews/stats` 的 `today_new` **现已统一为同一口径**（都只判 `stability_before = 0`），不再有差异。
 
 **批 4：验证与落档（✅ 已完成）**
 
