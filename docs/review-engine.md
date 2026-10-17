@@ -57,12 +57,15 @@
 - **单一循环池验收**：`pwsh scripts/verify-pool.ps1 -Browser`（**45 项**，走真实 HTTP + 真实开发库 + Edge 无头浏览器端到端，**会清空进度并自动快照**，所以可重复运行）；账号与权限回归是 `pwsh scripts/verify-auth.ps1`（**55 项**，起临时库与临时端口，不碰开发库）。
   - `-Browser` 那段跑的是 `scripts/browser-e2e.mjs`（CDP 驱动 Edge 无头），它**必须**走 `/index.html` 这个 SPA 外壳：直接开 `/modules/english/english.html` 只有 HTML 片段、没有 `main.js`，按钮点了没反应。
   - 反复跑会撞上**登录限流**（`backend-rust/src/config.rs` 的 `AUTH_RL_LOGIN_IP`；P2 起默认已放宽到 **200 次 / 15 分钟**，此前是 20 次 —— 上百人共用出口 IP 时那个值会被自己人打满），表现为整片 429；计数器在 Rust 进程内存里，**重启账号服务即清零**（见 [`boundaries.md`](boundaries.md) 第 10 节）。
-- **`engine/pkg/` 由 wasm-bindgen 生成（已 gitignore）**，缺失时需在 `modules/english/engine/` 下重新构建，三段命令见
+- **`engine/pkg/` 由 wasm-bindgen 生成（已 gitignore）**，缺失时用一条命令重建：`pwsh scripts/build-engine.ps1`
+  （cargo build → wasm-bindgen → 写版本号，见下一条）。要手工跑三段命令也行，见
   [`../modules/english/engine/README.md`](../modules/english/engine/README.md)：`cargo check --target wasm32-unknown-unknown`
   → `cargo build --target wasm32-unknown-unknown --release` → `wasm-bindgen --target web --out-dir pkg --out-name guangxue_wasm
   target/wasm32-unknown-unknown/release/guangxue_wasm.wasm`。
-  ⚠️ 本机 `wasm-bindgen` **不在 PATH**，实际在 `C:\Users\22629\.local\bin\wasm-bindgen-0.2.128-x86_64-pc-windows-msvc\wasm-bindgen.exe`；版本必须与 `Cargo.toml` 的 `wasm-bindgen = 0.2.128` 一致。
-- ⚠️ **重建 `pkg/` 之后必须把 `modules/english/english.js` 的 `ENGINE_VERSION` 加一**：`dev-server.js` 给 `.wasm` 发的是
-  `public, max-age=86400`（一天强缓存），不加版本号的话浏览器跑的仍是旧引擎，而且**不报任何错**
-  （踩过：修好的置顶排序在页面上毫无反应）。细节见 [`boundaries.md`](boundaries.md) 第 8 节。
+  ⚠️ 本机 `wasm-bindgen` **不在 PATH**，实际在 `C:\Users\22629\.local\bin\wasm-bindgen-0.2.128-x86_64-pc-windows-msvc\wasm-bindgen.exe`；版本必须与 `Cargo.toml` 的 `wasm-bindgen = 0.2.128` 一致（构建脚本会替你校验，不一致直接报错）。
+- ✅ **引擎版本号不再手写**（2026-10 起）：`pwsh scripts/build-engine.ps1` 会把产出 wasm 的 SHA-256 前 12 位
+  写进 `pkg/engine-version.js`，`english.js` 读它、拼进 `.js` 与 `_bg.wasm` 两个 URL。
+  此前是人工把 `modules/english/english.js` 的 `ENGINE_VERSION` 加一，忘了的症状是「改了引擎在页面上毫无反应、
+  且不报任何错」（`dev-server.js` 给 `.wasm` 发 `public, max-age=86400`，一天强缓存）。
+  `pwsh scripts/verify.ps1` 里有一道一致性检查专门抓「绕过脚本重建 pkg/」。细节见 [`boundaries.md`](boundaries.md) 第 8 节。
 - 完整工具链与验证路径见 [`boundaries.md`](boundaries.md)。

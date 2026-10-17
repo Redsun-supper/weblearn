@@ -7,6 +7,8 @@
 
   覆盖的是「构建 + 单元/集成测试」。**不含**端到端冒烟 —— 那需要真起两个服务，
   用 -IncludeSmoke 追加（见 backend-rust/scripts/smoke.ps1）。
+  另含一道静态检查：引擎的 pkg/ 与它的版本号是否对得上（`scripts/build-engine.ps1 -Check`），
+  抓「绕过构建脚本手工重建 pkg/」这种情况 —— 那会让浏览器继续吃旧 wasm 的强缓存。
 
   用法：
     pwsh scripts/verify.ps1                 # 全跑：Go → 账号服务 → 引擎 → wasm 目标
@@ -148,6 +150,15 @@ if ($Only -in 'all', 'engine') {
             } | Out-Null
         } else {
             $results.Add([pscustomobject]@{ Step = '引擎 wasm32 检查'; Status = 'SKIP'; Seconds = 0; Detail = '-SkipWasmTarget' }) | Out-Null
+        }
+        # pkg/ 与它的版本号是否对得上：对不上说明有人绕过 scripts/build-engine.ps1 重建过 pkg/，
+        # 那样浏览器会继续吃旧 wasm 的强缓存（症状是「改了引擎页面上毫无反应且不报错」）。
+        # 还没构建过 pkg/ 时跳过 —— 那是「克隆仓库后还没构建」，不是错误。
+        $buildEngine = Join-Path $root 'scripts\build-engine.ps1'
+        if (Test-Path -LiteralPath (Join-Path $engineDir 'pkg\guangxue_wasm_bg.wasm')) {
+            Invoke-Step -Name '引擎版本号一致性' -WorkDir $root -Block { & $buildEngine -Check } | Out-Null
+        } else {
+            $results.Add([pscustomobject]@{ Step = '引擎版本号一致性'; Status = 'SKIP'; Seconds = 0; Detail = 'pkg/ 还没构建（先跑 pwsh scripts/build-engine.ps1）' }) | Out-Null
         }
     }
 }

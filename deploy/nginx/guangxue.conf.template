@@ -190,6 +190,17 @@ server {
         add_header Cache-Control "no-cache";
     }
 
+    # WASM 引擎二进制（约 300KB）：**不要**长缓存。
+    # 它的文件名不带指纹（`guangxue_wasm_bg.wasm` 永远叫这个名字），长缓存会让用户一直跑旧引擎
+    # 而且不报任何错 —— 本地开发踩过一次：修好的置顶排序在页面上毫无反应，排查了很久。
+    # 走协商缓存（no-cache + Nginx 静态文件自带的 ETag）：没改动时回 304，正文几乎不传，
+    # 强缓存一天省下的那点流量换不来「引擎更新不生效」这个风险。
+    # 另有一道保险：`modules/english/english.js` 会把构建时算出的版本号拼在 URL 上
+    #（见 scripts/build-engine.ps1），两道一起才够稳。
+    location ~* \.wasm$ {
+        add_header Cache-Control "no-cache";
+    }
+
     location ~* \.(png|jpe?g|gif|svg|webp|ico|woff2?|ttf)$ {
         add_header Cache-Control "public, max-age=604800";
     }

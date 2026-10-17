@@ -172,6 +172,23 @@ modules/english/engine/
 
 ## 构建
 
+**推荐用仓库根的那个脚本**（一条命令走完三步，并顺手写引擎版本号）：
+
+```powershell
+pwsh scripts/build-engine.ps1              # cargo build --release + wasm-bindgen + 版本文件
+pwsh scripts/build-engine.ps1 -SkipBuild   # 不重新编译，只按现有 pkg/ 重算版本号
+pwsh scripts/build-engine.ps1 -Check       # 只校验 pkg/ 与版本号是否对得上
+```
+
+它做的第三件事值得单独说明：对产出的 wasm 取 SHA-256，前 12 位写进 `pkg/engine-version.js`，
+由 `modules/english/english.js` 读出来拼在 `.js` 与 `_bg.wasm` 两个 URL 上。
+`.wasm` 的文件名不带指纹，而 dev-server 与 Nginx 都按扩展名分流缓存，没有版本号时
+**重建 `pkg/` 之后浏览器跑的仍是旧引擎，且不报任何错**（真踩过）。以前这一步靠人工把
+`ENGINE_VERSION` 加一，现在改成算出来的 —— 绕开这个脚本手工 `wasm-bindgen`，
+`pwsh scripts/verify.ps1` 的「引擎版本号一致性」一步会红。
+
+要手工敲也可以（命令与脚本内部一致）：
+
 ```powershell
 cd modules/english/engine
 

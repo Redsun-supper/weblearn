@@ -117,6 +117,8 @@ e:\porject\4/
 ├── scripts/                     # 本机 PowerShell 脚本（开发与运维）
 │   ├── verify.ps1               #   一键验证：Go 构建/vet/测试 + 账号服务 + 引擎 + wasm32 目标检查
 │   ├── verify-auth.ps1          #   跨服务鉴权联调：临时库起两个真服务，验 Cookie 本地验签全链路
+│   ├── verify-pool.ps1          #   单一循环池验收（真实 HTTP + 真实库；-Browser 追加 Edge 无头端到端）
+│   ├── build-engine.ps1         #   重建 wasm 引擎并自动写引擎版本号（见 docs/boundaries.md 第 8 节）
 │   ├── backup.ps1               #   数据库安全快照（VACUUM INTO；底层是 backend-go/cmd/backup）
 │   └── clean-build-cache.ps1    #   清理 target/ 编译缓存（带白名单安全闸）
 │

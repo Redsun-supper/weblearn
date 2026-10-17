@@ -73,13 +73,18 @@ var ROUND_FLASH_MS = 2600;
 
 // 引擎模块路径（相对本文件所在目录解析）。
 //
-// ⚠️ **末尾的版本号必须与引擎代码同步递增**：`dev-server.js:161` 给 `.wasm` 发的响应头是
-// `Cache-Control: public, max-age=86400`（不是 no-cache），所以浏览器会把旧 wasm 强缓存一整天，
-// 光重建 `pkg/` 是**看不见效果**的 —— 重建完打开页面，跑的还是旧引擎，
-// 而且不报任何错（真踩过：修好的置顶排序在页面上毫无反应，排查了半天）。
-// 任何改了 `engine/src/` 的重建，都要把这个数字 +1。
-var ENGINE_VERSION = 7;
-var WASM_MODULE_URL = './engine/pkg/guangxue_wasm.js?v=' + ENGINE_VERSION;
+// ⚠️ **URL 上必须带版本号**：`.wasm` 的文件名不带指纹，而 `dev-server.js:161` 与 Nginx 都按扩展名
+// 分流缓存（`.wasm` 曾经是 `public, max-age=86400`，强缓存一天），所以光重建 `pkg/` 是
+// **看不见效果**的 —— 打开页面跑的还是旧引擎，而且不报任何错
+//（真踩过：修好的置顶排序在页面上毫无反应，排查了半天）。
+//
+// 版本号**不在这里手写**：它是构建产物 `engine/pkg/engine-version.js` 里的一个常量，
+// 由 `scripts/build-engine.ps1` 按产出的 wasm 二进制算 SHA-256 前 12 位写进去 ——
+// 引擎一变它就变，不存在「改了引擎忘了把版本号 +1」这回事。
+// 取不到时退回下面的兜底值：`pkg/` 还没构建时本来就会「复习功能加载失败」，
+// 但不该让整个模块 import 失败（那样英语页连起始页都渲染不出来）。
+var ENGINE_VERSION_FALLBACK = 'dev';
+var engineVersionPromise = null;
 
 // 换卡过渡 / 计划文案切换的时长（毫秒）：必须与 english.css 的 studyOut、planOut 保持一致
 var TRANSITION_MS = 150;
@@ -534,23 +539,41 @@ function releaseSession() {
 
 // ---------- 引擎加载与取数 ----------
 
-// 动态加载 WASM 引擎模块（浏览器原生 import()）。两个关键点：
+// 读构建时生成的引擎版本号（见文件上方 ENGINE_VERSION_FALLBACK 的说明）。
+// 只读一次，失败也缓存住 —— 每次进复习页都去 import 一个不存在的文件没必要。
+// ⚠️ 这里用动态 import() 而不是顶层的静态 import：静态 import 失败会让**整个模块**加载失败，
+// 那样连「复习功能加载失败」那句提示都显示不出来。
+function resolveEngineVersion() {
+    if (!engineVersionPromise) {
+        engineVersionPromise = import('./engine/pkg/engine-version.js').then(function(mod) {
+            return mod.ENGINE_VERSION || ENGINE_VERSION_FALLBACK;
+        }).catch(function() {
+            return ENGINE_VERSION_FALLBACK;
+        });
+    }
+    return engineVersionPromise;
+}
+
+// 动态加载 WASM 引擎模块（浏览器原生 import()）。三个关键点：
 // 1. 相对路径必须写成 './xxx'：'engine/pkg/...' 会被当作 bare specifier（npm 包名）而解析失败；
 // 2. wasm-bindgen 的 --target web 产物必须先 await 默认导出（__wbg_init）完成实例化，
-//    否则模块内部变量 wasm 仍是 undefined，调用任何导出函数都会抛 TypeError。
+//    否则模块内部变量 wasm 仍是 undefined，调用任何导出函数都会抛 TypeError；
+// 3. 两个文件都要带版本号 —— 它们是分开缓存的，只给一个加等于没加。
 function loadEngine() {
-    // ⚠️ 两个坑都在这一小段里，改之前先看完：
-    //  1. wasm 二进制也必须带版本号：不给 `module_or_path` 时，生成的 JS 用
-    //     `new URL('guangxue_wasm_bg.wasm', import.meta.url)` 去取 —— 那串 URL **不带**查询串，
-    //     于是 JS 更新了、wasm 还在吃 24 小时强缓存（两个文件分开缓存）。
-    //  2. 这个 URL 必须用 `import.meta.url` 拼成**绝对**地址。写成相对路径 `'./engine/pkg/…'`
-    //     会被解析到**文档**的地址上（英语页是 SPA 注入的，文档地址是站点根 `/index.html`），
-    //     实测报 `404 /engine/pkg/guangxue_wasm_bg.wasm`，整页卡在「复习功能加载失败」。
-    //     `import.meta.url` 才是本模块自己的地址（`/modules/english/english.js`）。
-    var wasmUrl = new URL('./engine/pkg/guangxue_wasm_bg.wasm?v=' + ENGINE_VERSION, import.meta.url).href;
-    return import(WASM_MODULE_URL).then(function(mod) {
-        return mod.default({ module_or_path: wasmUrl }).then(function() {
-            return mod;
+    // ⚠️ 下面这段的第二个坑：wasm 的 URL 必须用 `import.meta.url` 拼成**绝对**地址。
+    // 写成相对路径 `'./engine/pkg/…'` 会被解析到**文档**的地址上（英语页是 SPA 注入的，
+    // 文档地址是站点根 `/index.html`），实测报 `404 /engine/pkg/guangxue_wasm_bg.wasm`，
+    // 整页卡在「复习功能加载失败」。`import.meta.url` 才是本模块自己的地址
+    //（`/modules/english/english.js`）。
+    // 第一个坑：不给 `module_or_path` 时，生成的 JS 用
+    // `new URL('guangxue_wasm_bg.wasm', import.meta.url)` 去取 —— 那串 URL **不带**查询串，
+    // 于是 JS 更新了、wasm 还在吃旧缓存。
+    return resolveEngineVersion().then(function(version) {
+        var wasmUrl = new URL('./engine/pkg/guangxue_wasm_bg.wasm?v=' + version, import.meta.url).href;
+        return import('./engine/pkg/guangxue_wasm.js?v=' + version).then(function(mod) {
+            return mod.default({ module_or_path: wasmUrl }).then(function() {
+                return mod;
+            });
         });
     });
 }

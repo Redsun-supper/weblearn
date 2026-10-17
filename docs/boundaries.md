@@ -132,7 +132,7 @@
 唯一键是 `(user_id, word_id)`；`user_id` 只来自 `gx_access` 令牌的 `sub`，**请求体里没有这个字段**
 （前端无法替别人写进度）。P0-1 之前那些 `user_id = 0` 的历史行不对任何用户可见，迁移时会被清掉。
 
-## 8. 前端静态资源的缓存：`.wasm` 是**强缓存一天**的
+## 8. 前端静态资源的缓存：`.wasm` 的版本号是**构建时算出来的**
 
 `dev-server.js:161` 按扩展名分流：`CODE_EXT`（html/js/mjs/css/json/txt/map）发 `no-cache` + ETag，**其它一律 `public, max-age=86400`** —— `.wasm` 落在后者，也就是**一天强缓存**。
 
@@ -141,14 +141,24 @@
 - 重建 `modules/english/engine/pkg/` 之后打开页面，跑的还是旧 wasm；
 - 我为此排查了很久：置顶排序明明已修好，页面上的「今日置顶」始终是 2/5，直到发现浏览器加载的仍是上一版二进制。
 
-**规矩：每次改 `engine/src/` 并重建 `pkg/` 之后，必须把 `modules/english/english.js` 顶部的 `ENGINE_VERSION` 加一。**
-`loadEngine()` 会把这个版本号同时拼到 `.js` 与 `_bg.wasm` 两个 URL 上（两个文件是分开缓存的，只给一个加版本号没用）。
+**做法（2026-10 起）：版本号不再手写，由 `scripts/build-engine.ps1` 在构建时算出来。**
+该脚本把 `cargo build --target wasm32-unknown-unknown --release` → `wasm-bindgen` → 写
+`pkg/engine-version.js` 串成一条命令，最后一步取产出 wasm 的 SHA-256 前 12 位；
+`english.js` 的 `loadEngine()` 读它，并同时拼到 `.js` 与 `_bg.wasm` 两个 URL 上
+（两个文件是分开缓存的，只给一个加版本号没用）。引擎一变版本号就变，不存在「忘了 +1」。
+
+- 改引擎**只用** `pwsh scripts/build-engine.ps1` 重建（`-SkipBuild` 只按现有 `pkg/` 重算版本号）。
+  绕过它手工跑 `wasm-bindgen` 会留下「二进制变了、版本号没变」的组合，浏览器继续吃旧缓存 ——
+  `pwsh scripts/verify.ps1` 里的「引擎版本号一致性」一步专门抓这个（它调的就是 `-Check` 模式）。
+- 版本文件读不到时 `english.js` 退回 `'dev'`：`pkg/` 还没构建时本来就会「复习功能加载失败」，
+  但不该让整个模块 import 失败（那样英语页连起始页都渲染不出来）。
 
 同一个函数里还有第二个坑：wasm 的 URL 必须用 `import.meta.url` 拼**绝对**地址。
 写成相对路径 `'./engine/pkg/…'` 会被解析到**文档**地址上，而英语页是 SPA 注入的
 （文档地址是站点根 `/index.html`），实测 404 并卡在「复习功能加载失败」。
 
-生产环境（Nginx）对应做法见 [`README.md`](../README.md) 的站点配置段：`.wasm` 同样不要发长强缓存。
+生产环境（Nginx）是第二道保险：[`deploy/nginx/guangxue.conf.template`](../deploy/nginx/guangxue.conf.template)
+里 `.wasm` 发 `Cache-Control: no-cache`（协商缓存，未改动时回 304），不再强缓存一天。
 
 ## 9. 服务端的字段名要与引擎的 serde 键名逐字对齐
 
@@ -165,17 +175,20 @@
 
 ## 10. 反复跑验收会被登录限流挡住
 
-`backend-rust/src/config.rs:150` 的 `login_ip` 是 **20 次 / 15 分钟 / 单 IP**。验收脚本每跑一轮要登录 2~4 次，
-连跑几轮就整片 429（浏览器用例表现为「登录管理员账号 HTTP 429」，后面全线失败）。
+`backend-rust/src/config.rs:245` 的 `login_ip` 默认是 **200 次 / 15 分钟 / 单 IP**
+（P2 起从 20 提到 200，口径「严在账号、宽在 IP」；`config.rs:306` 起可用
+`AUTH_RL_LOGIN_IP=次数/窗口秒` 覆盖，`0/0` 关闭这一条）。验收脚本每跑一轮要登录 2~4 次，
+连跑几十轮仍会整片 429（浏览器用例表现为「登录管理员账号 HTTP 429」，后面全线失败）。
 
-计数器在 Rust 进程内存里，**重启账号服务即可清零**（不需要等 15 分钟）：
+计数器在 Rust 进程内存里，**重启账号服务即可清零**（不需要等窗口过去）：
 
 ```powershell
 $c = Get-NetTCPConnection -LocalPort 8081 -State Listen; Stop-Process -Id $c.OwningProcess -Force
 Set-Location backend-rust; & '.\target\release\guangxue-auth.exe'
 ```
 
-顺带：这也是同宿舍 / 同办公室共用出口 IP 会被一起锁 15 分钟的原因（见 `TODO.md`）。
+顺带：临时放宽最省事的做法是给那一轮验证设 `AUTH_RL_LOGIN_IP=1000/900`（比反复重启服务干净）。
+同宿舍 / 同办公室共用出口 IP 会被一起限流的问题，P2 已按「宽在 IP」把默认值放大 10 倍，原 `TODO.md` 条目已删除。
 
 ## 11. 三份样式表都要声明 `color-scheme: light`（否则被浏览器自动反色）
 
