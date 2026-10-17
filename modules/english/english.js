@@ -43,7 +43,12 @@ var state = {
     // 取到之前先用默认值，取到之后以服务端为准（见 parseQueueMeta / buildPlanOptions）。
     desiredRetention: 0.9,
     started: false,
-    holdAutoSpeak: false
+    holdAutoSpeak: false,
+    // 切走学科时如果复习进行到一半，unmount() 会把会话留下来并置 true；
+    // 下次 initReviewApp 看到它就跳过起始页、直接接上刚才那张卡（见 resumeReview）。
+    // ⚠️ 它只活在同一次页面加载里：刷新后模块状态重置，自然回到起始页 ——
+    // 这正是「同一次会话内记住」的语义（见 modules/english/FUTURE.md）。
+    resumePending: false
 };
 
 // 自动朗读开关在 localStorage 中的键名
@@ -129,15 +134,19 @@ var POS_LABELS = {
 // 初始化英语页。由 main.js 在英语页 HTML 注入完成后调用。
 //
 // 这一层只做「绑事件 + 决定停在起始页还是直接进复习」，**不碰引擎、不发任何请求**；
-// 真正的启动在 beginReview()。顺序：释放上一次会话（引擎侧的 ReviewSession 必须显式 free，
-// 否则反复进出英语页会泄漏 WASM 内存）→ 绑定监听（键盘与语音解锁都只绑一次）→
-// 恢复自动朗读开关（默认开启）→ 停在起始页等用户点击。
+// 真正的启动在 beginReview()。顺序：判定有没有待续的会话 → 没有就释放上一次的
+// （引擎侧的 ReviewSession 必须显式 free，否则反复进出英语页会泄漏 WASM 内存）→
+// 绑定监听（键盘与语音解锁都只绑一次）→ 恢复自动朗读开关（默认开启）→
+// 有待续会话就直接接上（resumeReview），否则停在起始页等用户点击。
 export function initReviewApp() {
     var statusEl = document.getElementById('reviewStatus');
     if (!statusEl) return; // 当前页面不是英语页，跳过
 
     pageEpoch++; // 上一次留在半路上的异步链从此作废
-    releaseSession();
+
+    // 复习进行到一半时切走过：**不要**释放会话，切回来要接着用（见 resumeReview）
+    var resuming = !!(state.resumePending && state.session && state.card);
+    if (!resuming) releaseSession();
 
     if (!keysBound) {
         keysBound = true;
@@ -179,6 +188,12 @@ export function initReviewApp() {
     var startBtn = document.getElementById('studyStartBtn');
     if (!startBtn) {
         beginReview(); // 兜底：万一拿到的是旧结构的缓存页（没有起始页），直接进复习
+        return;
+    }
+
+    // 有待续的会话：跳过起始页，直接接上刚才那张卡（同一次页面加载内有效）
+    if (resuming) {
+        resumeReview();
         return;
     }
 
@@ -342,6 +357,54 @@ function finishEnter() {
     if (isAutoSpeakOn() && state.card) speakCurrent('word');
 }
 
+// 从别的学科切回来：会话还在，直接接上刚才那张卡（只在同一次页面加载内有效）。
+//
+// 为什么这条路走得通（而不是 FUTURE.md 里推荐的「记住第几张再重建」）：
+// 1. main.js 切学科只是把内容容器 innerHTML 换掉，WASM 会话对象在 JS 堆里，不受 DOM 重建影响；
+// 2. initReviewApp 每次进来都会重新绑定所有监听，渲染函数又都是**调用时按 id 取元素**，
+//    所以「元素引用失效」在这里不成立；
+// 3. 反过来「第 N 张」在单一循环池里**不是稳定身份** —— 每评一张就按新到期时间插回池子、
+//    桶序随之变化，重建会话再快进到第 N 张会指到别的卡上。
+//
+// 过场：起始页根本没有出现，所以只播复习界面那一段淡入下浮（startIn，START_IN_MS）。
+function resumeReview() {
+    state.resumePending = false;
+
+    // 沉浸偏好照旧生效（unmount 只是摘掉了 body 上的类，没改用户偏好）
+    applyImmersive(isImmersiveOn());
+    hide('studyStart');
+    show('reviewApp');
+
+    // 切回来不自动朗读：用户可能只是回来接着看，不需要再念一遍
+    var wasRevealed = state.revealed;
+    state.holdAutoSpeak = true;
+    renderCard();
+    state.holdAutoSpeak = false;
+
+    // 切走前已经揭晓的，保持揭晓（但不重播揭晓节拍）
+    if (wasRevealed) restoreRevealed();
+
+    var app = document.getElementById('reviewApp');
+    if (!app || prefersReducedMotion()) return;
+    app.classList.add('is-entering');
+    clearTimeout(startDoneTimer);
+    startDoneTimer = setTimeout(function() {
+        startDoneTimer = null;
+        app.classList.remove('is-entering');
+    }, START_IN_MS);
+}
+
+// 恢复「已揭晓」的样子：答案与评分按钮直接显示。
+// ⚠️ 不能直接调 revealAnswer()：那会再播一遍整段揭晓动效（用户切回来不该重看一遍）。
+function restoreRevealed() {
+    if (!state.session || !state.card) return;
+    state.revealed = true;
+    show('reviewAnswer');
+    hide('reviewReveal');
+    show('reviewButtons');
+    setStatus('已学 ' + state.session.done() + ' 张 · ' + sourceLabelOf(state.card.source) + ' · 请根据回忆情况评分');
+}
+
 // 离开英语页时的清理。由 main.js 在切换到其他学科之前调用。
 // 为什么必须显式清理：沉浸模式把 is-immersive 类挂在了 document.body 上，
 // 内容容器被换成别的学科后这个类不会自己消失，导航栏会跟着一起不见。
@@ -372,22 +435,32 @@ export function unmount() {
     if (appEl) appEl.classList.remove('is-entering');
     setPreparing(false);
 
-    releaseSession();
-    state.card = null;
-    state.revealed = false;
-    state.stats = null;
-    state.pendingSubmit = null;
-    state.refilling = false;
-    state.planInfo = null;
-    state.dailyTarget = 0;
-    state.dailyBaseline = 0;
-    state.dailyRatedSinceBaseline = 0;
-    state.planPhase = '';
-    state.rounds = null;
-    state.queueOffset = 0;
-    state.queueTotal = 0;
-    // 回到起始页待命：下次进英语页要重新点「开始复习单词」，不会直接续上这次的复习
-    state.started = false;
+    // 复习进行到一半就切走：**保留会话与界面状态**，切回来直接续上（见 resumeReview）。
+    // 代价：用户不回来时这个 WASM 会话会一直挂着 —— 只有一个，几百 KB，
+    // modules/english/FUTURE.md 里评估过可以接受（比「每次回来都要重建、还会丢进度」划算）。
+    // ⚠️ `state.card` 不能省：会话已建、卡还没渲染出来时切走，续上会是一片空白。
+    var resumable = !!(state.started && state.session && state.card);
+    state.resumePending = resumable;
+
+    if (!resumable) {
+        releaseSession();
+        state.card = null;
+        state.revealed = false;
+        state.stats = null;
+        state.pendingSubmit = null;
+        state.refilling = false;
+        state.planInfo = null;
+        state.dailyTarget = 0;
+        state.dailyBaseline = 0;
+        state.dailyRatedSinceBaseline = 0;
+        state.planPhase = '';
+        state.rounds = null;
+        state.queueOffset = 0;
+        state.queueTotal = 0;
+        // 回到起始页待命：下次进英语页要重新点「开始复习单词」
+        state.started = false;
+    }
+
     state.holdAutoSpeak = false;
     if (window.speechSynthesis) {
         try {

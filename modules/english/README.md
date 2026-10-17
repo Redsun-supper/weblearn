@@ -10,7 +10,6 @@ modules/english/
 ├── engine/            Rust/WASM 引擎（队列编排 + FSRS 调度 + 随机化 + 词表解析 + 卡片文本）
 ├── admin/             词条管理后台模块（由 admin/ 的通用后台按需加载）
 │   └── english-admin.js
-├── FUTURE.md          后续考量（用户提过、这版刻意没做的设计）
 └── README.md          本文件
 ```
 
@@ -57,6 +56,11 @@ function initSubjectModule(pageName) {
 本模块额外导出了 `unmount()`，原因是**沉浸模式把 `is-immersive` 类挂在了 `document.body` 上**，
 内容容器换成别的学科后这个类不会自己消失，导航栏会跟着一起不见。切页时由 `main.js` 统一调用，
 清理职责留在模块内部（`main.js` 不需要知道任何英语相关的细节）。
+
+⚠️ 但 `unmount()` **不再无条件释放会话**（2026-10 起）：复习进行到一半时它保留
+`state.session` 与当前卡，切回来直接续上（见 [`../../docs/english-ui.md`](../../docs/english-ui.md)
+的「切学科再切回来」）。只有「还没开始复习 / 卡还没渲染出来」时才 `free()` ——
+前者没有会话可留，后者续上会是一片空白。
 
 ## 起始页：为什么进英语页不是直接开始复习
 
