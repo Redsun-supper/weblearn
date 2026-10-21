@@ -62,6 +62,8 @@ func SetupRouter(db *gorm.DB, cfg *config.Config) *gin.Engine {
 			reviews.GET("/probes", rv.ProbeCandidates) // 每日抽查候选（到期最远的）
 			reviews.POST("/submit", rv.SubmitReview)
 			reviews.GET("/stats", rv.ReviewStats)
+			// 个人中心的「学习统计」面板：按天聚合当前用户的复习历史（北京自然日、缺日补 0）
+			reviews.GET("/history", rv.ReviewHistory)
 		}
 		// 词条里已使用的词书 / 单元列表（后台筛选下拉用）
 		api.GET("/word-options", rv.WordOptions)

@@ -443,9 +443,12 @@
     // ===================== 侧栏导航与路由 =====================
 
     // 加一个页面 = 这里加一项 + HTML 里加一个同 id 的 .acc-panel（顺序即侧栏顺序）
+    // module → 走动态 import 的面板（契约见 docs/launch-plan.md §5.0）；
+    //          没有 module 的条目内容是 HTML 里写死的，mountPanel 只会把上一个卸掉。
     var NAV_GROUPS = [
         { id: 'profile', name: '账号信息' },
         { id: 'devices', name: '登录过得设备' },
+        { id: 'study', name: '学习统计', module: '../admin/panels/study.js' },
         { id: 'actions', name: '可用操作' }
     ];
 

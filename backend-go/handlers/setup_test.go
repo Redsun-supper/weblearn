@@ -146,6 +146,7 @@ func newTestRouter(t *testing.T, db *gorm.DB) *gin.Engine {
 		reviews.GET("/probes", rv.ProbeCandidates)
 		reviews.POST("/submit", rv.SubmitReview)
 		reviews.GET("/stats", rv.ReviewStats)
+		reviews.GET("/history", rv.ReviewHistory)
 	}
 	api.GET("/word-options", rv.WordOptions)
 

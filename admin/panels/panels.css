@@ -509,6 +509,113 @@
     align-items: start;
 }
 
+/* ---------- 学习热力图（学习统计面板） ----------
+ * 一格 = 一个北京自然日，七行一列（周一到周日），列从左到右是一周一周往前走。
+ * 颜色分四档，全部是静态填充 —— 不掺任何 transition / animation（项目红线）。
+ * 月份行走在每周列头顶：只有「这一列的第一天跨进了新月份」才显示。 */
+
+.pn-hm-scroll {
+    margin-top: 10px;
+    overflow-x: auto;
+    padding-bottom: 4px;
+}
+
+.pn-hm {
+    display: flex;
+    gap: 4px;
+    min-width: max-content;
+}
+
+/* 左侧星期几的标签：padding-top 用来对齐上方的月份行（14px 行高 + 3px 间距） */
+.pn-hm-days {
+    display: grid;
+    grid-template-rows: repeat(7, 13px);
+    gap: 3px;
+    padding-top: 17px;
+    font-size: 11px;
+    line-height: 13px;
+    color: var(--pn-ink-3);
+}
+
+.pn-hm-week {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+
+.pn-hm-month {
+    height: 14px;
+    font-size: 11px;
+    line-height: 14px;
+    color: var(--pn-ink-3);
+    white-space: nowrap;
+}
+
+.pn-hm-cells {
+    display: grid;
+    grid-template-rows: repeat(7, 13px);
+    gap: 3px;
+}
+
+.pn-hm-cell {
+    width: 13px;
+    height: 13px;
+    border-radius: 3px;
+    background-color: var(--pn-line-2);
+}
+
+.pn-hm-cell.is-lv1 {
+    background-color: #bbdefb;
+}
+
+.pn-hm-cell.is-lv2 {
+    background-color: #64b5f6;
+}
+
+.pn-hm-cell.is-lv3 {
+    background-color: #1e88e5;
+}
+
+.pn-hm-cell.is-lv4 {
+    background-color: #1565c0;
+}
+
+/* 窗口第一周前面的空位：不可见，只负责把日子推到正确的星期几行上 */
+.pn-hm-cell.is-off {
+    background-color: transparent;
+}
+
+.pn-hm-legend {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    margin-top: 10px;
+    font-size: 12px;
+    color: var(--pn-ink-3);
+}
+
+.pn-hm-legend .pn-hm-cell {
+    flex: none;
+}
+
+/* ---------- 评分分布（学习统计面板）：横条 + 语义色 ---------- */
+
+.pn-bar-fill.is-again {
+    background-color: #ef9a9a;
+}
+
+.pn-bar-fill.is-hard {
+    background-color: #ffcc80;
+}
+
+.pn-bar-fill.is-good {
+    background-color: #64b5f6;
+}
+
+.pn-bar-fill.is-easy {
+    background-color: #81c784;
+}
+
 @media (max-width: 640px) {
     .pn-toolbar {
         flex-direction: column;

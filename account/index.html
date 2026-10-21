@@ -214,6 +214,11 @@
                     </div>
                 </section>
 
+                <!-- ===================== 学习统计（人人可见，动态 import） =====================
+                     内容是 admin/panels/study.js 挂载出来的（与下面四个管理面板同一套契约），
+                     这里只留容器。它挂的是 /api/reviews/*（本人数据），不按角色放行。 -->
+                <section class="acc-panel" id="panelStudy" hidden></section>
+
                 <!-- ===================== 可用操作 ===================== -->
                 <section class="acc-panel" id="panelActions" hidden>
                     <div class="acc-card" data-enter>

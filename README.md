@@ -348,6 +348,7 @@ account/               ✅ 管理面板的宿主：个人中心侧栏多出「�
 | GET | `/api/reviews/probes` | ⚠️ 降级为**池尾诊断**：到期最远的已学词，不参与编排 | 🔧 诊断 |
 | POST | `/api/reviews/submit` | 提交复习结果（持久化 FSRS 状态）；请求体可带 `is_daily`（置顶抽样标记），响应含截断后的 `interval_days` 与 `capped` | ✅ 可用 |
 | GET | `/api/reviews/stats` | 复习统计（`pool_size` / `pool_due` / `daily_target` / `daily_done` / `leech_count` + 兼容字段 `total_words` / `new_words` / `due_cards`） | ✅ 可用 |
+| GET | `/api/reviews/history?days=84` | 个人学习统计：按北京自然日聚合的复习明细（`points[].{date,words,reviews,again,hard,good,easy}`，升序、缺日补 0；`days` 默认 84，上限 365） | ✅ 可用 |
 | GET | `/api/admin/stats/overview` | 管理看板总览：今日 5 个 + 累计 8 个 + 账号库可用性（**要管理员**） | ✅ 可用 |
 | GET | `/api/admin/stats/trend?days=7\|30` | 按北京自然日的趋势（升序、缺日补 0） | ✅ 可用 |
 | GET | `/api/admin/users/progress?ids=1,2,3` | 批量复习进度摘要（≤100 个 id，缺席的补 0） | ✅ 可用 |
@@ -992,6 +993,8 @@ AUTH_ADMIN_PASSWORD='管理员密码' \
 - [x] 沉浸模式（默认隐藏站点导航栏，全屏复习；`Esc` 或顶栏开关切换，切学科自动收回）
 - [x] 会话续上：切到别的学科再切回英语，**直接接上刚才那张卡**（同一张卡、已揭晓状态保持；
       刷新仍回起始页，2026-10-17）
+- [x] 学习统计（个人中心「学习统计」面板，人人可见）：12 周热力图 + 关键数字 + 评分分布；
+      数据来自新增的 `GET /api/reviews/history?days=`（按北京自然日聚合、缺失日期补 0）（2026-10-17）
 - [x] 一词多义：复习界面一个词性一块（历史数据按词性标签自动分块，后台可逐条结构化录入）
 - [x] 例句中文翻译（词条级 `example_translation` + 释义级 `senses[].translation`，后台可编辑、批量导入第 5 列可带）
 - [x] 复习统计面板（今日进度、连续天数、记忆保持率、本轮进度条）

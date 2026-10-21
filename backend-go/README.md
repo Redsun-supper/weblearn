@@ -99,6 +99,7 @@ go build -o server main.go
 | GET | /api/reviews/probes | **需登录** | 池尾诊断：已学词按 `due_at` **倒序**（只读，不参与编排） |
 | POST | /api/reviews/submit | **需登录** | 提交复习结果（FSRS 状态持久化） |
 | GET | /api/reviews/stats | **需登录** | 复习统计 |
+| GET | /api/reviews/history?days=84 | **需登录** | 个人学习统计：按**北京自然日**聚合的复习明细（`points[].{date,words,reviews,again,hard,good,easy}`，升序、缺日补 0；`days` 默认 84、上限 365）。与管理看板的 `/api/admin/stats/trend` 是两回事：那个是全站口径 |
 | GET | /api/admin/stats/overview | **管理员** | 管理看板总览：今日 5 个 + 累计 8 个 + 账号库可用性（P1） |
 | GET | /api/admin/stats/trend?days=7\|30 | **管理员** | 按**北京自然日**的趋势点（升序、长度恰为 days、缺日补 0） |
 | GET | /api/admin/users/progress?ids=1,2,3 | **管理员** | 批量复习进度摘要（≤100 个 id；缺席的 id 也回一行、数字全 0） |
