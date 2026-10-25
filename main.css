@@ -323,6 +323,28 @@ html.is-returning body > *:not(.avatar-zoom) {
     visibility: hidden;
 }
 
+/* ===================== 法律声明浮层（iframe） ======================
+ * 2026-10 用户要求转场「直接覆盖在原有画面上」：点站名进来的不是整页跳走，而是这个
+ * 浮层 —— 原页面原样垫在下面，法律页（iframe 里）的背衬淡入盖住它、两栏滑入
+ * （动画在 legal.css）。src 在 index.html 里就带上且不带参数：页面加载时它已经
+ * 以 visibility:hidden 渲染好，点入口立刻能播，不用等网络。
+ * ⚠️ z-index 要高于头像扩散遮罩（9000）：浮层盖住整站。
+ * ⚠️ 打开时 main.js 会把 .rectangle / .content-container 设为 inert —— 键盘焦点
+ *    不再落到垫在下面的内容上；关掉时摘掉。 */
+.legal-frame {
+    position: fixed;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    border: 0;
+    z-index: 9500;
+    visibility: hidden;
+}
+
+.legal-frame.is-open {
+    visibility: visible;
+}
+
 /* 无障碍：系统开启「减少动态效果」时不做任何过场（main.js 也会直接跳转，
    这里是第二道保险，防止样式表单独被复用） */
 @media (prefers-reduced-motion: reduce) {

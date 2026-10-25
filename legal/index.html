@@ -17,17 +17,27 @@
     <title>法律声明 · 广学</title>
     <link rel="stylesheet" href="legal.css">
     <!-- 从两个入口过来时（站名带 ?from=logo、个人中心「关于作者」带 ?from=about）：
-         加 is-staging 让两段式入场从第一帧就起播 —— 声明侧栏停在屏幕右缘外、左栏藏在
-         透明度 0，然后声明滑入、滑到 3/4 时左栏弹出（动画在 legal.css 的「入场 / 退场」
-         一节）。这段必须内联在 head 里：外链的 legal.js 在 body 末尾，来不及摆第一帧，
-         会先闪一下「声明已经在位上」的完整页面再倒回重播。 -->
+         加 is-staging 让两段式入场从第一帧就起播 —— 声明侧栏与左栏都停在屏幕右缘外，
+         然后声明从右往左滑入、滑到 3/4 时左栏从声明下面同样从右往左滑出（动画在
+         legal.css 的「入场 / 退场」一节）。这段必须内联在 head 里：外链的 legal.js
+         在 body 末尾，来不及摆第一帧，会先闪一下「声明已经在位上」的完整页面再倒回重播。
+         is-overlay：被两个入口以 iframe 浮层打开时加上（window.self !== window.top）——
+         浮层模式下背衬默认透明、靠 backdropIn 淡入，原页面垫在下面看得见。 -->
     <script>
-        if (/[?&]from=(logo|about)(&|=|$)/.test(location.search)) {
-            document.documentElement.className += ' is-staging';
-        }
+        (function () {
+            var cls = '';
+            if (window.self !== window.top) cls += ' is-overlay';
+            if (/[?&]from=(logo|about)(&|=|$)/.test(location.search)) cls += ' is-staging';
+            if (cls) document.documentElement.className += cls;
+        })();
     </script>
 </head>
 <body>
+    <!-- 背衬：页面底色单独拿到这一层来。为什么从 body 上挪出来：浮层模式下背衬要能
+         淡入淡出（把原页面慢慢盖住 / 慢慢放出来），而 background-image 的透明度没法
+         过渡，必须有个元素来承载。视觉与早先写在 body 上逐字一致（终点透明，靠背后的
+         白底透出来）。aria-hidden：纯装饰，读屏跳过。 -->
+    <div class="legal-backdrop" aria-hidden="true"></div>
     <div class="legal-layout">
         <!-- 左半屏：照片底板 + 链接区（2026-10 用户的三轮要求：「左边画一个圆角矩形加右下阴影，
              未来我要放照片」→「是圆角方形，放在我标记的大概位置」→「增设点击事件和动画，点击发生时

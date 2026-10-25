@@ -76,8 +76,9 @@
 | 160 / 240ms（计划小字切换） | `english.js` 的 `PLAN_SWAP_OUT_MS`、`english.css` 的 `planOut` / `planIn` |
 | 150 / 240ms | `english.js` 的 `TRANSITION_MS`、`english.css` 的 `studyOut`/`studyIn` |
 | 400 / 40 / 470ms（个人中心门禁换场） | `account.js` 的 `TIMING.screenFade` / `gateDelay` / `cardIn`、`account.css` 的 `accCheckOut` 与 `.acc-gate-box.is-arriving` 的 `accCardIn`（**三个数必须成组改**：`screenFade` 要明显大于 `gateDelay`，否则检测屏淡完白卡还没起手，中间会空一拍 = 「生硬弹出」） |
-| 340 / 255ms（法律页入场两段） | `legal.css` 的 `statementIn` / `restPopIn`（255ms 延时 = 340×0.75 的接力点）、`legal.js` 的 `ENTER_TOTAL_MS`（520 = 255+260 余量） |
-| 280 / 210 / 180ms（法律页退场两段） | `legal.css` 的 `statementOut` / `restPopOut`（210ms 延时 = 280×0.75）、`legal.js` 的 `EXIT_TOTAL_MS`（400 = 210+180 余量） |
+| 340 / 255 / 400ms（法律页入场两段） | `legal.css` 的 `slideInFromRight`（声明 340ms；左栏延时 255ms = 340×0.75、时长 400ms）、`legal.js` 的 `ENTER_TOTAL_MS`（660 = 255+400 余量） |
+| 280 / 210 / 300ms（法律页退场两段） | `legal.css` 的 `slideOutToRight`（声明 280ms；左栏延时 210ms = 280×0.75、时长 300ms）、`legal.js` 的 `EXIT_TOTAL_MS`（520 = 210+300 余量） |
+| 560ms 入 / 210+300ms 出（浮层背衬淡隐） | `legal.css` 的 `backdropIn` / `backdropOut`（退场 210ms 延时与左栏收回同一接力点） |
 
 改一处忘另一处就会出现「过渡没跑完就换页」「两层动画错位」这类微妙问题（已经踩过一次）。
 

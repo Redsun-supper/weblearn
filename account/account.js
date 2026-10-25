@@ -1206,6 +1206,74 @@
         var brand = document.querySelector('.acc-brand');
         if (brand) brand.addEventListener('click', leaveToHome);
 
+        // ===================== 「关于作者」→ 法律声明浮层 =====================
+        // 2026-10 用户要求转场「直接覆盖在原有画面上」：与首页站名同一套（main.js 的
+        // 同名段落有完整说明）—— 法律页以 iframe 浮层滑进来盖住当前页，原页面垫在
+        // 下面；浮层里点「← 返回个人中心」→ 播退场 → legal.js 调 __closeLegalOverlay
+        // 关掉浮层，本页露出来。点「← 返回首页」则关掉浮层后跳去 ../index.html。
+        // ⚠️ href 保持 ../legal/index.html?from=about：浮层没就绪时放行原生跳转。
+        // ⚠️ 只拦普通左键：带修饰键 / 非左键一律放行。
+        var legalFrame = document.getElementById('legalFrame');
+        var legalFrameReady = false;
+        if (legalFrame) {
+            legalFrame.addEventListener('load', function () {
+                legalFrameReady = true;
+            });
+        }
+
+        function setHostInert(on) {
+            var hosts = [document.getElementById('accGate'), document.getElementById('accLayout')];
+            for (var i = 0; i < hosts.length; i++) {
+                if (!hosts[i]) continue;
+                if (on) hosts[i].setAttribute('inert', '');
+                else hosts[i].removeAttribute('inert');
+            }
+        }
+
+        function openLegalOverlay() {
+            if (!legalFrame || !legalFrameReady) return false;
+            var doc = legalFrame.contentDocument;
+            if (!doc || !doc.documentElement) return false;
+            // 复位上次退场留下的类（原因同 main.js：is-staging 摘掉再加重播入场）
+            doc.documentElement.classList.remove('is-staging', 'is-leaving');
+            setHostInert(true);
+            legalFrame.classList.add('is-open');
+            doc.documentElement.classList.add('is-staging');
+            try { legalFrame.focus(); } catch (e) { /* 老浏览器不抛也行 */ }
+            return true;
+        }
+
+        // 浮层里播完退场后由 legal.js 调用（同源）：关浮层、放回焦点，必要时跳转
+        window.__closeLegalOverlay = function (navigateTo) {
+            if (legalFrame) {
+                legalFrame.classList.remove('is-open');
+                var doc = legalFrame.contentDocument;
+                if (doc && doc.documentElement) {
+                    doc.documentElement.classList.remove('is-staging', 'is-leaving');
+                }
+            }
+            setHostInert(false);
+            if (navigateTo) {
+                window.location.href = navigateTo;
+            }
+        };
+
+        var aboutBtn = $('accAbout');
+        if (aboutBtn) {
+            aboutBtn.addEventListener('click', function (e) {
+                if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+                if (openLegalOverlay()) e.preventDefault();
+            });
+        }
+
+        // bfcache 整页恢复（从法律浮层跳去首页再按返回键回来）：浮层开着时一并关掉
+        window.addEventListener('pageshow', function (event) {
+            if (!event.persisted) return;
+            if (legalFrame && legalFrame.classList.contains('is-open')) {
+                window.__closeLegalOverlay(null);
+            }
+        });
+
         window.addEventListener('hashchange', route);
 
         var tabLogin = $('tabLogin');

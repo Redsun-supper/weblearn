@@ -23,7 +23,10 @@ cd backend-rust
 cargo test
 
 # 2) 起服务（默认 127.0.0.1:8081，首次启动自动建库、迁移、创建管理员）
-cargo run --release
+#    ⚠️ 必须带 --bin：本工作区有多个二进制（guangxue-auth / guangxue-monitor / invite /
+#    mail-test / seed-admin），不带 --bin 时 cargo 不知道跑哪个，会直接报错。
+#    2026-10-25 实测：裸 cargo run --release → "could not determine which binary to run"。
+cargo run --release --bin guangxue-auth
 
 # 3) 另开一个终端：端到端冒烟（24 项断言，含多端登录与重放检测）
 pwsh scripts/smoke.ps1

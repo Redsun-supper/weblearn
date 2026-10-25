@@ -228,6 +228,26 @@ body.acc-page {
     animation: none;
 }
 
+/* ===================== 法律声明浮层（iframe） ======================
+ * 与 main.css 里同名的 .legal-frame 是一套（两个页面各自独立，没有共享样式表）：
+ * 点顶栏「关于作者」进来的是这个浮层 —— 原页面（深蓝渐变）不动地垫在下面，
+ * 法律页的背衬淡入盖住它、两栏滑入（动画在 legal.css）。src 在 account/index.html
+ * 里就带上且不带参数，页面加载时已备好，点入口立刻能播。
+ * ⚠️ z-index 要高于门禁（200）与深色背衬：浮层盖住整页。 */
+.legal-frame {
+    position: fixed;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    border: 0;
+    z-index: 9500;
+    visibility: hidden;
+}
+
+.legal-frame.is-open {
+    visibility: visible;
+}
+
 /* 无障碍：系统开启「减少动态效果」时不播任何入场/退场动画，滑块也直接就位 */
 @media (prefers-reduced-motion: reduce) {
     .is-enter,

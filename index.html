@@ -70,6 +70,13 @@
     <!-- 全屏扩散遮罩：进入个人中心的过场。圆心与半径由 main.js 按头像实际位置
          实时算好、逐帧写成行内 clip-path（样式表里的值只是兜底） -->
     <div class="avatar-zoom" id="avatarZoom" aria-hidden="true"></div>
+    <!-- 法律声明浮层：点站名「大冬呱」时显示（main.js 的 openLegalOverlay）。
+         2026-10 用户要求转场「直接覆盖在原有画面上」—— 法律页以浮层滑进来盖住当前页，
+         原页面不动地垫在下面；src 不带参数，入场由 main.js 打开浮层时往里加 is-staging
+         触发，浮层里点返回则播退场后关掉浮层（原页面露出来）。
+         ⚠️ JS 挂着时站名走原生跳转（href 带 ?from=logo），这个浮层只是增强。 -->
+    <iframe class="legal-frame" id="legalFrame" src="legal/index.html"
+            title="法律声明与许可信息"></iframe>
     <!-- 内容容器：main.js 把导航项对应的学科页 HTML 注入这里（默认是英语页）。
          role="tabpanel" 与上面的 role="tab" 配对，读屏能建立「标签 → 面板」的关系；
          aria-labelledby 由 main.js 在切页时指向当前标签。 -->

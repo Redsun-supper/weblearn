@@ -538,6 +538,77 @@ document.addEventListener('DOMContentLoaded', function() {
         navAvatarEl.addEventListener('click', spreadOverlay);
     }
 
+    // ===================== 站名 → 法律声明浮层 =====================
+    // 2026-10 用户要求转场「直接覆盖在原有画面上」：法律页不再整页跳走，而是以 iframe
+    // 浮层滑进来 —— 原页面原样垫在下面，浮层里法律页的背衬淡入盖住它、声明侧栏从右
+    // 滑入、滑到 3/4 时左栏从它下面同向滑出（动画在 legal.css，与独立打开法律页时
+    // 同一套 keyframes）。浮层里点「← 返回首页」→ 播退场 → legal.js 调这里的
+    // __closeLegalOverlay 关掉浮层，原页面露出来，一步网络都没走。
+    //
+    // ⚠️ 站名的 href 保持 legal/index.html?from=logo：JS 挂了 / 浮层还没就绪时
+    //    openLegalOverlay 返回 false、不拦点击，链接按原生方式跳过去（NOTICE 附加
+    //    条款第 3 条：入口必须能直达法律页）。
+    // ⚠️ 只拦普通左键：带修饰键（Ctrl / Cmd / Shift / Alt，用户要新开标签页）、
+    //    非左键一律放行。
+    var legalFrame = document.getElementById('legalFrame');
+    var legalFrameReady = false;
+    if (legalFrame) {
+        // visibility:hidden 的 iframe 照常加载渲染：页面打开时它就备好了
+        legalFrame.addEventListener('load', function() {
+            legalFrameReady = true;
+        });
+    }
+
+    // 打开时把宿主内容设为 inert：键盘焦点不再落到垫在下面的导航与学科页上
+    function setHostInert(on) {
+        var hosts = [document.querySelector('.rectangle'), document.getElementById('contentContainer')];
+        for (var i = 0; i < hosts.length; i++) {
+            if (!hosts[i]) continue;
+            if (on) hosts[i].setAttribute('inert', '');
+            else hosts[i].removeAttribute('inert');
+        }
+    }
+
+    // 返回 false = 这次没开成（浮层没就绪），调用方放行原生跳转
+    function openLegalOverlay() {
+        if (!legalFrame || !legalFrameReady) return false;
+        var doc = legalFrame.contentDocument;
+        if (!doc || !doc.documentElement) return false;
+        // 复位上次退场留下的类：is-staging 摘掉再加重播入场；is-leaving 不摘会停在
+        // 退场终帧（声明滑走、左栏透明）—— 上次关闭时已清，这里双保险
+        doc.documentElement.classList.remove('is-staging', 'is-leaving');
+        setHostInert(true);
+        legalFrame.classList.add('is-open');
+        // 加 is-staging 触发两段式入场（与 legal/index.html 头里的内联脚本同一个类）
+        doc.documentElement.classList.add('is-staging');
+        try { legalFrame.focus(); } catch (e) { /* 老浏览器不抛也行 */ }
+        return true;
+    }
+
+    // 浮层里播完退场后由 legal.js 调用（同源，直接调）：关掉浮层、放回原页面焦点，
+    // 必要时再跳转 —— 「在首页开浮层却点了返回个人中心」，关掉浮层后父页面跳去 account/。
+    window.__closeLegalOverlay = function(navigateTo) {
+        if (legalFrame) {
+            legalFrame.classList.remove('is-open');
+            var doc = legalFrame.contentDocument;
+            if (doc && doc.documentElement) {
+                doc.documentElement.classList.remove('is-staging', 'is-leaving');
+            }
+        }
+        setHostInert(false);
+        if (navigateTo) {
+            window.location.href = navigateTo;
+        }
+    };
+
+    var navLogoEl = document.querySelector('.nav-logo');
+    if (navLogoEl) {
+        navLogoEl.addEventListener('click', function(e) {
+            if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+            if (openLegalOverlay()) e.preventDefault();
+        });
+    }
+
     // 带着 ?from=account 回来（= 刚从个人中心点返回）→ 播反向过场（倒放）。
     // 播不了（沉浸模式 / 减少动效 / 不支持 clip-path）时要把 is-returning 摘掉，
     // 否则首页会一直停在 index.html 里那段内联脚本设的「先别画内容」状态。
@@ -581,10 +652,14 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 
     // 从个人中心返回时浏览器可能直接用「前进后退缓存」（bfcache）恢复页面：
-    // 那时脚本不会重跑，展开的遮罩还停在原样 —— 恢复时复位，
-    // 并顺手重新问一次登录态（登录/退出后返回都可能变化）。
+    // 那时脚本不会重跑，展开的遮罩还停在原样 —— 恢复时复位，并顺手重新问一次登录态
+    // （登录/退出后返回都可能变化）。浮层开着时被恢复也一并关掉：恢复出来的页面
+    // 不该被一页已经播完入场动画的浮层盖着。
     window.addEventListener('pageshow', function(event) {
         if (!event.persisted) return;
+        if (legalFrame && legalFrame.classList.contains('is-open')) {
+            window.__closeLegalOverlay(null);
+        }
         resetAvatarOverlay();
         renderAvatarState();
     });

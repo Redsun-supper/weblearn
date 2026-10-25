@@ -40,6 +40,14 @@
 </head>
 <body class="acc-page">
 
+    <!-- 法律声明浮层：点顶栏「关于作者」时显示（account.js 的 openLegalOverlay）。
+         2026-10 用户要求转场「直接覆盖在原有画面上」—— 法律页以浮层滑进来盖住当前页，
+         原页面不动地垫在下面；src 不带参数，入场由 account.js 打开浮层时往里加
+         is-staging 触发，浮层里点返回则播退场后关掉浮层。
+         ⚠️ JS 挂着时「关于作者」走原生跳转（href 带 ?from=about），浮层只是增强。 -->
+    <iframe class="legal-frame" id="legalFrame" src="../legal/index.html"
+            title="法律声明与许可信息"></iframe>
+
     <!-- ===================== 登录门禁 ===================== -->
     <!-- 默认可见：没确认登录态之前不渲染侧栏与内容，避免「先看到界面再被踢出去」。
          门禁占满整屏（和后台的 .admin-gate 一样），所以登录态确认前后**没有布局位移** ——
