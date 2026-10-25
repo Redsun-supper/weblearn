@@ -172,8 +172,12 @@
                     <!-- 关于作者：跳到站点法律声明页 legal/index.html —— 作者署名、账号与仓库链接都在
                          那一页，它同时是 NOTICE 附加条款第 3 条要求的那个「显式入口」页。
                          2026-10 用户要求：个人中心顶栏右侧加这颗按钮，文字就叫「关于作者」。
-                         与首页左上角「大冬呱」指向同一页，这里只是换了个更好找的入口。 -->
-                    <a class="acc-btn acc-btn-sm" id="accAbout" href="../legal/index.html">关于作者</a>
+                         与首页左上角「大冬呱」指向同一页，这里只是换了个更好找的入口。
+                         href 带 ?from=about：法律页那头靠这个参数播出入场过场（声明侧栏从右
+                         滑入、滑到 3/4 时左栏弹出，见 legal.css 的「入场 / 退场」一节），
+                         播完自己抹掉参数。带参而不靠 JS 拦点击：链接保持原生行为
+                         （中击 / Ctrl+点击新开标签、无 JS 时照样到达），过场是法律页自己的事。 -->
+                    <a class="acc-btn acc-btn-sm" id="accAbout" href="../legal/index.html?from=about">关于作者</a>
                 </div>
             </header>
 

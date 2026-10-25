@@ -377,6 +377,10 @@ body.acc-page {
 .acc-layout {
     display: flex;
     height: 100vh;
+    /* 手机 / 笔记本浏览器的工具栏是动态收起的：100vh 永远按「工具栏收起」那一屏算，
+       工具栏一露出来，页面底部（也就是侧栏页脚）就被切掉。dvh 跟着实际可视区走，
+       老浏览器不认这一行就继续用上面那句 100vh，两种都能用。 */
+    height: 100dvh;
     overflow: hidden;
 }
 
@@ -426,6 +430,11 @@ body.acc-page {
     height: 64px;
     margin: 0 auto 12px;
     margin-left: calc(50% - 32px - 3px);
+    /* ⚠️ 不许被压扁：侧栏是竖向 flex，子项默认 flex-shrink:1，窗口一矮（13 英寸笔记本
+       常见 534px 高的可视区）、导航内容又顶不下时，最先被压的就是这颗头像 ——
+       实测 64px 高只剩 6px，变成头像位置一条白杠。导航已经改成自己滚（见 .acc-nav），
+       这颗头像必须保持 64×64，否则首页点头像过来的落点也对不上。 */
+    flex: 0 0 auto;
     border: 3px solid #ffffff;
     border-radius: 9px;
     background-color: #ffffff;
@@ -445,6 +454,8 @@ body.acc-page {
 .acc-brand {
     display: flex;
     flex-direction: column;
+    /* 与头像同理：窗口矮时不被压缩，品牌两行字维持原尺寸，多余的高度全交给导航去滚 */
+    flex: 0 0 auto;
     /* 居中（水平由 align-items、垂直由侧栏那 18px 内边距），左右 30px 内边距：
        品牌名、品牌副标两行就落在那颗头像的正下方。
        ⚠️ 2026-10 用户先要求「字缩到与头像左缘对齐」（当时是 30px），随后又要求整栏居中，
@@ -483,8 +494,57 @@ body.acc-page {
    那个「会话台数」小字，flex 下它作为第二项自然靠右（margin-left: auto），
    比原来的 float: right 更好控；右侧内边距留 20px 给小字。
    ⚠️ 这一列**不需要负外边距**去抵消侧栏内边距：侧栏「只留上下内边距、左右交给各区块」（见 .acc-sidebar）。 */
+
+/* 导航列：**侧栏里唯一会滚的地方**（页面里另一处滚动区是右侧 .acc-content）。
+   头像 / 品牌钉在上边、页脚钉在下边，中间这一列吃掉剩下的高度，条目多了自己滚 ——
+   13 英寸屏在 150%–175% 缩放下，浏览器可视区常常只有 450–530px 高，而超管侧栏
+   连头像 / 品牌 / 页脚算下来约 680px —— 以前多出来的部分直接从侧栏底下溢出去、
+   被 .acc-layout 的 overflow:hidden 一刀裁掉：
+   滚又滚不动、页脚的「返回主页面 / 退出登录」也永远够不到（2026-10 用户报的就是这个）。
+   ⚠️ min-height: 0 是配套的、少不得：flex 子项默认 min-height:auto 会把它撑到内容那么高，
+   那样它又长出侧栏去了，clientHeight 与 scrollHeight 永远相等、滚动条根本不会出现
+   （修复前实测 425 / 425，滚轮一点反应没有）。
+   ⚠️ 头尾那三块（.acc-sidebar-avatar / .acc-brand / .acc-sidebar-footer）配了 flex: 0 0 auto，
+   窗口再矮也不会被压扁 —— 否则 flex 会先拿它们开刀，头像被压成一条白杠。
+   ⚠️ 这是**第二个滚动容器**，与右侧内容区互不影响：不要图省事把 overflow 挪到
+   .acc-sidebar 或 .acc-layout 上（那会连头像和页脚一起滚，也会出现第二条滚动条）。 */
 .acc-nav {
     flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+}
+
+/* 细滚动条 + 半透明白：侧栏是深色半透明的，系统默认那条亮灰滚动条压上去很抢眼。
+   ⚠️ 这里**只写 ::-webkit-scrollbar**，别顺手加 scrollbar-width / scrollbar-color：
+   Chromium 一旦看到那两个标准属性，就会丢掉下面这套自定义样式、退回**带上下箭头的
+   经典滚动条**（实测在深色侧栏里像一道老式窗口边框，很突兀）。
+   Firefox 走下面那条 @supports，两边互不影响。 */
+.acc-nav::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+}
+
+.acc-nav::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.acc-nav::-webkit-scrollbar-thumb {
+    background-color: rgba(255, 255, 255, 0.22);
+    border-radius: 3px;
+}
+
+.acc-nav::-webkit-scrollbar-thumb:hover {
+    background-color: rgba(255, 255, 255, 0.34);
+}
+
+/* Firefox 不认 ::-webkit-scrollbar：退回标准属性，给它一条细的、同色的滚动条。
+   ⚠️ 用 @supports 隔开是必须的：在 Chromium 里这条为假，上面那套自定义样式才不会被
+   scrollbar-width / scrollbar-color 顶掉（顶掉就会变成带箭头的经典滚动条，见上）。 */
+@supports not selector(::-webkit-scrollbar) {
+    .acc-nav {
+        scrollbar-width: thin;
+        scrollbar-color: rgba(255, 255, 255, 0.28) transparent;
+    }
 }
 
 .acc-nav-item {
@@ -554,6 +614,9 @@ body.acc-page {
     align-items: center;
     gap: 8px;
     margin-top: auto;
+    /* 页脚也不许被压缩：它是「返回主页面 / 退出登录」的家，窗口再矮都得完整留在屏幕底部
+       （导航自己滚之后本来也轮不到它被压，这一行是明写意图，防止以后谁给侧栏加内容时又踩回去） */
+    flex: 0 0 auto;
     padding: 14px 30px 0;
     border-top: 1px solid rgba(255, 255, 255, 0.12);
 }

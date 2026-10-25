@@ -1,0 +1,32 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+<!-- Copyright (C) 2026  Redsun-supper (大冬呱 / HR_RedSun) -->
+<!-- 数学模块 · 学科页片段（初中 → 高中数学学科分支体系知识图谱） -->
+<!-- 由 main.js 通过 fetch 加载并注入 #contentContainer（未来接入时与 english 同路径）。 -->
+<!-- 逻辑在同目录的 math.js，样式由 math.js 依据 import.meta.url 自动注入 math.css。 -->
+<!-- 本阶段目标：三个文件在 modules/math/ 内独立打开即可工作，暂不接入主站学科切换。 -->
+<!-- 本地直接打开时没有 <head>，必须在开头声明编码，否则中文按 GBK 解码出现乱码 -->
+<meta charset="utf-8">
+<script>window.__MATH_STANDALONE = true;</script>
+<!-- 本地直接打开本文件时，这行 import 会触发 math.js 求值，由其末尾的 __MATH_STANDALONE
+     自检完成启动；经主站 fetch 注入时脚本不会执行，由 main.js 调用 initMathApp 启动。 -->
+<script type="module">import './math.js';</script>
+<!-- 应用外壳：内部全部内容由 math.js 渲染，这里只放容器， -->
+<!-- 好处是「主站注入」与「本地直接打开」两条加载路径看到的是同一套 DOM 结构。 -->
+<div class="math-app" id="mathApp">
+  <!-- 头部：标题 + 学段副题 + 分支统计 -->
+  <header class="math-hero">
+    <h1 class="math-hero-title">数学学科分支体系</h1>
+    <p class="math-hero-sub">初中 → 高中 · 三大领域与四大主题 · 依据国家课程标准整理</p>
+    <div class="math-hero-stats" id="mathHeroStats"></div>
+  </header>
+  <!-- 标签页：总览（框架图与衔接表）/ 初中 / 高中 -->
+  <nav class="math-tabs" id="mathTabs" role="tablist"></nav>
+  <!-- 工具栏：搜索 + 展开控制（仅树状视图显示） -->
+  <div class="math-toolbar" id="mathToolbar" hidden>
+    <input class="math-search" id="mathSearch" type="search" placeholder="搜索分支或概念，如：函数、导数、向量…" aria-label="搜索分支">
+    <button class="math-expand-btn" id="mathExpandBtn" type="button">全部收起</button>
+  </div>
+  <!-- 主体：左侧分支树 + 右侧分支详情 -->
+  <main class="math-body" id="mathBody"></main>
+  <footer class="math-foot">内容依据《义务教育数学课程标准（2022 年版）》与《普通高中数学课程标准（2017 年版 2020 年修订）》整理，仅供学习参考。</footer>
+</div>

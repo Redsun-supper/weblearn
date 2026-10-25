@@ -67,11 +67,32 @@
 - **加一个页面** = `account.js` 的 `NAV_GROUPS` 加一项（`{id, name}`）+ `index.html` 里加一个
   `id="panel" + 首字母大写`（如 `panelProfile`）的 `.acc-panel`，导航与路由会自动带上它。
   面板元素 id 由 `panelIdOf()` 统一推导，不要在别处硬编码拼字符串。
-- **主窗口固定、只有内容区滚**（2026-10 用户要求「主窗口固定内容滚动不影响主窗口」）：
-  `.acc-layout` 是 `height: 100vh; overflow: hidden` 的固定框架，`.acc-main` 与 `.acc-content`
-  配 `min-height: 0`，**唯一的滚动容器是 `.acc-content`**（`overflow-y: auto`）——
-  设备列表再长，侧栏与顶栏都钉在原地，整页不会跟着滚，也不会出现双滚动条。
-  ⚠️ 别把 `overflow` 挪到 `.acc-layout` / `body` 上，那正是要避免的「主窗口跟着滚」。
+  条目多了也不用管高度：导航列自己会滚（见下面「主窗口固定」一条）。
+- **主窗口固定，只有两块地方自己滚**（2026-10 用户要求「主窗口固定内容滚动不影响主窗口」）：
+  `.acc-layout` 是 `height: 100vh; overflow: hidden` 的固定框架（后面再补一行 `height: 100dvh`，
+  手机 / 笔记本的工具栏动态收起时就按实际可视区算，不会把底部切掉）；`.acc-main` 与
+  `.acc-content` 配 `min-height: 0`。滚动容器有两个、各管各的：
+  - `.acc-content`（右侧内容区，`overflow-y: auto`）：设备列表再长，侧栏与顶栏都钉在原地；
+  - `.acc-nav`（**左侧导航列**，`overflow-y: auto` + `min-height: 0`）：**2026-10 用户报
+    「13 英寸屏左边滑不动、够不到返回」后新增**。13 英寸屏在 150%–175% 缩放下，可视区
+    常常只有 450–530px 高，超管侧栏连头像 / 品牌 / 页脚算下来约 680px，放不下；以前内容
+    直接从侧栏底下溢出去、被 `.acc-layout` 的 `overflow: hidden` 一刀裁掉 —— 滚又滚不动，
+    「← 返回主页面 / 退出登录」永远在屏幕外。现在头像与品牌钉在上边、页脚钉在下边，
+    中间只有导航列滚，所以「返回」一直在手边。⚠️ 三个配套细节，少一个就回到老样子：
+    - `min-height: 0` 少不得：flex 子项默认 `min-height: auto` 会把导航列撑到内容那么高，
+      滚动条根本不会出现（修复前实测 clientHeight / scrollHeight 都是 **425**，滚轮无反应）；
+    - 头尾三块（`.acc-sidebar-avatar` / `.acc-brand` / `.acc-sidebar-footer`）都写了
+      `flex: 0 0 auto`：否则窗口一矮，flex 会先拿它们开刀（修复前实测头像 64px 高只剩 **6px**，
+      侧栏顶部变成一条白杠）；
+    - 导航滚动条**只写 `::-webkit-scrollbar`**（6px、半透明白）：Chromium 一旦看到
+      `scrollbar-width` / `scrollbar-color` 就会丢掉自定义样式、退回**带上下箭头的经典滚动条**；
+      Firefox 走下面那条 `@supports not selector(::-webkit-scrollbar)`。
+  ⚠️ 别把 `overflow` 挪到 `.acc-layout` / `body` 上，那正是要避免的「主窗口跟着滚」
+  （也会让头像和页脚一起滚、多出第二条滚动条）。
+- **导航多了会自动滚到选中项**：`account.js` 的 `setActiveNav()` 对选中项调
+  `scrollIntoView({block:'nearest', inline:'nearest'})` —— 深链接直接进 `#/audit` 这类靠下的
+  页面时把它滚进可视区；已经看得见就**一动不动**（所以点导航不会把刚滚到的位置顶走）。
+  别改成 `behavior: 'smooth'`：滚动动效属于要先与用户商量的范围（见 `CLAUDE.md` 第四节）。
 - 底色仍用**整页深色渐变**（不是后台的浅灰）：从首页头像扩散过来的那块遮罩就是这串渐变，
   改浅了接缝会立刻显出来。
 - **头像与首页那颗同尺寸同位**：侧栏里 `.acc-sidebar-avatar` 是 64×64、3px 白边、

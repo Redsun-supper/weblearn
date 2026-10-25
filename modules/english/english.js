@@ -47,8 +47,15 @@ var state = {
     // 切走学科时如果复习进行到一半，unmount() 会把会话留下来并置 true；
     // 下次 initReviewApp 看到它就跳过起始页、直接接上刚才那张卡（见 resumeReview）。
     // ⚠️ 它只活在同一次页面加载里：刷新后模块状态重置，自然回到起始页 ——
-    // 这正是「同一次会话内记住」的语义（见 modules/english/FUTURE.md）。
-    resumePending: false
+    // 这正是「同一次会话内记住」的语义。
+    resumePending: false,
+    // 服务端时间与本地时间的差值（毫秒），每次拿到 queue 响应就校准一次（见 applyServerClock）。
+    // 引擎用 now_ms 换算「距上次复习几天」，客户端时钟偏了会直接把 FSRS 的稳定度算歪；
+    // 「今天」早已统一到服务端（见 fetchDay 的注释），这里把同一个口径补齐。
+    clockOffsetMs: 0,
+    // 最近一次提交是否失败：状态行据此常驻一句「上一条评分未同步」，
+    // 直到下一次提交成功。不能只 setStatus 一次 —— 换卡过渡结束时会重写状态行。
+    submitError: false
 };
 
 // 自动朗读开关在 localStorage 中的键名
@@ -199,6 +206,8 @@ export function initReviewApp() {
 
     // 起始页：刻意**不套用沉浸偏好**，站点导航栏留在原处，用户能正常切学科 / 点头像。
     // 这里也**不写 localStorage** —— 用户的沉浸偏好留到 beginReview 时再生效，别被这一下改掉。
+    // 小字复位成默认文案：上次加载失败留下的「请检查网络」不该带到下一次进入。
+    setStartHint('准备好就开始今天的复习');
     applyImmersive(false);
     startBtn.addEventListener('click', beginReview);
 }
@@ -218,6 +227,9 @@ export function initReviewApp() {
 function beginReview() {
     if (state.started) return;
     state.started = true;
+
+    // 上一次加载失败留下的提示要抹掉，否则重试成功后起始页还挂着「请检查网络」
+    setStartHint('准备好就开始今天的复习');
 
     // 记下这一路的「世代」：切走学科后 pageEpoch 会变，回调就对不上号了（见 pageEpoch 的注释）
     var epoch = pageEpoch;
@@ -254,6 +266,7 @@ function beginReview() {
         // 在池子响应里下发，建会话时要透传给引擎（见 parseQueueMeta / buildPlanOptions）。
         // 早先这里是「先建会话、后解析元信息」，于是引擎只能拿到前端写死的 0.9。
         var meta = parseQueueMeta(results[0]);
+        applyServerClock(meta.serverNow);
         state.queueOffset = meta.count;
         state.queueTotal = meta.total;
         state.dailyTarget = meta.dailyTarget;
@@ -283,11 +296,19 @@ function beginReview() {
         enterReview();
     }).catch(function(err) {
         if (epoch !== pageEpoch) return; // 用户已经切走了：别在别人家的页面上报错
-        setStatus('');
-        showMessage('复习功能加载失败', String(err) + '（需通过服务器访问，并确认已生成 WASM 引擎）');
         console.error('复习功能初始化失败:', err);
-        // 失败也要把用户送进复习界面：卡在起始页的「准备中」上没有任何出路
-        enterReview();
+
+        // 失败不能把用户锁死在错误页：清掉半成品状态、退回起始页，把按钮改成「重新加载」。
+        // ⚠️ 这里曾经是「显示错误文案 + enterReview()」：起始页被藏掉、state.started 又是 true，
+        // 再点开始按钮没有任何反应，用户只能刷新页面（2026-10 实测）。重试的前提是把
+        // started 复位并把起始页放回来，否则第二次点击会被开头的守卫直接挡掉。
+        clearReviewState();
+        setPreparing(false);
+        hide('reviewApp');
+        show('studyStart');
+        setStartHint('复习功能加载失败，请检查网络后重试');
+        var retryBtn = document.getElementById('studyStartBtn');
+        if (retryBtn) retryBtn.textContent = '重新加载';
     });
 }
 
@@ -297,6 +318,12 @@ function setPreparing(on) {
     if (!btn) return;
     btn.disabled = on;
     btn.textContent = on ? '正在准备…' : '开始复习单词';
+}
+
+// 起始页那行浅灰小字：默认文案 / 加载失败提示都走这里
+function setStartHint(text) {
+    var hint = document.querySelector('#studyStart .study-start-hint');
+    if (hint) hint.textContent = text;
 }
 
 // 起始页 → 复习界面的过场。
@@ -359,7 +386,7 @@ function finishEnter() {
 
 // 从别的学科切回来：会话还在，直接接上刚才那张卡（只在同一次页面加载内有效）。
 //
-// 为什么这条路走得通（而不是 FUTURE.md 里推荐的「记住第几张再重建」）：
+// 为什么这条路走得通（而不是原方案里推荐的「记住第几张再重建」）：
 // 1. main.js 切学科只是把内容容器 innerHTML 换掉，WASM 会话对象在 JS 堆里，不受 DOM 重建影响；
 // 2. initReviewApp 每次进来都会重新绑定所有监听，渲染函数又都是**调用时按 id 取元素**，
 //    所以「元素引用失效」在这里不成立；
@@ -402,7 +429,31 @@ function restoreRevealed() {
     show('reviewAnswer');
     hide('reviewReveal');
     show('reviewButtons');
-    setStatus('已学 ' + state.session.done() + ' 张 · ' + sourceLabelOf(state.card.source) + ' · 请根据回忆情况评分');
+    refreshCardStatus();
+}
+
+// 把「这一次复习」的所有状态清干净：会话释放、界面状态归零、回到起始页待命。
+// 两处用到：① 离开英语页且没有可续的会话；② beginReview 失败要退回起始页重试。
+// ⚠️ 不要在这里碰 DOM 与动画类：调用方各自负责（unmount 清动画类，失败路径换屏）。
+function clearReviewState() {
+    releaseSession();
+    state.card = null;
+    state.revealed = false;
+    state.stats = null;
+    state.pendingSubmit = null;
+    state.refilling = false;
+    state.planInfo = null;
+    state.dailyTarget = 0;
+    state.dailyBaseline = 0;
+    state.dailyRatedSinceBaseline = 0;
+    state.planPhase = '';
+    state.rounds = null;
+    state.queueOffset = 0;
+    state.queueTotal = 0;
+    state.started = false;
+    state.resumePending = false;
+    state.holdAutoSpeak = false;
+    state.submitError = false;
 }
 
 // 离开英语页时的清理。由 main.js 在切换到其他学科之前调用。
@@ -437,29 +488,12 @@ export function unmount() {
 
     // 复习进行到一半就切走：**保留会话与界面状态**，切回来直接续上（见 resumeReview）。
     // 代价：用户不回来时这个 WASM 会话会一直挂着 —— 只有一个，几百 KB，
-    // modules/english/FUTURE.md 里评估过可以接受（比「每次回来都要重建、还会丢进度」划算）。
+    // 比「每次回来都要重建、还会丢进度」划算。
     // ⚠️ `state.card` 不能省：会话已建、卡还没渲染出来时切走，续上会是一片空白。
     var resumable = !!(state.started && state.session && state.card);
     state.resumePending = resumable;
 
-    if (!resumable) {
-        releaseSession();
-        state.card = null;
-        state.revealed = false;
-        state.stats = null;
-        state.pendingSubmit = null;
-        state.refilling = false;
-        state.planInfo = null;
-        state.dailyTarget = 0;
-        state.dailyBaseline = 0;
-        state.dailyRatedSinceBaseline = 0;
-        state.planPhase = '';
-        state.rounds = null;
-        state.queueOffset = 0;
-        state.queueTotal = 0;
-        // 回到起始页待命：下次进英语页要重新点「开始复习单词」
-        state.started = false;
-    }
+    if (!resumable) clearReviewState();
 
     state.holdAutoSpeak = false;
     if (window.speechSynthesis) {
@@ -533,11 +567,29 @@ function parseQueueMeta(queueText) {
             total: data.total || items.length,
             dailyTarget: data.daily || 0,
             dailyInPage: dailyInPage,
-            desiredRetention: typeof data.desired_retention === 'number' ? data.desired_retention : 0.9
+            desiredRetention: typeof data.desired_retention === 'number' ? data.desired_retention : 0.9,
+            // 服务端的「此刻」（queue 响应里的 now）；缺失或非法时按 0 处理，调用方会忽略
+            serverNow: (typeof data.now === 'number' && isFinite(data.now) && data.now > 0) ? data.now : 0
         };
     } catch (e) {
-        return { count: 0, total: 0, dailyTarget: 0, dailyInPage: 0, desiredRetention: 0.9 };
+        return { count: 0, total: 0, dailyTarget: 0, dailyInPage: 0, desiredRetention: 0.9, serverNow: 0 };
     }
+}
+
+// 用服务端时间校准本地时钟：只记偏移量，不冻结时间 —— 两次响应之间仍随本地时钟走。
+//
+// 为什么必须校准：引擎的 `now_ms` 决定 `days_elapsed`（距上次复习几天），
+// 而 FSRS 的稳定度增长对这个天数非常敏感。客户端时钟快两天，一张昨天刚复习过的卡
+// 会被当成「两天前」算，稳定度被抬高；慢两天则相反。服务端在 queue 响应里已经带了
+// `now`，此前被 parseQueueMeta 丢掉了。
+function applyServerClock(serverNow) {
+    if (typeof serverNow !== 'number' || !isFinite(serverNow) || serverNow <= 0) return;
+    state.clockOffsetMs = serverNow - Date.now();
+}
+
+// 校准后的「现在」。引擎调用（建会话 / 渲染元信息 / 评分）一律走这里，不要直接用 Date.now()。
+function nowMs() {
+    return Date.now() + state.clockOffsetMs;
 }
 
 // 今天的置顶卡评分了几张（本会话内）。
@@ -591,7 +643,7 @@ function buildPlanOptions() {
         new_limit: 0,
         probe_limit: 0,
         probed_ids: [],
-        now_ms: Date.now(),
+        now_ms: nowMs(),
         // 期望记忆保持率：服务端按 GX_DESIRED_RETENTION 下发（缺省 0.9，见 parseQueueMeta）。
         // 引擎据此算 FSRS 间隔；缺失或非法值（不在 (0,1)）由引擎回落到 0.9。
         desired_retention: state.desiredRetention
@@ -627,12 +679,21 @@ function resolveEngineVersion() {
     return engineVersionPromise;
 }
 
+// 引擎加载失败后的重试序号。
+// ⚠️ 浏览器会把「动态 import 失败」的结果缓存在模块映射里：同一个 URL 第二次 import
+// 会直接 reject，连网络请求都不发（实测：把 wasm 请求恢复后点「重新加载」仍然失败）。
+// 所以重试时给两个 URL 都加一个递增的 r 参数，绕开这份失败缓存。
+// 正常首次加载恒为 1，不影响跨页面加载的缓存。
+var engineLoadAttempt = 0;
+
 // 动态加载 WASM 引擎模块（浏览器原生 import()）。三个关键点：
 // 1. 相对路径必须写成 './xxx'：'engine/pkg/...' 会被当作 bare specifier（npm 包名）而解析失败；
 // 2. wasm-bindgen 的 --target web 产物必须先 await 默认导出（__wbg_init）完成实例化，
 //    否则模块内部变量 wasm 仍是 undefined，调用任何导出函数都会抛 TypeError；
 // 3. 两个文件都要带版本号 —— 它们是分开缓存的，只给一个加等于没加。
 function loadEngine() {
+    engineLoadAttempt += 1;
+    var retryTag = '&r=' + engineLoadAttempt;
     // ⚠️ 下面这段的第二个坑：wasm 的 URL 必须用 `import.meta.url` 拼成**绝对**地址。
     // 写成相对路径 `'./engine/pkg/…'` 会被解析到**文档**的地址上（英语页是 SPA 注入的，
     // 文档地址是站点根 `/index.html`），实测报 `404 /engine/pkg/guangxue_wasm_bg.wasm`，
@@ -642,8 +703,8 @@ function loadEngine() {
     // `new URL('guangxue_wasm_bg.wasm', import.meta.url)` 去取 —— 那串 URL **不带**查询串，
     // 于是 JS 更新了、wasm 还在吃旧缓存。
     return resolveEngineVersion().then(function(version) {
-        var wasmUrl = new URL('./engine/pkg/guangxue_wasm_bg.wasm?v=' + version, import.meta.url).href;
-        return import('./engine/pkg/guangxue_wasm.js?v=' + version).then(function(mod) {
+        var wasmUrl = new URL('./engine/pkg/guangxue_wasm_bg.wasm?v=' + version + retryTag, import.meta.url).href;
+        return import('./engine/pkg/guangxue_wasm.js?v=' + version + retryTag).then(function(mod) {
             return mod.default({ module_or_path: wasmUrl }).then(function() {
                 return mod;
             });
@@ -761,7 +822,7 @@ function renderCardNow() {
     }
 
     // 一次取回当前卡片的全部展示数据（含词性拆分、例句切分与记忆元信息）
-    state.card = JSON.parse(session.current_json(Date.now()));
+    state.card = JSON.parse(session.current_json(nowMs()));
 
     hideMessage();
     setText('reviewWord', state.card.word || '');
@@ -781,8 +842,7 @@ function renderCardNow() {
 
     // 无限复习：评完的卡会按新到期时间插回池子，所以不再有「剩余张数」的概念，
     // 这里显示的是本轮已经复习了多少张（越往下翻越大）
-    var sourceLabel = sourceLabelOf(state.card.source);
-    setStatus('本轮已复习 ' + session.done() + ' 张 · ' + sourceLabel);
+    refreshCardStatus();
     show('reviewReveal');
 
     maybePrefetch();
@@ -797,6 +857,19 @@ function sourceLabelOf(source) {
     if (source === 'probe') return '抽查';
     if (source === 'daily') return '置顶';
     return '复习';
+}
+
+// 状态行的文案统一在这里生成：换卡 / 揭晓 / 提交失败都走它。
+// ⚠️ 提交失败的提示不能只 setStatus 一次：评分后 150ms 换卡过渡结束时会重写状态行，
+// 失败响应往往比它先到（本地实测 ~10ms），那一句提示会被直接盖掉。
+// 所以用 state.submitError 记着，下一次渲染自然带上，直到提交成功才清掉。
+function refreshCardStatus() {
+    if (!state.session || !state.card) return;
+    var text = state.revealed
+        ? '已学 ' + state.session.done() + ' 张 · ' + sourceLabelOf(state.card.source) + ' · 请根据回忆情况评分'
+        : '本轮已复习 ' + state.session.done() + ' 张 · ' + sourceLabelOf(state.card.source);
+    if (state.submitError) text += ' · 上一条评分未同步';
+    setStatus(text);
 }
 
 // 结束文案：池子空了才会出现（词库没词、或接口什么都没给）
@@ -845,6 +918,7 @@ function maybePrefetch() {
         }
 
         var meta = parseQueueMeta(results[0]);
+        applyServerClock(meta.serverNow);
         var added = 0;
         try {
             added = state.session.append(results[0], JSON.stringify(buildPlanOptions()));
@@ -1132,9 +1206,7 @@ function revealAnswer() {
 
     show('reviewAnswer');
     playRevealAnimation();
-
-    var sourceLabel = sourceLabelOf(state.card ? state.card.source : '');
-    setStatus('已学 ' + state.session.done() + ' 张 · ' + sourceLabel + ' · 请根据回忆情况评分');
+    refreshCardStatus();
 }
 
 // ---------- 揭晓动效 ----------
@@ -1283,7 +1355,7 @@ function handleReviewRating(rating) {
     // （实测：界面 5/5「整池已过一遍」而服务端才 4/5）。
     var payload;
     try {
-        payload = session.rate(rating, Date.now());
+        payload = session.rate(rating, nowMs());
     } catch (e) {
         setStatus('引擎计算失败: ' + e);
         return;
@@ -1301,7 +1373,28 @@ function handleReviewRating(rating) {
     advanceCard(); // 带动效推进到下一张（内部会先上锁，防止过渡期间重复评分）
 
     // 记下这次提交：翻页前要等它落库，否则刚评过的卡会被当成到期卡再抽一次
-    state.pendingSubmit = fetch('/api/reviews/submit', {
+    state.pendingSubmit = submitRating(payload, false).then(function(data) {
+        if (!data) return;
+        if (data.code === 200) {
+            // 成功一次就把失败标记摘掉（状态行随之恢复），再刷新统计
+            if (state.submitError) {
+                state.submitError = false;
+                refreshCardStatus();
+            }
+            loadReviewStats();
+        } else {
+            reportSubmitFailure('服务端返回 code=' + data.code);
+        }
+    }).catch(function(err) {
+        reportSubmitFailure(err && err.message ? err.message : String(err));
+    });
+}
+
+// 提交一次评分。只在「fetch 本身失败」时重试一次（断网 / 连接被重置 —— 请求没拿到任何响应，
+// 重发不会重复记账）；HTTP 4xx/5xx **不重试**：服务端可能已经把这条写进去了，
+// 盲目重发会多出一条复习日志、把 FSRS 状态推进两次。
+function submitRating(payload, isRetry) {
+    return fetch('/api/reviews/submit', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: payload // 引擎返回的 JSON 即请求体，无需在前端重新拼装
@@ -1311,17 +1404,25 @@ function handleReviewRating(rating) {
             redirectToLogin();
             return null;
         }
+        if (!res.ok) throw new Error('HTTP ' + res.status);
         return res.json();
-    }).then(function(data) {
-        if (!data) return;
-        if (data && data.code === 200) {
-            loadReviewStats();
-        } else {
-            console.error('提交复习失败:', data);
-        }
-    }).catch(function(err) {
-        console.error('提交复习失败:', err);
+    }, function(networkErr) {
+        if (isRetry) throw networkErr;
+        return new Promise(function(resolve) {
+            setTimeout(resolve, 800);
+        }).then(function() {
+            return submitRating(payload, true);
+        });
     });
+}
+
+// 提交失败必须让用户看见：评分后界面已经换到下一张，如果只在控制台报错，
+// 用户会以为这条已经记下，而服务端其实没有 —— 下次进来这张卡会按旧到期时间再出现。
+// 标记写进 state，由 refreshCardStatus 带进状态行（换卡过渡会重绘状态行，只 setStatus 一次会被盖掉）。
+function reportSubmitFailure(detail) {
+    console.error('提交复习失败:', detail);
+    state.submitError = true;
+    refreshCardStatus();
 }
 
 // 刷新统计（每次提交复习成功后调用）。与池子请求同一口径（不带 ?today，服务端定「今天」），
@@ -1424,6 +1525,35 @@ function toggleImmersive() {
     setImmersive(!isImmersiveOn());
 }
 
+// 选中的英语语音（懒加载一次，见 ensureVoiceList）
+var englishVoice = null;
+var voiceListBound = false;
+
+// 选一个英语语音：优先 en-US，其次任意 en。
+// ⚠️ getVoices() 在部分浏览器上首屏返回空数组，要等 voiceschanged 事件后才有值 ——
+// 所以既在朗读时懒取一次，也挂一次 voiceschanged 兜住「先朗读、后加载完」的顺序。
+function pickEnglishVoice() {
+    if (!window.speechSynthesis || !window.speechSynthesis.getVoices) return null;
+    var voices = window.speechSynthesis.getVoices() || [];
+    var fallback = null;
+    for (var i = 0; i < voices.length; i++) {
+        var v = voices[i];
+        if (!v || !v.lang) continue;
+        if (/^en[-_]US/i.test(v.lang)) return v;
+        if (!fallback && /^en/i.test(v.lang)) fallback = v;
+    }
+    return fallback;
+}
+
+function ensureVoiceList() {
+    if (voiceListBound) return;
+    if (!window.speechSynthesis || !window.speechSynthesis.addEventListener) return;
+    voiceListBound = true;
+    window.speechSynthesis.addEventListener('voiceschanged', function() {
+        englishVoice = pickEnglishVoice();
+    });
+}
+
 // 朗读一段英文文本（lang 默认美式英语）
 function speakText(text, lang) {
     if (!text) return;
@@ -1431,9 +1561,14 @@ function speakText(text, lang) {
         return; // 浏览器不支持语音合成时静默跳过
     }
     try {
+        ensureVoiceList();
+        if (!englishVoice) englishVoice = pickEnglishVoice();
+
         window.speechSynthesis.cancel(); // 打断上一条，避免叠读
         var utter = new window.SpeechSynthesisUtterance(text);
         utter.lang = lang || 'en-US';
+        // 显式指定英语语音：默认语音可能是系统中文音色，念英文单词会明显跑调
+        if (englishVoice && (!lang || /^en/i.test(lang))) utter.voice = englishVoice;
         utter.rate = 0.9;
         window.speechSynthesis.speak(utter);
     } catch (e) {
@@ -1449,8 +1584,21 @@ function speakCurrent(kind) {
             setStatus('先显示答案才能朗读例句');
             return;
         }
+        // 读引擎切好的片段拼回原文，不要读 DOM 的 textContent ——
+        // 那里包着中文引号“”，部分音色会把它们念出来
+        var parts = (state.card && state.card.example_parts) || [];
+        var example = '';
+        for (var i = 0; i < parts.length; i++) {
+            example += parts[i].text || '';
+        }
+        if (!example) {
+            var quoteEl = document.getElementById('reviewExample');
+            example = quoteEl ? quoteEl.textContent : '';
+        }
+        speakText(example);
+        return;
     }
-    var el = document.getElementById(kind === 'example' ? 'reviewExample' : 'reviewWord');
+    var el = document.getElementById('reviewWord');
     if (el) speakText(el.textContent);
 }
 

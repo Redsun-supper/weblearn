@@ -528,6 +528,20 @@
     color: #9ca3af;
 }
 
+/* ===================== 键盘聚焦 ===================== */
+
+/* 与站点头像同一套焦点圈（main.css 的 .rounded-square:focus-visible）。
+ * 鼠标点击不触发 :focus-visible，所以不会影响现有观感；
+ * 键盘用户 Tab 到这些按钮时才有可见轮廓 —— 之前这里全靠浏览器默认的细虚线。 */
+.study-start-btn:focus-visible,
+.study-nav-toggle:focus-visible,
+.study-reveal-btn:focus-visible,
+.study-sound:focus-visible,
+.rating:focus-visible {
+    outline: 3px solid #1565c0;
+    outline-offset: 3px;
+}
+
 /* ===================== 沉浸模式 ===================== */
 
 /* 站点导航栏被隐藏后（main.css 的 body.is-immersive 规则把内容容器的

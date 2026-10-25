@@ -1,0 +1,80 @@
+<Slide style={{ width: '1280px', height: '720px', background: '#FFFFFF', padding: '0' }}>
+  <Box style={{ width: '100%', height: 88, background: '#0E3F8C', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: '0 40px' }}>
+    <Text style={{ fontSize: 30, fontWeight: 'bold', color: '#FFFFFF' }}>初高中分支衔接对照</Text>
+    <Text style={{ fontSize: 15, color: '#9DB8E0' }}>04 衔接与展望</Text>
+  </Box>
+  <Box style={{ width: '100%', height: 572, flexDirection: 'row', padding: '20px 40px', gap: 24 }}>
+    <Box style={{ width: 820, height: '100%', background: '#FFFFFF', border: '1px solid #E5E7EB', borderRadius: 12, padding: 14 }}>
+      <Table
+        style={{ width: '100%', height: '100%' }}
+        defaultTextStyle={{ fontSize: 13, textAlign: 'left', color: '#1A2230' }}
+        defaultCellStyle={{
+          padding: 8,
+          border: {
+            left: { width: 1, color: '#E5E7EB' },
+            right: { width: 1, color: '#E5E7EB' },
+            top: { width: 1, color: '#E5E7EB' },
+            bottom: { width: 1, color: '#E5E7EB' },
+          },
+        }}
+        cells={[
+          [
+            { text: '初中分支', textStyle: { bold: true, color: '#FFFFFF', fontSize: 14 }, cellStyle: { background: { color: '#0E3F8C' } } },
+            { text: '在高中延展为', textStyle: { bold: true, color: '#FFFFFF', fontSize: 14 }, cellStyle: { background: { color: '#0E3F8C' } } },
+            { text: '核心线索', textStyle: { bold: true, color: '#FFFFFF', fontSize: 14 }, cellStyle: { background: { color: '#0E3F8C' } } },
+          ],
+          [
+            { text: '实数与代数式', cellStyle: { background: { color: '#FDF3E7' } }, textStyle: { bold: true } },
+            { text: '复数、不等式', cellStyle: { background: { color: '#FDF3E7' } } },
+            { text: '数系的两次扩张：实数 → 复数', cellStyle: { background: { color: '#FDF3E7' } } },
+          ],
+          [
+            { text: '一元二次方程', cellStyle: { background: { color: '#FDF3E7' } }, textStyle: { bold: true } },
+            { text: '一元二次不等式、二次函数', cellStyle: { background: { color: '#FDF3E7' } } },
+            { text: '「三个二次」在函数观点下统一', cellStyle: { background: { color: '#FDF3E7' } } },
+          ],
+          [
+            { text: '一次/二次/反比例函数', textStyle: { bold: true } },
+            { text: '三角函数、指数对数函数、幂函数' },
+            { text: '函数观点成为高中数学纲领' },
+          ],
+          [
+            { text: '平面几何（全等、相似）', cellStyle: { background: { color: '#F0F5FC' } }, textStyle: { bold: true } },
+            { text: '立体几何、解析几何、向量几何', cellStyle: { background: { color: '#F0F5FC' } } },
+            { text: '综合几何 → 向量/坐标方法', cellStyle: { background: { color: '#F0F5FC' } } },
+          ],
+          [
+            { text: '三角形与解直角三角形', textStyle: { bold: true } },
+            { text: '正弦定理余弦定理、三角函数' },
+            { text: '从直角走向一般三角形' },
+          ],
+          [
+            { text: '数据的分析、古典概型', cellStyle: { background: { color: '#F0F5FC' } }, textStyle: { bold: true } },
+            { text: '随机变量及其分布、统计推断', cellStyle: { background: { color: '#F0F5FC' } } },
+            { text: '从描述数据到推断总体', cellStyle: { background: { color: '#F0F5FC' } } },
+          ],
+          [
+            { text: '—（高中新增）', textStyle: { bold: true, color: '#8B97A8' } },
+            { text: '导数、数列、计数原理' },
+            { text: '高中的三块新增工具' },
+          ],
+        ]}
+      />
+    </Box>
+    <Box style={{ flex: 1, height: '100%', flexDirection: 'column', gap: 14 }}>
+      <Box style={{ background: '#F0F5FC', border: '1px solid #D6DCE5', borderRadius: 12, padding: '18px 20px', flexDirection: 'column', gap: 10, flex: 1 }}>
+        <Text style={{ fontSize: 19, fontWeight: 'bold', color: '#0E3F8C' }}>教学启示</Text>
+        <Text style={{ fontSize: 14, color: '#1A2230', lineHeight: 1.8 }}>最该先讲的两条衔接：</Text>
+        <Text style={{ fontSize: 14, color: '#4A5568', lineHeight: 1.8 }}>① 数系两次扩张——实数到复数，回答「数还能是什么」；<br />② 三个二次统一——方程、不等式、函数在函数观点下合流。</Text>
+        <Text style={{ fontSize: 14, color: '#4A5568', lineHeight: 1.8 }}>初中复习课按线索组织，比按册别组织更能激活高中接口。</Text>
+      </Box>
+      <Box style={{ background: '#0E3F8C', borderRadius: 10, padding: '12px 20px' }}>
+        <Text style={{ fontSize: 14, color: '#FFFFFF', lineHeight: 1.6 }}>判断：衔接不是补课，而是让学生看见知识「从哪里来、到哪里去」。</Text>
+      </Box>
+    </Box>
+  </Box>
+  <Box style={{ width: '100%', height: 60, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: '0 40px', borderTop: '1px solid #E5E7EB' }}>
+    <Text style={{ fontSize: 13, color: '#8B97A8' }}>依据两版课程标准整理 · 衔接关系为编者归纳</Text>
+    <Text style={{ fontSize: 15, color: '#0E3F8C' }}>14 / 15</Text>
+  </Box>
+</Slide>

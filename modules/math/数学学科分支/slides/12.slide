@@ -1,0 +1,53 @@
+<Slide style={{ width: '1280px', height: '720px', background: '#FFFFFF', padding: '0' }}>
+  <Box style={{ width: '100%', height: 88, background: '#0E3F8C', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: '0 40px' }}>
+    <Text style={{ fontSize: 30, fontWeight: 'bold', color: '#FFFFFF' }}>两翼与工具箱：几何代数 · 统计概率 · 预备工具</Text>
+    <Text style={{ fontSize: 15, color: '#9DB8E0' }}>03 高中 · 课程结构与四大主题</Text>
+  </Box>
+  <Box style={{ width: '100%', height: 572, flexDirection: 'row', padding: '20px 40px', gap: 24 }}>
+    <Box style={{ width: 690, height: '100%', background: '#FFFFFF', border: '1px solid #E5E7EB', borderRadius: 12, padding: '18px 22px', flexDirection: 'column', gap: 10 }}>
+      <Box style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+        <Text style={{ fontSize: 22, fontWeight: 'bold', color: '#0E3F8C' }}>几何与代数</Text>
+        <Text style={{ fontSize: 14, color: '#8B97A8' }}>向量与坐标方法让几何问题全面代数化</Text>
+      </Box>
+      {[
+        { t: '平面向量及其应用', g: '必修二', d: '线性运算、数量积、基本定理；正弦定理与余弦定理解三角形' },
+        { t: '复数', g: '必修二', d: '数系的第二次扩张：实数 → 复数；四则运算与几何意义' },
+        { t: '立体几何初步', g: '必修二', d: '空间几何体、三视图、线面平行与垂直的判定与性质' },
+        { t: '空间向量与立体几何', g: '选必一', d: '立体几何的坐标化：用法向量处理平行、垂直、角度、距离' },
+        { t: '解析几何', g: '选必一', d: '直线与圆、圆锥曲线：曲线即方程，方程即曲线' },
+      ].map((b, i) => (
+        <Box key={i} style={{ flexDirection: 'row', alignItems: 'center', gap: 14, background: i % 2 === 0 ? '#F7F9FC' : '#FFFFFF', borderRadius: 8, padding: '10px 14px', flex: 1 }}>
+          <Box style={{ width: 26, height: 26, background: '#1E4FA8', borderRadius: 6, alignItems: 'center', justifyContent: 'center' }}>
+            <Text style={{ fontSize: 13, fontWeight: 'bold', color: '#FFFFFF' }}>{i + 1}</Text>
+          </Box>
+          <Box style={{ flexDirection: 'column', gap: 3, flex: 1 }}>
+            <Box style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+              <Text style={{ fontSize: 17, fontWeight: 'bold', color: '#1A2230' }}>{b.t}</Text>
+              <Text style={{ fontSize: 12, color: '#1E4FA8' }}>{b.g}</Text>
+            </Box>
+            <Text style={{ fontSize: 13, color: '#4A5568' }}>{b.d}</Text>
+          </Box>
+        </Box>
+      ))}
+    </Box>
+    <Box style={{ flex: 1, height: '100%', flexDirection: 'column', gap: 14 }}>
+      <Box style={{ background: '#F0F5FC', border: '1px solid #D6DCE5', borderRadius: 12, padding: '16px 20px', flexDirection: 'column', gap: 8, flex: 1 }}>
+        <Text style={{ fontSize: 19, fontWeight: 'bold', color: '#0E3F8C' }}>统计与概率</Text>
+        <Text style={{ fontSize: 14, color: '#4A5568', lineHeight: 1.7 }}>统计（必修二）· 概率（必修二）· 随机变量及其分布（选必三）· 成对数据的统计分析（选必三）</Text>
+        <Text style={{ fontSize: 13, color: '#1E4FA8' }}>从描述数据到推断总体</Text>
+      </Box>
+      <Box style={{ background: '#F0F5FC', border: '1px solid #D6DCE5', borderRadius: 12, padding: '16px 20px', flexDirection: 'column', gap: 8, flex: 1 }}>
+        <Text style={{ fontSize: 19, fontWeight: 'bold', color: '#0E3F8C' }}>预备与工具</Text>
+        <Text style={{ fontSize: 14, color: '#4A5568', lineHeight: 1.7 }}>集合与常用逻辑用语（必修一）· 等式与不等式（必修一）· 计数原理（选必三）</Text>
+        <Text style={{ fontSize: 13, color: '#1E4FA8' }}>支撑各主线的语言与工具箱</Text>
+      </Box>
+      <Box style={{ background: '#0E3F8C', borderRadius: 10, padding: '12px 20px' }}>
+        <Text style={{ fontSize: 14, color: '#FFFFFF', lineHeight: 1.6 }}>数学建模与探究活动贯穿全程：选题、假设、建模、求解、检验修正。</Text>
+      </Box>
+    </Box>
+  </Box>
+  <Box style={{ width: '100%', height: 60, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: '0 40px', borderTop: '1px solid #E5E7EB' }}>
+    <Text style={{ fontSize: 13, color: '#8B97A8' }}>依据《普通高中数学课程标准（2017 年版 2020 年修订）》整理</Text>
+    <Text style={{ fontSize: 15, color: '#0E3F8C' }}>12 / 15</Text>
+  </Box>
+</Slide>

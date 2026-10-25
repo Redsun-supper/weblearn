@@ -14,6 +14,7 @@ document.addEventListener('DOMContentLoaded', function() {
     // 「按需动态加载 + 调用」，不再内联任何学科的业务逻辑（否则它会随学科增多无限膨胀）。
     // 用动态 import() 的好处：只有真正进入该学科页才加载对应模块及其 WASM 引擎，首屏不带学科逻辑。
     const ENGLISH_PAGE = 'modules/english/english.html';
+    const MATH_PAGE = 'modules/math/math.html';
     
     // 当前已初始化的学科模块命名空间（切页时用它调可选的 unmount()）
     let activeSubjectModule = null;
@@ -37,7 +38,20 @@ document.addEventListener('DOMContentLoaded', function() {
     // 按 pageName 加载并初始化对应学科模块；尚无独立模块的学科直接返回
     function initSubjectModule(pageName) {
         teardownSubjectModule();
-        if (pageName !== ENGLISH_PAGE) return; // 目前只有英语有独立模块
+        if (pageName === MATH_PAGE) {
+            // 数学模块：数学页的 DOM 结构由 math.html 注入，模块自己负责渲染分支树、
+            // 注入 math.css 并绑定交互（initMathApp 幂等，切页回来会按当前 DOM 重建）
+            import('./modules/math/math.js').then(function(mod) {
+                activeSubjectModule = mod;
+                mod.initMathApp();
+            }).catch(function(err) {
+                const app = document.getElementById('mathApp');
+                if (app) app.innerHTML = '<p class="placeholder-text">数学模块加载失败: ' + err + '</p>';
+                console.error('数学模块加载失败:', err);
+            });
+            return;
+        }
+        if (pageName !== ENGLISH_PAGE) return; // 其余学科仍是 pages/ 下的静态占位页
         import('./modules/english/english.js').then(function(mod) {
             activeSubjectModule = mod;
             mod.initReviewApp();
@@ -60,11 +74,13 @@ document.addEventListener('DOMContentLoaded', function() {
     //       v5 英语页顶栏改成「沉浸模式」开关（隐藏站点导航栏），揭晓区改为每条释义一块；
     //       v6 英语页底部新增左下角「今日计划」小字；
     //       v7 英语页新增起始页（中间一颗「开始复习单词」），复习会话改为点击后才建
-    //          （原来一挂载就建会话会自动朗读，且首次交互还会补读一遍，同一个词响两次）
+    //          （原来一挂载就建会话会自动朗读，且首次交互还会补读一遍，同一个词响两次）；
+    //       v8 数学页接入独立模块：路径由 pages/math.html 改为 modules/math/math.html；
+    //       v9 占位学科页统一包 .page-stub（居中空状态），导航项补键盘语义
     const CACHE_EXPIRY = 30 * 24 * 60 * 60 * 1000;
     const CACHE_PREFIX = 'pageCache_';
     const CACHE_META_KEY = 'pageCache_meta';
-    const CACHE_VERSION = 7;
+    const CACHE_VERSION = 9;
     const CACHE_VERSION_KEY = 'pageCache_version';
     
     // 缓存元数据 { 页面路径: 最后访问时间戳 } 的读写；读失败（脏 JSON / 隐私模式）按「没有元数据」处理
@@ -170,22 +186,84 @@ document.addEventListener('DOMContentLoaded', function() {
     purgeCacheIfOutdated();
     cleanExpiredCache();
     
-    // 默认打开英语：点亮它的导航项，再按「先查缓存、miss 再 fetch」加载页面
-    // （命中缓存时零网络请求，秒开；首次加载完成后写回缓存，之后同样走缓存）
-    const defaultPage = ENGLISH_PAGE;
-    const defaultRect = document.querySelector('.nav-rect[data-page="' + defaultPage + '"]');
-    if (defaultRect) {
-        defaultRect.classList.add('active');
+    // ===================== 学科页加载 =====================
+    // 当前显示的学科页路径与请求序号：
+    //   · currentPage 是「已经渲染出来」的页，pendingPage 是「最近一次请求的目标」。
+    //     两者要分开：数学请求还在飞的时候点回英语，currentPage 仍是英语，
+    //     若只看 currentPage 就会把这次点击当成「重复点当前页」吞掉，
+    //     随后数学的慢响应回来反而把英语页覆盖掉（实测踩过）。
+    //   · pageSeq 用来丢弃过期响应——先点数学再点英语时，数学的慢请求不能覆盖英语页。
+    let currentPage = null;
+    let pendingPage = null;
+    let pageSeq = 0;
+
+    // 学科名映射（导航项文字 → 页面标题），用于 document.title
+    const pageTitles = {};
+    navRects.forEach(function(rect, i) {
+        pageTitles[rect.getAttribute('data-page')] = rect.textContent.trim();
+        // 给每个标签一个稳定 id，供 tabpanel 的 aria-labelledby 指过来
+        if (!rect.id) rect.id = 'navSubject' + i;
+    });
+
+    // 同步导航高亮与读屏状态（视觉上的 .active 与 aria-selected 必须始终一致）
+    function setActiveNav(pageName) {
+        const navBox = document.querySelector('.nav-items');
+        navRects.forEach(function(rect) {
+            const on = rect.getAttribute('data-page') === pageName;
+            rect.classList.toggle('active', on);
+            rect.setAttribute('aria-selected', on ? 'true' : 'false');
+            // roving tabindex：整组标签只保留一个 Tab 停靠点（当前选中项），
+            // 组内用左右方向键移动 —— WAI-ARIA 对 tablist 的推荐做法，
+            // 否则 9 个学科会把 Tab 键的第一段路撑得很长。
+            rect.tabIndex = on ? 0 : -1;
+            if (on) {
+                contentContainer.setAttribute('aria-labelledby', rect.id);
+                // 窄屏导航条是横向滚动的：选中项可能滚出可视区，这里把它带回可视范围
+                if (navBox && navBox.scrollWidth > navBox.clientWidth + 1) {
+                    rect.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+                }
+            }
+        });
     }
-    
-    const defaultCachedHtml = getCachedContent(defaultPage);
-    if (defaultCachedHtml) {
-        contentContainer.innerHTML = defaultCachedHtml;
-        initSubjectModule(defaultPage);
-    } else {
-        // 加载中先给占位文案，避免内容区空着
+
+    // 把 HTML 注入内容区并初始化模块；淡入动画（main.css 的 pageIn）与滚动复位都在这里，
+    // 保证「缓存命中」与「网络加载」两条路径的表现完全一致。
+    function applyPageHtml(pageName, html) {
+        currentPage = pageName;
+        pendingPage = pageName;
+        // 先让上一页收回全局状态（如英语复习页挂在 body 上的 is-immersive），再替换 DOM：
+        // 否则新页面会先按沉浸布局（导航隐藏、内容贴顶）画一帧，再滑回正常位置。
+        teardownSubjectModule();
+        contentContainer.removeAttribute('aria-busy');
+        contentContainer.innerHTML = html;
+        // 移除再强制重排后重新加类：同一段动画才能连续播放
+        contentContainer.classList.remove('is-page-in');
+        void contentContainer.offsetWidth;
+        contentContainer.classList.add('is-page-in');
+        document.title = (pageTitles[pageName] || '学科') + ' · 大冬呱';
+        window.scrollTo(0, 0);
+        initSubjectModule(pageName);
+    }
+
+    // 统一的取页流程：缓存优先 → fetch → 注入。
+    // 只有「目标页 = 正在请求页 = 已渲染页」时才早退（真正的重复点击），
+    // 这样英语复习不会被重建，而请求进行中的回切仍然生效。
+    function loadPage(pageName, force) {
+        if (!force && pageName === currentPage && pageName === pendingPage) return;
+        const seq = ++pageSeq;
+        pendingPage = pageName;
+        setActiveNav(pageName);
+        updateAccessTime(pageName);
+
+        const cachedHtml = getCachedContent(pageName);
+        if (cachedHtml) {
+            applyPageHtml(pageName, cachedHtml);
+            return;
+        }
+
         contentContainer.innerHTML = '<p class="placeholder-text">正在加载内容...</p>';
-        fetch(defaultPage)
+        contentContainer.setAttribute('aria-busy', 'true');
+        fetch(pageName)
             .then(function(response) {
                 if (!response.ok) {
                     throw new Error('文件加载失败');
@@ -193,51 +271,42 @@ document.addEventListener('DOMContentLoaded', function() {
                 return response.text();
             })
             .then(function(html) {
-                saveCachedContent(defaultPage, html);
-                contentContainer.innerHTML = html;
-                initSubjectModule(defaultPage);
+                if (seq !== pageSeq) return; // 已切到别的学科，丢弃这次结果
+                saveCachedContent(pageName, html);
+                applyPageHtml(pageName, html);
             })
             .catch(function(error) {
+                if (seq !== pageSeq) return;
                 console.error('加载错误:', error);
+                contentContainer.removeAttribute('aria-busy');
                 contentContainer.innerHTML = '<p class="placeholder-text">内容加载失败，请检查文件是否存在</p>';
             });
     }
-    
-    // 点导航项切学科：先摘掉其他项的 active、给当前项点上，再按与默认页同一套
-    // 「先查缓存、miss 再 fetch」流程换内容，并同步访问时间（供 30 天过期判断）
+
+    // 默认打开英语：按「先查缓存、miss 再 fetch」加载
+    // （命中缓存时零网络请求，秒开；首次加载完成后写回缓存，之后同样走缓存）
+    loadPage(ENGLISH_PAGE, true);
+
+    // 点导航项切学科：加载对应页面；键盘 Enter / 空格等价于点击，
+    // 左右方向键在同组标签之间移动焦点（读屏与纯键盘用户的常规预期）
     navRects.forEach(function(rect) {
         rect.addEventListener('click', function() {
-            navRects.forEach(function(r) {
-                r.classList.remove('active');
-            });
-            this.classList.add('active');
-            
-            // data-page 存的就是该学科页的路径（如 'pages/math.html'）
-            const pageName = this.getAttribute('data-page');
-            updateAccessTime(pageName);
-            
-            const cachedHtml = getCachedContent(pageName);
-            if (cachedHtml) {
-                contentContainer.innerHTML = cachedHtml;
-                initSubjectModule(pageName);
-            } else {
-                contentContainer.innerHTML = '<p class="placeholder-text">正在加载内容...</p>';
-                fetch(pageName)
-                    .then(function(response) {
-                        if (!response.ok) {
-                            throw new Error('文件加载失败');
-                        }
-                        return response.text();
-                    })
-                    .then(function(html) {
-                        saveCachedContent(pageName, html);
-                        contentContainer.innerHTML = html;
-                        initSubjectModule(pageName);
-                    })
-                    .catch(function(error) {
-                        console.error('加载错误:', error);
-                        contentContainer.innerHTML = '<p class="placeholder-text">内容加载失败，请检查文件是否存在</p>';
-                    });
+            loadPage(this.getAttribute('data-page'), false);
+        });
+
+        rect.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') {
+                e.preventDefault();
+                loadPage(this.getAttribute('data-page'), false);
+                return;
+            }
+            if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+                e.preventDefault();
+                const list = Array.prototype.slice.call(navRects);
+                const i = list.indexOf(this);
+                const step = e.key === 'ArrowRight' ? 1 : -1;
+                const next = list[(i + step + list.length) % list.length];
+                if (next) next.focus();
             }
         });
     });
@@ -478,29 +547,37 @@ document.addEventListener('DOMContentLoaded', function() {
 
     renderAvatarState();
 
-    // ===================== 预取个人中心 =====================
-    // 主界面加载完之后（等浏览器空闲）再悄悄把个人中心的文档与资源拉进缓存，
-    // 这样点头像的时候不用现等网络，过场与新页面能连成一片。
+    // ===================== 预取个人中心与法律声明页 =====================
+    // 主界面加载完之后（等浏览器空闲）再悄悄把这两个特殊页的文档与资源拉进缓存，
+    // 这样点头像 / 点站名的时候不用现等网络，过场与新页面能连成一片。
     //
     // 为什么不用 main.js 那套 localStorage 页缓存（pageCache_）：那套是给「学科页片段」
-    // 用的 —— 个人中心是一份**独立文档**，而且内容依赖登录态，必须到服务端实时问
+    // 用的 —— 这两个都是**独立文档**，个人中心的内容还依赖登录态，必须到服务端实时问
     // （GET /api/auth/me），把 HTML 缓存下来反而会把登录态缓存错。
     // 这里只是让浏览器把资源缓存住（缓存头由 dev-server / Nginx 负责发对）。
-    function prefetchAccountPage() {
-        ['account/', 'account/account.css', 'account/account.js'].forEach(function(href, i) {
+    // 法律页也要预取：点站名的过场是「先淡出再跳」，跳过去那一下文档还在路上的话，
+    // 淡入会淡在一张还没画出来的白纸上。
+    function prefetchSpecialPages() {
+        [
+            { href: 'account/', as: '' },
+            { href: 'account/account.css', as: 'style' },
+            { href: 'account/account.js', as: 'script' },
+            { href: 'legal/index.html', as: '' },
+            { href: 'legal/legal.css', as: 'style' },
+            { href: 'legal/legal.js', as: 'script' }
+        ].forEach(function(item) {
             var link = document.createElement('link');
             link.rel = 'prefetch';
-            link.href = href;
-            if (i === 1) link.as = 'style';
-            if (i === 2) link.as = 'script';
+            link.href = item.href;
+            if (item.as) link.as = item.as;
             document.head.appendChild(link);
         });
     }
 
     if (window.requestIdleCallback) {
-        window.requestIdleCallback(prefetchAccountPage, { timeout: 3000 });
+        window.requestIdleCallback(prefetchSpecialPages, { timeout: 3000 });
     } else {
-        window.setTimeout(prefetchAccountPage, 1200); // 老浏览器：等首屏稳了再拉
+        window.setTimeout(prefetchSpecialPages, 1200); // 老浏览器：等首屏稳了再拉
     }
 
     // 从个人中心返回时浏览器可能直接用「前进后退缓存」（bfcache）恢复页面：

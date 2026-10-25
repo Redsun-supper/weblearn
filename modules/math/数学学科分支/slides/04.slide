@@ -1,0 +1,67 @@
+<Slide style={{ width: '1280px', height: '720px', background: '#FFFFFF', padding: '0' }}>
+  <Box style={{ width: '100%', height: 88, background: '#0E3F8C', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: '0 40px' }}>
+    <Text style={{ fontSize: 30, fontWeight: 'bold', color: '#FFFFFF' }}>一张图看懂中学数学</Text>
+    <Text style={{ fontSize: 15, color: '#9DB8E0' }}>01 全景与主线</Text>
+  </Box>
+  <Box style={{ width: '100%', height: 572, flexDirection: 'row', padding: '20px 40px', gap: 28 }}>
+    <Box style={{ width: 700, height: '100%', background: '#F7F9FC', border: '1px solid #E5E7EB', borderRadius: 12, padding: 16, alignItems: 'center', justifyContent: 'center' }}>
+      <svg width={660} height={500} viewBox="0 0 680 500">
+        <text x={20} y={32} fontSize={17} fontWeight="bold" fill="#0E3F8C">初中 · 三大领域</text>
+        <text x={410} y={32} fontSize={17} fontWeight="bold" fill="#0E3F8C">高中 · 四大主题 + 建模探究</text>
+        {[
+          { y: 60, t: '数与代数', s: '数与式 · 方程与不等式 · 函数' },
+          { y: 168, t: '图形与几何', s: '性质 · 变化 · 坐标 · 尺规作图' },
+          { y: 276, t: '统计与概率', s: '收集描述 · 数据分析 · 概率初步' },
+        ].map((b, i) => (
+          <g key={i}>
+            <rect x={20} y={b.y} width={270} height={84} rx={10} fill="#E8EFF8" stroke="#3D7BD9" strokeWidth={1} />
+            <text x={155} y={b.y + 32} fontSize={18} fontWeight="bold" fill="#0E3F8C" textAnchor="middle">{b.t}</text>
+            <text x={155} y={b.y + 60} fontSize={13} fill="#4A5568" textAnchor="middle">{b.s}</text>
+          </g>
+        ))}
+        {[
+          { y: 52, t: '函数（主线）', s: '概念性质 · 指对 · 三角 · 应用 · 数列 · 导数' },
+          { y: 128, t: '几何与代数', s: '向量 · 复数 · 立体几何 · 解析几何' },
+          { y: 204, t: '统计与概率', s: '统计 · 概率 · 随机变量 · 回归分析' },
+          { y: 280, t: '预备与工具', s: '集合逻辑 · 不等式 · 计数原理' },
+          { y: 356, t: '数学建模与探究', s: '建模活动 · 探究活动（贯穿全程）' },
+        ].map((b, i) => (
+          <g key={i}>
+            <rect x={410} y={b.y} width={250} height={62} rx={10} fill="#FFFFFF" stroke="#1E4FA8" strokeWidth={1} />
+            <text x={535} y={b.y + 26} fontSize={16} fontWeight="bold" fill="#1E4FA8" textAnchor="middle">{b.t}</text>
+            <text x={535} y={b.y + 48} fontSize={12} fill="#4A5568" textAnchor="middle">{b.s}</text>
+          </g>
+        ))}
+        <path d="M290 102 L330 102 L330 204" fill="none" stroke="#3D7BD9" strokeWidth={1.5} />
+        <path d="M290 210 L330 210" fill="none" stroke="#3D7BD9" strokeWidth={1.5} />
+        <path d="M290 318 L330 318 L330 204" fill="none" stroke="#3D7BD9" strokeWidth={1.5} />
+        <path d="M330 204 L404 204" fill="none" stroke="#1E4FA8" strokeWidth={2} markerEnd="url(#arrp)" />
+        <defs>
+          <marker id="arrp" viewBox="0 0 10 10" refX={8} refY={5} markerWidth={7} markerHeight={7} orient="auto-start-reverse">
+            <path d="M2 1L8 5L2 9" fill="none" stroke="#1E4FA8" strokeWidth={1.5} strokeLinecap="round" />
+          </marker>
+        </defs>
+        <text x={367} y={188} fontSize={13} fill="#4A5568" textAnchor="middle">统合</text>
+        <text x={20} y={452} fontSize={13} fill="#8B97A8">暗线：算术→代数 · 直观→推理 · 确定→随机</text>
+      </svg>
+    </Box>
+    <Box style={{ flex: 1, height: '100%', flexDirection: 'column', gap: 16 }}>
+      <Box style={{ background: '#F0F5FC', border: '1px solid #D6DCE5', borderRadius: 12, padding: '20px 22px', flexDirection: 'column', gap: 10 }}>
+        <Text style={{ fontSize: 22, fontWeight: 'bold', color: '#0E3F8C' }}>结构即线索</Text>
+        <Text style={{ fontSize: 16, color: '#1A2230', lineHeight: 1.7 }}>初中三大领域平行推进；高中把三者统合为<span style={{ fontWeight: 'bold', color: '#1E4FA8' }}>以函数为纲</span>、以几何与代数为翼、以统计与概率为用的课程结构。</Text>
+      </Box>
+      <Box style={{ background: '#FFFFFF', border: '1px solid #E5E7EB', borderRadius: 12, padding: '18px 22px', flexDirection: 'column', gap: 10, flex: 1 }}>
+        <Text style={{ fontSize: 18, fontWeight: 'bold', color: '#0E3F8C' }}>为什么这样组织？</Text>
+        <Text style={{ fontSize: 15, color: '#4A5568', lineHeight: 1.8 }}>· 数与代数完成「算术 → 代数」的思维过渡；<br />· 图形与几何完成「直观 → 推理」的方法升级；<br />· 统计与概率完成「确定 → 随机」的观念转向。</Text>
+        <Text style={{ fontSize: 15, color: '#1A2230', lineHeight: 1.8 }}>三条暗线在高中汇成一条明线——<span style={{ fontWeight: 'bold', color: '#1E4FA8' }}>函数观点贯穿高中全程</span>，是本课程的纲领。</Text>
+      </Box>
+      <Box style={{ background: '#0E3F8C', borderRadius: 10, padding: '14px 22px' }}>
+        <Text style={{ fontSize: 16, color: '#FFFFFF', lineHeight: 1.6 }}>判断：把握住「函数主线」，就把握住了高中数学的结构钥匙。</Text>
+      </Box>
+    </Box>
+  </Box>
+  <Box style={{ width: '100%', height: 60, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: '0 40px', borderTop: '1px solid #E5E7EB' }}>
+    <Text style={{ fontSize: 13, color: '#8B97A8' }}>依据《义务教育数学课程标准（2022 年版）》《普通高中数学课程标准（2017 年版 2020 年修订）》整理</Text>
+    <Text style={{ fontSize: 15, color: '#0E3F8C' }}>04 / 15</Text>
+  </Box>
+</Slide>

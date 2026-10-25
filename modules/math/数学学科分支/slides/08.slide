@@ -1,0 +1,74 @@
+<Slide style={{ width: '1280px', height: '720px', background: '#FFFFFF', padding: '0' }}>
+  <Box style={{ width: '100%', height: 88, background: '#0E3F8C', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: '0 40px' }}>
+    <Text style={{ fontSize: 30, fontWeight: 'bold', color: '#FFFFFF' }}>统计与概率：从确定到随机</Text>
+    <Text style={{ fontSize: 15, color: '#9DB8E0' }}>02 初中 · 三大领域</Text>
+  </Box>
+  <Box style={{ width: '100%', height: 572, flexDirection: 'row', padding: '20px 40px', gap: 24 }}>
+    <Box style={{ width: 620, height: '100%', background: '#F7F9FC', border: '1px solid #E5E7EB', borderRadius: 12, padding: 20, flexDirection: 'column', gap: 10 }}>
+      <Text style={{ fontSize: 18, fontWeight: 'bold', color: '#0E3F8C' }}>列举法 · 抛两枚硬币的树状图</Text>
+      <Box style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
+        <svg width={560} height={360} viewBox="0 0 560 360">
+          <rect x={10} y={158} width={90} height={44} rx={8} fill="#0E3F8C" />
+          <text x={55} y={185} fontSize={15} fill="#FFFFFF" textAnchor="middle">第 1 枚</text>
+          {[
+            { y1: 80, label: '正' }, { y1: 280, label: '反' },
+          ].map((b, i) => (
+            <g key={i}>
+              <path d={'M100 ' + (i === 0 ? 172 : 194) + ' L170 ' + (b.y1 + 22)} fill="none" stroke="#3D7BD9" strokeWidth={1.5} />
+              <rect x={170} y={b.y1} width={80} height={44} rx={8} fill="#1E4FA8" />
+              <text x={210} y={b.y1 + 28} fontSize={15} fill="#FFFFFF" textAnchor="middle">{b.label}</text>
+            </g>
+          ))}
+          {[
+            { x1: 250, y0: 92, y1: 30, label: '正' }, { x1: 250, y0: 112, y1: 122, label: '反' },
+            { x1: 250, y0: 292, y1: 214, label: '正' }, { x1: 250, y0: 312, y1: 306, label: '反' },
+          ].map((b, i) => (
+            <g key={i}>
+              <path d={'M' + b.x1 + ' ' + b.y0 + ' L320 ' + (b.y1 + 22)} fill="none" stroke="#3D7BD9" strokeWidth={1.5} />
+              <rect x={320} y={b.y1} width={70} height={44} rx={8} fill="#E8EFF8" stroke="#3D7BD9" strokeWidth={1} />
+              <text x={355} y={b.y1 + 28} fontSize={14} fill="#0E3F8C" textAnchor="middle">{b.label}</text>
+            </g>
+          ))}
+          {[
+            { y: 30, t: '正正' }, { y: 122, t: '正反' }, { y: 214, t: '反正' }, { y: 306, t: '反反' },
+          ].map((o, i) => (
+            <g key={i}>
+              <path d={'M390 ' + (o.y + 22) + ' L440 ' + (o.y + 22)} fill="none" stroke="#8B97A8" strokeWidth={1} strokeDasharray="4 4" />
+              <text x={448} y={o.y + 27} fontSize={14} fill="#1A2230">{o.t}</text>
+              <text x={505} y={o.y + 27} fontSize={14} fontWeight="bold" fill="#1E4FA8">1/4</text>
+            </g>
+          ))}
+          <text x={55} y={345} fontSize={12} fill="#8B97A8" textAnchor="middle">随机试验</text>
+          <text x={210} y={345} fontSize={12} fill="#8B97A8" textAnchor="middle">第一步结果</text>
+          <text x={355} y={345} fontSize={12} fill="#8B97A8" textAnchor="middle">第二步结果</text>
+          <text x={480} y={345} fontSize={12} fill="#8B97A8" textAnchor="middle">等可能结果</text>
+        </svg>
+      </Box>
+      <Text style={{ fontSize: 13, color: '#4A5568' }}>树状图把「随机」变成可枚举的有限样本空间——古典概型的直观起点。</Text>
+    </Box>
+    <Box style={{ flex: 1, height: '100%', flexDirection: 'column', gap: 12 }}>
+      {[
+        { t: '数据的收集、整理与描述', g: '七—八年级', d: '全面调查与抽样调查；条形图、扇形图、折线图、频数分布直方图。' },
+        { t: '数据的分析', g: '八年级', d: '平均数/中位数/众数刻画集中趋势，方差刻画离散程度，用样本估计总体。' },
+        { t: '概率初步', g: '九年级', d: '随机事件、古典概型、用频率估计概率、列举法（树状图/列表）。' },
+      ].map((b, i) => (
+        <Box key={i} style={{ flex: 1, background: '#FFFFFF', border: '1px solid #E5E7EB', borderRadius: 12, padding: '14px 20px', flexDirection: 'column', gap: 6 }}>
+          <Box style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+            <Text style={{ fontSize: 19, fontWeight: 'bold', color: '#0E3F8C' }}>{b.t}</Text>
+            <Box style={{ background: '#E8EFF8', borderRadius: 4, padding: '2px 8px' }}>
+              <Text style={{ fontSize: 12, color: '#1E4FA8' }}>{b.g}</Text>
+            </Box>
+          </Box>
+          <Text style={{ fontSize: 14, color: '#4A5568', lineHeight: 1.6 }}>{b.d}</Text>
+        </Box>
+      ))}
+      <Box style={{ background: '#0E3F8C', borderRadius: 10, padding: '12px 20px' }}>
+        <Text style={{ fontSize: 15, color: '#FFFFFF', lineHeight: 1.6 }}>判断：频率稳定性是桥梁——高中将由此走向随机变量与统计推断。</Text>
+      </Box>
+    </Box>
+  </Box>
+  <Box style={{ width: '100%', height: 60, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: '0 40px', borderTop: '1px solid #E5E7EB' }}>
+    <Text style={{ fontSize: 13, color: '#8B97A8' }}>依据《义务教育数学课程标准（2022 年版）》整理</Text>
+    <Text style={{ fontSize: 15, color: '#0E3F8C' }}>08 / 15</Text>
+  </Box>
+</Slide>

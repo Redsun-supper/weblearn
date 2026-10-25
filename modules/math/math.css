@@ -1,0 +1,621 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+/* Copyright (C) 2026  Redsun-supper (大冬呱 / HR_RedSun) */
+/* ============================================================================
+ * 数学模块 · 分支体系知识图谱样式
+ * 只作用于数学页内的元素（.math-* 命名空间），不污染全站样式。
+ * 浅色主题，主色 #1565c0 与主站导航保持一致；树 + 详情的两栏布局，
+ * 窄屏（<920px）自动堆叠为单栏。
+ * ========================================================================== */
+
+.math-app {
+    max-width: 1180px;
+    margin: 0 auto;
+    padding: 24px 20px 48px;
+    color: #2b2b2b;
+}
+
+/* ===================== 头部 ===================== */
+
+.math-hero {
+    text-align: center;
+    padding: 28px 20px 24px;
+    margin-bottom: 20px;
+    background-image: linear-gradient(160deg, #1f2d3d 0%, #14507d 45%, #1565c0 100%);
+    border-radius: 14px;
+    color: #ffffff;
+}
+
+.math-hero-title {
+    margin: 0 0 8px;
+    font-size: 28px;
+    letter-spacing: 1px;
+}
+
+.math-hero-sub {
+    margin: 0 0 16px;
+    font-size: 14px;
+    opacity: 0.85;
+}
+
+.math-hero-stats {
+    display: flex;
+    justify-content: center;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+
+.math-stat-chip {
+    background: rgba(255, 255, 255, 0.14);
+    border: 1px solid rgba(255, 255, 255, 0.35);
+    border-radius: 999px;
+    padding: 5px 14px;
+    font-size: 13px;
+}
+
+.math-stat-chip b {
+    font-size: 16px;
+    margin-right: 4px;
+}
+
+/* ===================== 标签页 ===================== */
+
+.math-tabs {
+    display: flex;
+    gap: 8px;
+    border-bottom: 2px solid #e0e0e0;
+    margin-bottom: 16px;
+}
+
+.math-tab {
+    appearance: none;
+    border: none;
+    background: none;
+    padding: 10px 22px;
+    font-size: 15px;
+    color: #666;
+    cursor: pointer;
+    border-bottom: 3px solid transparent;
+    margin-bottom: -2px;
+    transition: color 0.15s ease, border-color 0.15s ease;
+}
+
+.math-tab:hover {
+    color: #1565c0;
+}
+
+.math-tab.is-active {
+    color: #1565c0;
+    border-bottom-color: #1565c0;
+    font-weight: 600;
+}
+
+/* ===================== 工具栏 ===================== */
+
+.math-toolbar {
+    display: flex;
+    gap: 12px;
+    margin-bottom: 14px;
+    align-items: center;
+}
+
+/* ⚠️ 本类的 display:flex 会盖掉 hidden 属性的 UA 样式，必须显式补一条 */
+.math-toolbar[hidden] {
+    display: none;
+}
+
+.math-search {
+    flex: 1;
+    padding: 9px 14px;
+    font-size: 14px;
+    border: 1px solid #d5dbe3;
+    border-radius: 8px;
+    outline: none;
+    background: #ffffff;
+    color: #2b2b2b;
+}
+
+.math-search:focus {
+    border-color: #1565c0;
+    box-shadow: 0 0 0 3px rgba(21, 101, 192, 0.12);
+}
+
+.math-expand-btn {
+    appearance: none;
+    border: 1px solid #d5dbe3;
+    background: #ffffff;
+    color: #444;
+    padding: 8px 14px;
+    font-size: 13px;
+    border-radius: 8px;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.math-expand-btn:hover {
+    border-color: #1565c0;
+    color: #1565c0;
+}
+
+/* ===================== 主体两栏 ===================== */
+
+.math-body {
+    display: grid;
+    grid-template-columns: minmax(280px, 5fr) minmax(320px, 6fr);
+    gap: 16px;
+    align-items: start;
+}
+
+/* 总览视图是单列结构，不参与「树 + 详情」的两栏栅格：
+   否则唯一的子元素会被放进第一栏（约 45% 宽），右侧整片留白。 */
+.math-body:not(.is-tree-mode) {
+    display: block;
+}
+
+@media (max-width: 920px) {
+    .math-body {
+        grid-template-columns: 1fr;
+    }
+}
+
+/* ===================== 左栏：分支树 ===================== */
+
+.math-tree-panel {
+    background: #ffffff;
+    border: 1px solid #e3e8ee;
+    border-radius: 12px;
+    padding: 14px;
+    max-height: 72vh;
+    overflow: auto;
+}
+
+.math-tree-heading {
+    margin: 0 0 10px;
+    font-size: 13px;
+    color: #888;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+}
+
+.math-tree ul {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+
+.math-tree ul ul {
+    /* 缩进 + 左侧引导线，层级一眼可辨 */
+    margin-left: 15px;
+    padding-left: 9px;
+    border-left: 1px dashed #d8dfe8;
+}
+
+.math-node-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+    padding: 6px 8px;
+    border: none;
+    background: none;
+    font-size: 14px;
+    color: #3a3a3a;
+    cursor: pointer;
+    border-radius: 7px;
+    text-align: left;
+    line-height: 1.35;
+}
+
+.math-node-row:hover {
+    background: #eef4fb;
+}
+
+.math-node-row.is-selected {
+    background: #e3eefb;
+    color: #1565c0;
+    font-weight: 600;
+}
+
+.math-node-row.is-dimmed {
+    opacity: 0.35;
+}
+
+.math-twisty {
+    flex: none;
+    width: 18px;
+    height: 18px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 10px;
+    color: #8a94a3;
+    transition: transform 0.15s ease;
+}
+
+.math-twisty.is-open {
+    transform: rotate(90deg);
+}
+
+.math-twisty.is-leaf {
+    visibility: hidden;
+}
+
+.math-node-badge {
+    flex: none;
+    font-size: 11px;
+    color: #ffffff;
+    background: #90a4ae;
+    border-radius: 4px;
+    padding: 1px 6px;
+    margin-left: auto;
+    white-space: nowrap;
+}
+
+.math-node-badge.is-book {
+    background: #1565c0;
+}
+
+.math-node-badge.is-grade {
+    background: #2e7d32;
+}
+
+.math-tree-empty {
+    color: #999;
+    font-size: 13px;
+    padding: 14px 6px;
+}
+
+/* ===================== 右栏：分支详情 ===================== */
+
+.math-detail-panel {
+    background: #ffffff;
+    border: 1px solid #e3e8ee;
+    border-radius: 12px;
+    padding: 22px;
+    min-height: 420px;
+    position: sticky;
+    top: 12px;
+}
+
+.math-detail-crumb {
+    font-size: 12px;
+    color: #8a94a3;
+    margin-bottom: 8px;
+}
+
+.math-detail-title {
+    margin: 0 0 4px;
+    font-size: 22px;
+    color: #1f2d3d;
+}
+
+.math-detail-role {
+    margin: 0 0 16px;
+    font-size: 14px;
+    color: #5a6675;
+    line-height: 1.6;
+    border-left: 3px solid #1565c0;
+    padding-left: 10px;
+}
+
+.math-detail-section {
+    margin-bottom: 18px;
+}
+
+.math-detail-section h4 {
+    margin: 0 0 8px;
+    font-size: 14px;
+    color: #14507d;
+    letter-spacing: 0.5px;
+}
+
+.math-detail-section ul {
+    margin: 0;
+    padding-left: 20px;
+    font-size: 14px;
+    line-height: 1.8;
+    color: #3a3a3a;
+}
+
+.math-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.math-chip {
+    font-size: 12px;
+    color: #14507d;
+    background: #e8f1fb;
+    border: 1px solid #cfe1f5;
+    border-radius: 999px;
+    padding: 3px 10px;
+}
+
+.math-chip.is-idea {
+    color: #4e342e;
+    background: #fdf3e7;
+    border-color: #f0dfc5;
+}
+
+.math-detail-placeholder {
+    color: #999;
+    font-size: 14px;
+    text-align: center;
+    padding-top: 120px;
+}
+
+/* ===================== 总览视图 ===================== */
+
+.math-overview {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+.math-ov-card {
+    background: #ffffff;
+    border: 1px solid #e3e8ee;
+    border-radius: 12px;
+    padding: 20px;
+}
+
+.math-ov-card h3 {
+    margin: 0 0 12px;
+    font-size: 17px;
+    color: #1f2d3d;
+}
+
+.math-ov-flow {
+    display: flex;
+    align-items: stretch;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.math-ov-flow-node {
+    flex: 1;
+    min-width: 150px;
+    border-radius: 10px;
+    padding: 12px 14px;
+    font-size: 13px;
+    line-height: 1.5;
+}
+
+.math-ov-flow-node b {
+    display: block;
+    font-size: 15px;
+    margin-bottom: 4px;
+}
+
+.math-ov-flow-node.is-stage {
+    background: #e8f5e9;
+    border: 1px solid #c8e6c9;
+    color: #1b5e20;
+}
+
+.math-ov-flow-node.is-high {
+    background: #e3eefb;
+    border: 1px solid #cfe1f5;
+    color: #14507d;
+}
+
+.math-ov-flow-node.is-result {
+    background: #fdf3e7;
+    border: 1px solid #f0dfc5;
+    color: #4e342e;
+}
+
+.math-ov-arrow {
+    align-self: center;
+    color: #90a4ae;
+    font-size: 18px;
+}
+
+.math-ov-pillars {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 10px;
+}
+
+.math-ov-pillar {
+    background: #f7f9fc;
+    border: 1px solid #e3e8ee;
+    border-radius: 10px;
+    padding: 12px 14px;
+    font-size: 13px;
+    line-height: 1.6;
+}
+
+.math-ov-pillar b {
+    display: block;
+    color: #14507d;
+    margin-bottom: 4px;
+    font-size: 14px;
+}
+
+.math-ov-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+}
+
+.math-ov-table th,
+.math-ov-table td {
+    border: 1px solid #e3e8ee;
+    padding: 8px 10px;
+    text-align: left;
+    line-height: 1.5;
+}
+
+.math-ov-table th {
+    background: #f0f5fa;
+    color: #14507d;
+    white-space: nowrap;
+}
+
+.math-ov-table td:first-child {
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+.math-ov-course {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 10px;
+}
+
+.math-ov-course-card {
+    border-radius: 10px;
+    padding: 12px 14px;
+    font-size: 13px;
+    line-height: 1.7;
+    border: 1px solid #e3e8ee;
+    background: #f7f9fc;
+}
+
+.math-ov-course-card b {
+    display: block;
+    font-size: 14px;
+    color: #14507d;
+    margin-bottom: 2px;
+}
+
+.math-ov-course-card.is-must {
+    background: #e8f1fb;
+    border-color: #cfe1f5;
+}
+
+.math-ov-course-card.is-elective {
+    background: #f3f0fa;
+    border-color: #ddd6f0;
+}
+
+/* ===================== 页脚 ===================== */
+
+.math-foot {
+    margin-top: 22px;
+    text-align: center;
+    font-size: 12px;
+    color: #999;
+}
+
+/* ===================== 浅色主题下的滚动条（WebKit） ===================== */
+
+.math-tree-panel::-webkit-scrollbar {
+    width: 8px;
+}
+
+.math-tree-panel::-webkit-scrollbar-thumb {
+    background: #d5dbe3;
+    border-radius: 4px;
+}
+
+/* ===================== 交互动画 =====================
+ * 节拍与 english 模块 / 主站保持一致：
+ *   · 缓动统一用 cubic-bezier(0.22, 1, 0.36, 1)（入场）与 ease-in（退场）；
+ *   · 入场 240–320ms，退场 150–180ms；
+ *   · 交错入场由 math.js 用内联 animation-delay 控制（步长 40–90ms）。
+ * ⚠️ 改动时长要同步检查 math.js 里对应的 setTimeout。
+ */
+
+/* 标签页切换：主体先淡出上移，替换内容后淡入回位（对应 english 的 studyOut/studyIn） */
+@keyframes mathOut {
+    from { opacity: 1; transform: none; }
+    to   { opacity: 0; transform: translateY(-8px); }
+}
+
+@keyframes mathIn {
+    from { opacity: 0; transform: translateY(10px); }
+    to   { opacity: 1; transform: none; }
+}
+
+#mathBody.is-out { animation: mathOut 160ms ease-in forwards; }
+#mathBody.is-in  { animation: mathIn 260ms cubic-bezier(0.22, 1, 0.36, 1); }
+
+/* 通用逐项入场：统计 chip、详情列表项、关键概念 chips、总览卡片共用 */
+@keyframes mathItemIn {
+    from { opacity: 0; transform: translateY(8px); }
+    to   { opacity: 1; transform: none; }
+}
+
+.math-anim-item {
+    animation: mathItemIn 300ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* 详情面板分区之间的轻微错峰（区内条目再由 animation-delay 细分） */
+@keyframes mathSectionIn {
+    from { opacity: 0; transform: translateY(10px); }
+    to   { opacity: 1; transform: none; }
+}
+
+.math-detail-anim {
+    animation: mathSectionIn 280ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* 树节点展开：子行淡入略上移（延迟由 JS 按行序内联设置） */
+@keyframes mathRowIn {
+    from { opacity: 0; transform: translateX(-6px); }
+    to   { opacity: 1; transform: none; }
+}
+
+.math-row-in {
+    animation: mathRowIn 260ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* 树节点收起：子列表淡出略收拢，结束后 JS 置 hidden（时长 180ms 与 JS 一致） */
+@keyframes mathCollapse {
+    from { opacity: 1; transform: none; }
+    to   { opacity: 0; transform: translateY(-4px); }
+}
+
+.math-collapsing {
+    animation: mathCollapse 180ms ease-in forwards;
+    overflow: hidden;
+}
+
+/* 选中行的底色淡入，避免生硬跳变 */
+.math-node-row {
+    transition: background-color 0.15s ease;
+}
+
+/* 选中态强调：左侧指示条滑入 */
+.math-node-row.is-selected {
+    box-shadow: inset 3px 0 0 #1565c0;
+}
+
+/* 交互反馈：按钮按下的微缩感（与主站 .study-start-btn:active 同一手法） */
+.math-expand-btn:active,
+.math-tab:active {
+    transform: translateY(1px);
+}
+
+/* 搜索淡化态的过渡，避免 opacity 突变 */
+.math-node-row {
+    transition: background-color 0.15s ease, opacity 0.2s ease;
+}
+
+/* 键盘可达性：树节点 / 标签页 / 工具栏按钮统一焦点圈。
+   outline-offset 取负值，圈画在控件内侧，不会被相邻节点裁掉。 */
+.math-tab:focus-visible,
+.math-node-row:focus-visible,
+.math-expand-btn:focus-visible {
+    outline: 3px solid #1565c0;
+    outline-offset: -2px;
+}
+
+/* 无障碍：系统开启「减少动态效果」时关掉全部过渡与动画 */
+@media (prefers-reduced-motion: reduce) {
+    .math-tab,
+    .math-twisty,
+    .math-node-row {
+        transition: none;
+    }
+    #mathBody.is-out,
+    #mathBody.is-in,
+    .math-anim-item,
+    .math-detail-anim,
+    .math-row-in,
+    .math-collapsing {
+        animation: none;
+    }
+}

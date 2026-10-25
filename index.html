@@ -7,7 +7,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Document</title>
+    <title>大冬呱 · 学科学习</title>
+    <meta name="description" content="大冬呱学科学习站：语文、数学、英语、物理、化学、生物、历史、政治、地理。">
     <link rel="stylesheet" href="main.css">
     <!-- 从个人中心返回时（?from=account）先把主界面内容藏住：反向过场的第一帧必须已经
          是「整屏被遮罩盖住」的样子，否则会先闪一下主界面再开始倒放。
@@ -38,33 +39,41 @@
         <!-- 站点名「大冬呱」竖排，摆在头像**左侧**（2026-10 用户先要求「在这里加上竖向的广学二字」，
              再指明「头像框的左边！」、「做好看点字大点」，最后把文字换成现在的三个字）。
              三个 span 是为了分开给字重（见 main.css 的 .nav-logo）。
-             窄屏（≤1200px）由 main.css 隐藏 —— 那时 9 个学科项要占满整行。
+             窄屏（≤920px）由 main.css 隐藏 —— 那时头像左移到 30px，会压住这块站名。
              2026-10：这块站名同时是**法律声明页的显式入口** —— 点它进 legal/index.html
              （NOTICE 附加条款第 3 条：该入口须可从主界面直接到达；写全文件名而不是 /legal/，
              是因为本地 dev-server 只在路径以 / 结尾时才补 index.html，/legal 会 404）。
+             href 带 ?from=logo：法律页那头靠这个参数播出入场过场（声明侧栏从右滑入、
+             滑到 3/4 时左栏弹出，见 legal.css 的「入场 / 退场」一节），播完自己抹掉参数。
+             带参而不靠 JS 拦点击：链接保持原生行为（中击 / Ctrl+点击新开标签、无 JS
+             时照样到达），过场是法律页自己的事，首页不参与。
              所以它从 `<div aria-hidden="true">` 换成 `<a>`：aria-hidden 必须去掉 —— 现在是真链接，
              读屏得念出来；光念「大冬呱」看不出通向哪儿，因此补 aria-label 与 title 说明去向。 -->
-        <a class="nav-logo" href="legal/index.html" aria-label="大冬呱 —— 法律声明与许可信息"
+        <a class="nav-logo" href="legal/index.html?from=logo" aria-label="大冬呱 —— 法律声明与许可信息"
            title="法律声明与许可信息"><span>大</span><span>冬</span><span>呱</span></a>
         <!-- 学科导航项：data-page 指向该学科的页面路径（有独立模块的写 modules/<学科>/，
-             其余仍是 pages/ 下的占位页），点击由 main.js 加载并缓存 -->
-        <div class="nav-items">
-            <div class="nav-rect" data-page="pages/chinese.html">语文</div>
-            <div class="nav-rect" data-page="pages/math.html">数学</div>
-            <div class="nav-rect" data-page="modules/english/english.html">英语</div>
-            <div class="nav-rect" data-page="pages/physics.html">物理</div>
-            <div class="nav-rect" data-page="pages/chemistry.html">化学</div>
-            <div class="nav-rect" data-page="pages/biology.html">生物</div>
-            <div class="nav-rect" data-page="pages/history.html">历史</div>
-            <div class="nav-rect" data-page="pages/politics.html">政治</div>
-            <div class="nav-rect" data-page="pages/geography.html">地理</div>
+             其余仍是 pages/ 下的占位页），点击由 main.js 加载并缓存。
+             role="tablist" + role="tab"：这组按钮本质是「切换内容区的标签」，
+             读屏能报出「标签页 3 / 9、已选中」，也支持左右方向键移动焦点（见 main.js）。 -->
+        <div class="nav-items" role="tablist" aria-label="学科">
+            <div class="nav-rect" role="tab" tabindex="0" aria-selected="false" aria-controls="contentContainer" data-page="pages/chinese.html">语文</div>
+            <div class="nav-rect" role="tab" tabindex="0" aria-selected="false" aria-controls="contentContainer" data-page="modules/math/math.html">数学</div>
+            <div class="nav-rect" role="tab" tabindex="0" aria-selected="false" aria-controls="contentContainer" data-page="modules/english/english.html">英语</div>
+            <div class="nav-rect" role="tab" tabindex="0" aria-selected="false" aria-controls="contentContainer" data-page="pages/physics.html">物理</div>
+            <div class="nav-rect" role="tab" tabindex="0" aria-selected="false" aria-controls="contentContainer" data-page="pages/chemistry.html">化学</div>
+            <div class="nav-rect" role="tab" tabindex="0" aria-selected="false" aria-controls="contentContainer" data-page="pages/biology.html">生物</div>
+            <div class="nav-rect" role="tab" tabindex="0" aria-selected="false" aria-controls="contentContainer" data-page="pages/history.html">历史</div>
+            <div class="nav-rect" role="tab" tabindex="0" aria-selected="false" aria-controls="contentContainer" data-page="pages/politics.html">政治</div>
+            <div class="nav-rect" role="tab" tabindex="0" aria-selected="false" aria-controls="contentContainer" data-page="pages/geography.html">地理</div>
         </div>
     </div>
     <!-- 全屏扩散遮罩：进入个人中心的过场。圆心与半径由 main.js 按头像实际位置
          实时算好、逐帧写成行内 clip-path（样式表里的值只是兜底） -->
     <div class="avatar-zoom" id="avatarZoom" aria-hidden="true"></div>
-    <!-- 内容容器：main.js 把导航项对应的学科页 HTML 注入这里（默认是英语页） -->
-    <div class="content-container" id="contentContainer">
+    <!-- 内容容器：main.js 把导航项对应的学科页 HTML 注入这里（默认是英语页）。
+         role="tabpanel" 与上面的 role="tab" 配对，读屏能建立「标签 → 面板」的关系；
+         aria-labelledby 由 main.js 在切页时指向当前标签。 -->
+    <div class="content-container" id="contentContainer" role="tabpanel" aria-label="学科内容">
         <p class="placeholder-text">请选择一个科目查看内容</p>
     </div>
     <!-- 放 body 末尾：脚本执行时上面的 DOM 已经就位 -->

@@ -87,6 +87,16 @@ function initSubjectModule(pageName) {
 - 起始页用的是 `applyImmersive(false)`（**只改界面、不写 localStorage**），不是 `setImmersive`。
   后者会把用户的沉浸偏好永久改成「非沉浸」—— 每进一次英语页就改一次。
 
+**加载失败不会把用户锁在错误页**（2026-10）：`beginReview` 的 catch 会清掉半成品状态、
+退回起始页，把按钮改成「重新加载」、小字提示检查网络；点它重新走一遍 `beginReview`。
+两个实现细节：
+
+- 必须先复位 `state.started`（`clearReviewState` 里做），否则 `beginReview` 开头的守卫
+  会把第二次点击直接挡掉；
+- 动态 `import()` 的**失败结果会被浏览器的模块映射缓存**：同一个 URL 再 import 会直接 reject、
+  连网络请求都不发。重试要给 JS 胶水与 wasm 两个 URL 都加递增的 `r` 参数
+  （`engineLoadAttempt`），否则网络恢复后再点仍然失败（实测踩过）。
+
 ## 起始页 → 复习界面 的过场
 
 总长 **460ms**，与「点头像进个人中心」那段齐平（全站最长的转场就是它）。

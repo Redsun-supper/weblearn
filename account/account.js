@@ -551,6 +551,15 @@
         for (var i = 0; i < items.length; i++) {
             var on = items[i].getAttribute('data-group') === groupId;
             items[i].className = 'acc-nav-item' + (on ? ' is-active' : '');
+            // 导航列现在会滚（条目多 / 窗口矮，见 account.css 的 .acc-nav）：深链接直接进
+            // #/audit 这类靠下的页面时，选中的那一项可能不在可视区里 —— 就地滚进来，
+            // 否则用户看着一列高亮都没有，不知道自己在哪。
+            // ⚠️ block / inline 都用 nearest：已经看得见就**一动不动**，click 切页后不会
+            // 再把整列滚一下（那会把用户刚滚到的位置顶走）；窄屏横排时也只横着补一点。
+            // ⚠️ 不要改成 behavior:'smooth'：滚动动效属于要先商量的范围（见 CLAUDE.md 第四节）。
+            if (on && items[i].scrollIntoView) {
+                items[i].scrollIntoView({ block: 'nearest', inline: 'nearest' });
+            }
         }
     }
 

@@ -1,0 +1,39 @@
+<Slide style={{ width: '1280px', height: '720px', background: '#FFFFFF', padding: '0' }}>
+  <Box style={{ width: '100%', height: 88, background: '#0E3F8C', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: '0 40px' }}>
+    <Text style={{ fontSize: 30, fontWeight: 'bold', color: '#FFFFFF' }}>函数主线：高中数学的纲领</Text>
+    <Text style={{ fontSize: 15, color: '#9DB8E0' }}>03 高中 · 课程结构与四大主题</Text>
+  </Box>
+  <Box style={{ width: '100%', height: 572, flexDirection: 'column', padding: '24px 40px', gap: 22 }}>
+    <Text style={{ fontSize: 17, color: '#4A5568', lineHeight: 1.6 }}>从「函数是什么」到「如何精确研究函数」，六个分支依次递进，贯穿必修与选择性必修：</Text>
+    <Box style={{ flexDirection: 'row', alignItems: 'stretch', gap: 0, flex: 1 }}>
+      {[
+        { t: '函数概念与性质', g: '必修一', d: '定义域、对应关系、值域；单调性、奇偶性、零点', hot: false },
+        { t: '指数与对数函数', g: '必修一', d: '指数爆炸与对数增长，第一对反函数', hot: false },
+        { t: '三角函数', g: '必修一', d: '弧度制、诱导公式、周期现象的模型', hot: false },
+        { t: '函数应用', g: '必修一', d: '二分法求近似解，函数模型初步', hot: false },
+        { t: '数列', g: '选必二', d: '离散化的函数：等差等比、递推、归纳', hot: false },
+        { t: '导数及其应用', g: '选必二', d: '瞬时变化率，研究单调性极值最值的完备工具', hot: true },
+      ].map((b, i, arr) => (
+        <Box key={i} style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
+          <Box style={{ flex: 1, height: '100%', background: b.hot ? '#0E3F8C' : '#FFFFFF', border: '1px solid ' + (b.hot ? '#0E3F8C' : '#D6DCE5'), borderRadius: 12, padding: '18px 14px', flexDirection: 'column', gap: 8 }}>
+            <Text style={{ fontSize: 13, color: b.hot ? '#9DB8E0' : '#8B97A8' }}>{'STEP ' + (i + 1)}</Text>
+            <Text style={{ fontSize: 19, fontWeight: 'bold', color: b.hot ? '#FFFFFF' : '#0E3F8C', lineHeight: 1.3 }}>{b.t}</Text>
+            <Box style={{ background: b.hot ? '#1E4FA8' : '#E8EFF8', borderRadius: 4, padding: '2px 8px', alignSelf: 'flex-start' }}>
+              <Text style={{ fontSize: 12, color: b.hot ? '#FFFFFF' : '#1E4FA8' }}>{b.g}</Text>
+            </Box>
+            <Text style={{ fontSize: 13, color: b.hot ? '#DCE6F5' : '#4A5568', lineHeight: 1.6 }}>{b.d}</Text>
+          </Box>
+          {i < arr.length - 1 ? <Text style={{ fontSize: 22, color: '#3D7BD9', padding: '0 6px' }}>→</Text> : null}
+        </Box>
+      ))}
+    </Box>
+    <Box style={{ background: '#F0F5FC', border: '1px solid #D6DCE5', borderRadius: 10, padding: '14px 22px', flexDirection: 'row', alignItems: 'center', gap: 16 }}>
+      <Text style={{ fontSize: 15, fontWeight: 'bold', color: '#0E3F8C', whiteSpace: 'nowrap' }}>本页要点</Text>
+      <Text style={{ fontSize: 15, color: '#1A2230', lineHeight: 1.6 }}>判断：导数是主线的最高点——极限思想至此登场，研究函数的工具宣告完备，也为大学数学分析预留接口。</Text>
+    </Box>
+  </Box>
+  <Box style={{ width: '100%', height: 60, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: '0 40px', borderTop: '1px solid #E5E7EB' }}>
+    <Text style={{ fontSize: 13, color: '#8B97A8' }}>依据《普通高中数学课程标准（2017 年版 2020 年修订）》整理</Text>
+    <Text style={{ fontSize: 15, color: '#0E3F8C' }}>11 / 15</Text>
+  </Box>
+</Slide>

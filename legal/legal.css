@@ -27,6 +27,73 @@ body {
     background-attachment: fixed;
 }
 
+/* ===================== 入场 / 退场：声明先动，剩下的部分后到 ======================
+ * 2026-10 用户拍板的动作：「点击两个入口后，声明先从右到左弹出，弹到 3/4 时再弹出
+ * 剩下的部分，反之同理」。落在本页的两块内容上就是：
+ *   入场（?from=logo / ?from=about，由 legal/index.html 头的内联脚本加 is-staging）：
+ *     · 第一段：.legal-right（法律声明侧栏，右 1/3）从屏幕右缘外滑到落位 —— 340ms、
+ *       收尾带一点回弹（cubic-bezier(0.3, 1.25, 0.55, 1)），「弹」的手感；
+ *     · 第二段：声明滑到 3/4 时（255ms = 340 × 0.75）.legal-left（左 2/3：照片位 +
+ *       链接区）原地弹出 —— 透明度 0→1 + 缩放 0.97→1，260ms。
+ *   退场（点两个返回链接，legal.js 加 is-leaving）：「同理」反向 ——
+ *     声明先向右滑出（280ms、加速离开），滑到 3/4 时（210ms = 280 × 0.75）剩下的部分
+ *     原地收回（180ms）。播完 legal.js 才跳转。
+ * ⚠️ 两段之间的接力点是人工对齐的数：255 ≈ 340×0.75、210 ≈ 280×0.75，改一段时长要
+ *    顺手改另一段的 animation-delay，还要改 legal.js 的 ENTER_TOTAL_MS / EXIT_TOTAL_MS
+ *    （见根 TODO.md 第 4 条）。
+ * ⚠️ transform 只加在本页两个直接子元素上：本页没有 position:fixed 的全屏元素，
+ *    不存在「祖先 transform 变成包含块」那个坑（那是英语复习页的顾虑，见 main.css）。
+ * ⚠️ .legal-layout 的 overflow: hidden 正好当裁剪刀：声明滑出 / 滑入的过程都被裁在
+ *    页面内，不会拉到窗户外边去。 */
+html.is-staging .legal-right {
+    animation: statementIn 340ms cubic-bezier(0.3, 1.25, 0.55, 1) both;
+}
+
+html.is-staging .legal-left {
+    animation: restPopIn 260ms cubic-bezier(0.22, 0.61, 0.36, 1) 255ms both;
+}
+
+@keyframes statementIn {
+    from { transform: translateX(100%); }
+    to   { transform: none; }
+}
+
+@keyframes restPopIn {
+    from { opacity: 0; transform: scale(0.97); }
+    to   { opacity: 1; transform: none; }
+}
+
+html.is-leaving .legal-right {
+    animation: statementOut 280ms cubic-bezier(0.4, 0, 1, 1) both;
+}
+
+html.is-leaving .legal-left {
+    animation: restPopOut 180ms cubic-bezier(0.4, 0, 1, 1) 210ms both;
+}
+
+@keyframes statementOut {
+    from { transform: none; }
+    to   { transform: translateX(100%); }
+}
+
+@keyframes restPopOut {
+    from { opacity: 1; transform: none; }
+    to   { opacity: 0; transform: scale(0.97); }
+}
+
+/* 无障碍：系统开启「减少动态效果」时两段都不播，面板直接就位（退场那侧由 legal.js
+   直接放行原生跳转，根本不拦）—— 与 main.css 的同名媒体查询同一用意。
+   ⚠️ 必须写成 animation: none 而不是只撤时长：四个关键帧的 from 帧带着位移和
+   opacity: 0，只改时长的话面板会停在起点上。 */
+@media (prefers-reduced-motion: reduce) {
+    html.is-staging .legal-right,
+    html.is-staging .legal-left,
+    html.is-leaving .legal-right,
+    html.is-leaving .legal-left {
+        animation: none;
+    }
+}
+
 /* 两栏定高框架：height 100vh + overflow hidden = 整页不滚 */
 .legal-layout {
     display: flex;

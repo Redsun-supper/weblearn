@@ -47,7 +47,7 @@
 
     <!-- 主体：单词 + 音标（揭晓后在此追加例句与释义） -->
     <main class="study-stage" id="studyStage">
-        <div class="study-word" id="reviewWord"></div>
+        <div class="study-word" id="reviewWord" lang="en"></div>
 
         <div class="study-phonetic" id="reviewPhoneticRow">
             <span class="study-ipa" id="reviewPhonetic"></span>
@@ -57,14 +57,15 @@
 
         <div class="study-answer" id="reviewAnswer" style="display:none;">
             <!-- 主例句：由引擎切成片段，目标词高亮；下面一行是它的中文翻译 -->
-            <blockquote class="study-quote" id="reviewExample"></blockquote>
+            <blockquote class="study-quote" id="reviewExample" lang="en"></blockquote>
             <p class="study-quote-cn" id="reviewExampleCn" style="display:none;"></p>
             <!-- 释义：一个词性一块（引擎按词性标签拆分），每块可带自己的例句与译文 -->
             <div class="study-senses" id="reviewSenses"></div>
         </div>
 
-        <!-- 无卡片时（加载中 / 已完成 / 出错）的提示，避免销毁上面的结构 -->
-        <div class="study-message" id="studyMessage" style="display:none;"></div>
+        <!-- 无卡片时（加载中 / 已完成 / 出错）的提示，避免销毁上面的结构。
+             role=status + aria-live：这块只放「完成 / 出错」这类低频消息，读屏时才不会每张卡都念一遍 -->
+        <div class="study-message" id="studyMessage" role="status" aria-live="polite" style="display:none;"></div>
     </main>
 
     <!-- 底部：揭晓前是「点击显示答案」，揭晓后是四个评分按钮 -->

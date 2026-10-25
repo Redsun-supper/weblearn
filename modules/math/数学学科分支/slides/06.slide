@@ -1,0 +1,44 @@
+<Slide style={{ width: '1280px', height: '720px', background: '#FFFFFF', padding: '0' }}>
+  <Box style={{ width: '100%', height: 88, background: '#0E3F8C', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: '0 40px' }}>
+    <Text style={{ fontSize: 30, fontWeight: 'bold', color: '#FFFFFF' }}>数与代数：从算术到代数</Text>
+    <Text style={{ fontSize: 15, color: '#9DB8E0' }}>02 初中 · 三大领域</Text>
+  </Box>
+  <Box style={{ width: '100%', height: 572, flexDirection: 'row', padding: '20px 40px', gap: 24 }}>
+    <Box style={{ width: 280, height: '100%', background: '#F0F5FC', border: '1px solid #D6DCE5', borderRadius: 12, padding: '24px 22px', flexDirection: 'column', gap: 16 }}>
+      <Text style={{ fontSize: 26, fontWeight: 'bold', color: '#0E3F8C' }}>领域一</Text>
+      <Text style={{ fontSize: 22, fontWeight: 'bold', color: '#1A2230' }}>数与代数</Text>
+      <Box style={{ width: 40, height: 3, background: '#1E4FA8' }} />
+      <Text style={{ fontSize: 15, color: '#4A5568', lineHeight: 1.8 }}>暗线是「用字母表示数」——从具体的数的运算，走向一般的式的运算，完成算术思维到代数思维的过渡。</Text>
+      <Box style={{ flexDirection: 'column', gap: 8, marginTop: 4 }}>
+        {['数形结合', '化归思想', '方程思想', '模型观念'].map((c, i) => (
+          <Box key={i} style={{ background: '#FFFFFF', border: '1px solid #D6DCE5', borderRadius: 999, padding: '5px 14px', alignSelf: 'flex-start' }}>
+            <Text style={{ fontSize: 13, color: '#1E4FA8' }}>{c}</Text>
+          </Box>
+        ))}
+      </Box>
+      <Text style={{ fontSize: 13, color: '#8B97A8', marginTop: 'auto' }}>七至九年级 · 3 个分支</Text>
+    </Box>
+    <Box style={{ flex: 1, height: '100%', flexDirection: 'column', gap: 14 }}>
+      {[
+        { t: '数与式', g: '七—九年级', d: '有理数与实数、整式分式二次根式、因式分解——代数式运算的完整地基。', k: '数轴 · 绝对值 · 乘法公式 · 因式分解' },
+        { t: '方程与不等式', g: '七—九年级', d: '一元一次方程、二元方程组、一元二次方程、分式方程与一元一次不等式（组）——用代数刻画等量与不等关系。', k: '消元思想 · 判别式 Δ · 韦达定理 · 解集' },
+        { t: '函数', g: '八—九年级', d: '函数概念、一次函数、反比例函数、二次函数——第一次系统建立「变化与对应」的观点。', k: '图象法 · 顶点 · 对称轴 · 增减性' },
+      ].map((b, i) => (
+        <Box key={i} style={{ flex: 1, background: '#FFFFFF', border: '1px solid #E5E7EB', borderRadius: 12, padding: '16px 22px', flexDirection: 'column', gap: 8 }}>
+          <Box style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+            <Text style={{ fontSize: 22, fontWeight: 'bold', color: '#0E3F8C' }}>{b.t}</Text>
+            <Box style={{ background: '#E8EFF8', borderRadius: 4, padding: '2px 10px' }}>
+              <Text style={{ fontSize: 12, color: '#1E4FA8' }}>{b.g}</Text>
+            </Box>
+          </Box>
+          <Text style={{ fontSize: 15, color: '#4A5568', lineHeight: 1.7 }}>{b.d}</Text>
+          <Text style={{ fontSize: 13, color: '#1E4FA8', marginTop: 'auto' }}>{b.k}</Text>
+        </Box>
+      ))}
+    </Box>
+  </Box>
+  <Box style={{ width: '100%', height: 60, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: '0 40px', borderTop: '1px solid #E5E7EB' }}>
+    <Text style={{ fontSize: 13, color: '#8B97A8' }}>判断：判别式与韦达定理是初中代数工具的峰值，直接连通高中「三个二次」</Text>
+    <Text style={{ fontSize: 15, color: '#0E3F8C' }}>06 / 15</Text>
+  </Box>
+</Slide>

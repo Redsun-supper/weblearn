@@ -1,0 +1,20 @@
+<Slide style={{ width: '1280px', height: '720px', background: '#FFFFFF', padding: '0' }}>
+  <Box style={{ position: 'absolute', top: 0, left: 0, width: 1280, height: 12, background: '#0E3F8C' }} />
+  <Box style={{ position: 'absolute', top: 12, left: 0, width: 1280, height: 4, background: '#3D7BD9' }} />
+  <Box style={{ width: '100%', height: '100%', padding: '64px 120px 48px', flexDirection: 'column', justifyContent: 'space-between' }}>
+    <Box style={{ flexDirection: 'column', gap: 8 }}>
+      <Text style={{ fontSize: 18, color: '#3D7BD9', letterSpacing: 6 }}>中学数学课程导论</Text>
+      <Box style={{ width: 64, height: 4, background: '#1E4FA8' }} />
+    </Box>
+    <Box style={{ flexDirection: 'column', alignItems: 'center', gap: 20 }}>
+      <Text style={{ fontSize: 68, fontWeight: 'bold', color: '#0E3F8C', letterSpacing: 4 }}>数学学科分支体系</Text>
+      <Text style={{ fontSize: 22, color: '#4A5568', fontStyle: 'italic' }}>Branches of School Mathematics — From Junior to Senior</Text>
+      <Box style={{ width: 480, height: 1, background: '#D6DCE5' }} />
+      <Text style={{ fontSize: 24, color: '#1A2230', letterSpacing: 2 }}>初中三大领域 · 高中四大主题 · 数学建模与探究</Text>
+    </Box>
+    <Box style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', borderTop: '1px solid #D6DCE5', paddingTop: 20 }}>
+      <Text style={{ fontSize: 14, color: '#8B97A8' }}>依据《义务教育数学课程标准（2022 年版）》与《普通高中数学课程标准（2017 年版 2020 年修订）》整理</Text>
+      <Text style={{ fontSize: 14, color: '#8B97A8' }}>教学研讨用 · 2026</Text>
+    </Box>
+  </Box>
+</Slide>

@@ -16,6 +16,16 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>法律声明 · 广学</title>
     <link rel="stylesheet" href="legal.css">
+    <!-- 从两个入口过来时（站名带 ?from=logo、个人中心「关于作者」带 ?from=about）：
+         加 is-staging 让两段式入场从第一帧就起播 —— 声明侧栏停在屏幕右缘外、左栏藏在
+         透明度 0，然后声明滑入、滑到 3/4 时左栏弹出（动画在 legal.css 的「入场 / 退场」
+         一节）。这段必须内联在 head 里：外链的 legal.js 在 body 末尾，来不及摆第一帧，
+         会先闪一下「声明已经在位上」的完整页面再倒回重播。 -->
+    <script>
+        if (/[?&]from=(logo|about)(&|=|$)/.test(location.search)) {
+            document.documentElement.className += ' is-staging';
+        }
+    </script>
 </head>
 <body>
     <div class="legal-layout">

@@ -19,9 +19,11 @@
 }
 
 /* 页面基础样式：字体 / 行高 / 文字色 / 背景色。
-   文字用 #333 而非纯黑，长时间阅读更柔和 */
+   文字用 #333 而非纯黑，长时间阅读更柔和。
+   字体栈：Arial 仍排第一（拉丁字母与数字的字形不变），后面补中文黑体 ——
+   只写 Arial 时中文由系统随意回退，Windows 上常落到宋体，和「大冬呱」的招牌感不一致。 */
 body {
-    font-family: Arial, sans-serif;
+    font-family: Arial, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Source Han Sans SC", sans-serif;
     line-height: 1.6;
     color: #333;
     background-color: #ffffff;
@@ -135,7 +137,10 @@ body {
    垂直居中。试过 width: 78px 会被头像压住一角（实测间距 -30px）、width: 60px 时盒子离头像
    只剩 1px —— 要更大字号，得先把这段让出来。
    ⚠️ 导航项容器因此定在 192px（头像右缘 129 与导航项之间留 63px）。
-   ⚠️ 窄屏（≤1200px）整块隐藏：那时 9 个学科项要占满整行，站名会挤掉它们。 */
+   ⚠️ 窄屏（≤920px）整块隐藏：那时头像左移到 30px，站名占的 5–57 会被它压住；
+   宽屏下站名待在头像左边（头像从 65px 起），导航项容器从 192px 起，两者不抢位置，
+   所以 921px 以上都留着。这条以前写的是 1200px（站名还在右端时的遗留），2026-10
+   用户 13 英寸屏上「左上角的大冬呱没了」就是它 —— 改断点前先想清楚站名到底占哪一段。 */
 .nav-logo {
     position: absolute;
     top: 50%;
@@ -207,11 +212,14 @@ body {
     align-items: center;
 }
 
-/* 单个导航项：宽 120px（可自行调整），文字靠 flex 居中；
-   悬停与 .active 用同一档底色表示选中 */
+/* 单个导航项：基准宽 120px，空间不够时允许收缩（flex-shrink: 1）；
+   文字靠 flex 居中；悬停与 .active 用同一档底色表示选中。
+   cursor / user-select：它是可点击的「标签」，鼠标要变手型，双击不该选中文字。 */
 .nav-rect {
     height: 100%;
     width: 120px;
+    flex: 0 1 120px;
+    min-width: 0;
     background-color: #ffffff;
     /* border-right: 1px solid #ffffff; */
     display: flex;
@@ -219,17 +227,32 @@ body {
     align-items: center;
     font-size: 16px;
     color: #333;
-    transition: background-color 0.3s;
+    white-space: nowrap;
+    cursor: pointer;
+    user-select: none;
+    transition: background-color 0.2s ease, color 0.2s ease;
 }
 
 /* 悬停 / 选中：都用同一档灰色。两条规则选择器权重相同，.active 写在后面，
-   所以选中状态不会被悬停覆盖 */
-.nav-rect:hover {
-    background-color: #e0e0e0;
+   所以选中状态不会被悬停覆盖。
+   hover 只在真有指针的设备上生效：触屏点完会「粘住」悬停态，看起来像多选了一个。 */
+@media (hover: hover) {
+    .nav-rect:hover {
+        background-color: #e0e0e0;
+    }
 }
 
 .nav-rect.active {
     background-color: #e0e0e0;
+}
+
+/* 键盘聚焦：与头像、站名同款焦点圈（鼠标点击不会触发 :focus-visible）。
+   outline-offset 取负值，让圈画在导航栏内部，不会被 100px 高的条裁掉。 */
+.nav-rect:focus-visible {
+    outline: 3px solid #1565c0;
+    outline-offset: -3px;
+    background-color: #eef4fb;
+    color: #1565c0;
 }
 
 /* 头像照片：填满容器，object-fit: cover 保持比例裁切。
@@ -320,12 +343,46 @@ html.is-returning body > *:not(.avatar-zoom) {
                 padding 460ms cubic-bezier(0.33, 0, 0.2, 1);
 }
 
+/* 学科切换：内容淡入。
+   只动 opacity、不动 transform —— content-container 内部可能有依赖 position:fixed
+   的全屏元素（英语复习页），祖先一旦有 transform 就会成为新的包含块，把它们带偏。 */
+@keyframes pageIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+.content-container.is-page-in {
+    animation: pageIn 220ms ease-out;
+}
+
 /* 占位 / 加载提示文字 */
 .placeholder-text {
     color: #999;
     font-size: 18px;
     text-align: center;
     padding-top: 100px;
+}
+
+/* 占位学科页（pages/*.html）：原文只有裸 <h1> + <p>，会紧贴左上角。
+   统一收成居中的空状态块，与全站留白风格一致；等各学科页面做好后整块替换。 */
+.page-stub {
+    max-width: 640px;
+    margin: 0 auto;
+    padding: 96px 24px;
+    text-align: center;
+}
+
+.page-stub h1 {
+    font-size: 28px;
+    font-weight: 600;
+    color: #2b2b2b;
+    letter-spacing: 1px;
+}
+
+.page-stub p {
+    margin-top: 10px;
+    color: #8a94a3;
+    font-size: 15px;
 }
 
 /* ===================== 沉浸模式（站点级通用能力） ===================== */
@@ -369,22 +426,56 @@ body.is-immersive .content-container {
     .content-container {
         transition: none;
     }
+    .content-container.is-page-in {
+        animation: none;
+    }
+    .nav-rect {
+        transition: none;
+    }
 }
 
 
 /* 窄屏（≤920px）：个人中心的侧栏会横过来铺满整屏（见 account/account.css 的同名断点），
    侧栏里那颗头像的左边距是写死的 30px —— 首页这颗必须**同步回到 30px**，
-   否则换页那一刻头像会横跳 35px（宽屏 65px、窄屏 30px 的差）。 */
+   否则换页那一刻头像会横跳 35px（宽屏 65px、窄屏 30px 的差）。
+   导航项同时收窄：头像左缘 30 + 64 = 94，导航从 110 起、右侧留 12。 */
 @media (max-width: 920px) {
     .rounded-square {
         left: 30px;
     }
-}
-
-/* 窄一点的窗口（≤1200px）：9 个学科项要占满整行，右端的「广学」竖排就该让位 ——
-   不然它要么压住最后几个学科项，要么把导航项挤窄。 */
-@media (max-width: 1200px) {
+    /* 站名让位：它占的是 5–57，头像一到 30 就会压住它。
+       ⚠️ 只在 ≤920 隐藏 —— 为什么不是 1200、13 英寸屏踩过什么坑，见上面 .nav-logo 的说明。 */
     .nav-logo {
         display: none;
     }
+    .nav-items {
+        left: 110px;
+        right: 12px;
+    }
+    .nav-rect {
+        font-size: 15px;
+    }
 }
+
+/* 手机（≤620px）：9 个学科项平分只剩 30px 宽，两个字必然挤压。
+   改成固定 56px 一档、导航条内横向滚动（隐藏滚动条），字号保持可读；
+   选中项由 main.js 在切换时滚入可视区，不依赖用户自己发现可以滑。 */
+@media (max-width: 620px) {
+    .nav-items {
+        left: 104px;
+        right: 8px;
+        overflow-x: auto;
+        overflow-y: hidden;
+        scrollbar-width: none;
+        -webkit-overflow-scrolling: touch;
+    }
+    .nav-items::-webkit-scrollbar {
+        display: none;
+    }
+    .nav-rect {
+        flex: 0 0 56px;
+        width: 56px;
+        font-size: 14px;
+    }
+}
+
