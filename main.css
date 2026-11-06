@@ -29,6 +29,13 @@ body {
     background-color: #ffffff;
 }
 
+/* 选中文字：默认的系统高亮是另一种蓝，与本站的 #1565c0 不同源，
+   在导航项、正文里划过时显得脏。统一成品牌蓝的低饱和版本，字色保持 #1a1a1a 不变深。 */
+::selection {
+    background-color: rgba(21, 101, 192, 0.18);
+    color: #1a1a1a;
+}
+
 /* 顶部导航栏：固定定位，滚动时不动。
    高度 100px 是全站基准值 —— .content-container 的上外边距、
    .rounded-square 的垂直居中换算都依赖它。
@@ -233,17 +240,21 @@ body {
     transition: background-color 0.2s ease, color 0.2s ease;
 }
 
-/* 悬停 / 选中：都用同一档灰色。两条规则选择器权重相同，.active 写在后面，
+/* 悬停 / 选中：两条规则选择器权重相同，.active 写在后面，
    所以选中状态不会被悬停覆盖。
-   hover 只在真有指针的设备上生效：触屏点完会「粘住」悬停态，看起来像多选了一个。 */
+   hover 只在真有指针的设备上生效：触屏点完会「粘住」悬停态，看起来像多选了一个。
+   ⚠️ 2026-10 之前两者都是 #e0e0e0 —— 悬停一个未选中项，看起来和「已选中」一模一样，
+   判断不出当前停在哪一科。现在悬停压到浅灰，选中仍是 #e0e0e0 并加一条品牌蓝下划线：
+   下划线用 inset 阴影而不是 border，不占布局、不改变 100px 的导航高度基准。 */
 @media (hover: hover) {
     .nav-rect:hover {
-        background-color: #e0e0e0;
+        background-color: #f2f4f7;
     }
 }
 
 .nav-rect.active {
     background-color: #e0e0e0;
+    box-shadow: inset 0 -2px 0 #1565c0;
 }
 
 /* 键盘聚焦：与头像、站名同款焦点圈（鼠标点击不会触发 :focus-visible）。
@@ -259,14 +270,16 @@ body {
    圆角必须由图片自己裁：容器的 overflow 是 visible（要给登录态圆点留位置），
    9px 与容器 .rounded-square 同款 —— 两边的圆角比例一致，所以过场里照片不用单独换。
    这里的 opacity 过渡是过场里照片的淡入淡出（0.28s，比 460ms 的形变快一点，
-   看起来是「照片先到位、白边随后收拢」） */
+   看起来是「照片先到位、白边随后收拢」）。
+   缓动从 linear 换成与遮罩同一条曲线：透明度等速变化在暗底上是「一路匀速变实」，
+   收尾没有落定感；同曲线之后照片与那块圆形遮罩是同一个节奏，换页那一下才像一件事。 */
 .avatar {
     width: 100%;
     height: 100%;
     object-fit: cover;
     display: block;
     border-radius: 9px;
-    transition: opacity 0.28s linear;
+    transition: opacity 0.28s cubic-bezier(0.33, 0, 0.2, 1);
 }
 
 /* ===================== 头像 → 个人中心的过场遮罩 ===================== *
@@ -358,11 +371,19 @@ html.is-returning body > *:not(.avatar-zoom) {
     margin-top: 100px;
     padding: 20px;
     min-height: calc(100vh - 100px);
+    /* 手机上地址栏收起/展开时 100vh 不会跟着变（它永远按「收起后」那一屏算），
+       底部会多出一截空白。dvh 跟可视区走 —— 与 account.css 里那处同一个写法：
+       先写 vh 兜底，再写 dvh 覆盖，认不出的浏览器自动忽略第二行。 */
+    min-height: calc(100dvh - 100px);
     /* 沉浸模式会把上边距与内边距清零（内容整体上移 120px），这里让它平滑过渡 ——
        和导航栏的上滑一起构成「整屏往上顶」的动作，而不是瞬移。
+       ⚠️ 只过渡 margin-top，**不要再把 padding 加回来**：padding 是四向简写，
+       挂在过渡里等于每帧重算四遍内边距，长列表上切沉浸会掉帧；摘掉之后那 20px
+       留白是瞬间归零的，但整屏正在上移，肉眼基本看不出来。
+       ⚠️ 也不能改用 transform 做这件事：容器里可能有 position: fixed 的全屏元素
+       （英语复习页），祖先一旦有 transform 就成了新的包含块，会把它们带偏。
        ⚠️ 时长/缓动与 .rectangle 一致，改一处就要改另一处（见文件末尾的沉浸模式规则）。 */
-    transition: margin-top 460ms cubic-bezier(0.33, 0, 0.2, 1),
-                padding 460ms cubic-bezier(0.33, 0, 0.2, 1);
+    transition: margin-top 460ms cubic-bezier(0.33, 0, 0.2, 1);
 }
 
 /* 学科切换：内容淡入。
@@ -383,6 +404,51 @@ html.is-returning body > *:not(.avatar-zoom) {
     font-size: 18px;
     text-align: center;
     padding-top: 100px;
+}
+
+/* 加载失败的空状态：与 .page-stub 同一套居中节奏（留白、字号、灰度一致），
+   失败看起来像「这一页暂时是空的」，而不是一个报错页。
+   为什么要有：原来失败只丢一句「请检查文件是否存在」——用户既不知道发生了什么，
+   也没有下一步（整页刷新会丢掉其他学科的状态）。这里给一句话 + 一个能自救的按钮。 */
+.load-error {
+    max-width: 520px;
+    margin: 0 auto;
+    padding: 96px 24px;
+    text-align: center;
+}
+
+.load-error-title {
+    font-size: 18px;
+    color: #2b2b2b;
+}
+
+.load-error-hint {
+    margin-top: 8px;
+    font-size: 14px;
+    color: #8a94a3;
+}
+
+.load-error-retry {
+    margin-top: 22px;
+    padding: 9px 22px;
+    border: 1px solid #1565c0;
+    border-radius: 999px;
+    background-color: #ffffff;
+    font-family: inherit;
+    font-size: 14px;
+    color: #1565c0;
+    cursor: pointer;
+    transition: background-color 0.18s ease, color 0.18s ease;
+}
+
+.load-error-retry:hover {
+    background-color: #1565c0;
+    color: #ffffff;
+}
+
+.load-error-retry:focus-visible {
+    outline: 3px solid #1565c0;
+    outline-offset: 3px;
 }
 
 /* 占位学科页（pages/*.html）：原文只有裸 <h1> + <p>，会紧贴左上角。
@@ -438,6 +504,7 @@ body.is-immersive .content-container {
     margin-top: 0;
     padding: 0;
     min-height: 100vh;
+    min-height: 100dvh; /* 同 .content-container：手机上按真实可视区算 */
 }
 
 /* 无障碍：系统开启「减少动态效果」时不做上滑/上移过渡，进出沉浸都是瞬间完成

@@ -1,0 +1,47 @@
+# 每次 PR 到 main 时跑一遍确定性检查，报告打到流水线日志。
+#
+# 说明：
+#   1. 只跑 --no-ai 那一层。模型结论不该决定 CI 红绿，AI 那层留给人本地跑。
+#   2. 脚本会自动探测模块：Go 跑 vet/build/test，JS 跑语法与 npm test，
+#      HTML/CSS 跑结构检查。缺工具链的会跳过并在报告里标注，不会让流水线莫名变红。
+#   3. Rust 故意没接：两个 crate 首次编译会拖很久，而且 engine 是 wasm crate。
+#      需要时加 dtolnay/rust-toolchain@stable 与 wasm32 target 即可，脚本会自动带上
+#      cargo check / cargo test。
+#   4. fetch-depth: 0 必须保留。三点比较需要完整祖先历史；契约检查还要用 git grep
+#      读基线版本的路由表。
+
+name: PR 审查
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 准备 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 准备 Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.21"
+
+      - name: 准备 Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: 审查
+        run: |
+          BASE="origin/${GITHUB_BASE_REF:-main}"
+          echo "审查范围：${BASE}...HEAD"
+          python tools/pr-review/review.py --base "$BASE" --head HEAD --no-ai --stdout

@@ -7,21 +7,22 @@
 //      父页面关掉浮层（而不是跳页）；bfcache 恢复时复位退场残留。
 //      时长与接力点见 legal.css 的「入场 / 退场」一节与根 TODO.md 第 4 条。
 //
-// 第 ② 块的整体设计（2026-10 用户拍板、第二轮细化 + 第三轮「浮层化」）：
-//   动作：「声明从右往左滑，滑到 3/4 时，下一级（剩余部分）从法律声明下面、一样
-//   从右往左运动，反之同理」；且转场要「直接覆盖在原有画面上」—— 法律页以 iframe
-//   浮层打开，原页面不动地垫在下面，背衬淡入把它盖住，两栏在背衬上滑入。
-//   入场：站名 / 「关于作者」被父页面拦下（普通左键）→ 父页面显示 iframe 并给里面
-//         加 is-staging → 声明侧栏从右滑入（340ms），滑到 3/4 时左栏从声明下面同样
-//         从右往左滑出（255ms 起手、400ms）；浮层模式下背衬同时淡入（560ms）盖住
-//         原页面。独立打开（?from=logo / ?from=about，书签 / 无 JS 原生跳转）时
-//         is-staging 由 index.html 头的内联脚本加，背衬本来就不透明。
-//   退场：点「← 返回首页 / 返回个人中心」→ is-leaving → 声明向右滑出（280ms），滑到
-//         3/4 时左栏同步向右收回、缩回声明下面（210ms 起手、300ms）；浮层模式下背衬
-//         同时淡出（210ms 起手、300ms）→ 播完（EXIT_TOTAL_MS = 520ms）：浮层模式叫
-//         父页面关掉浮层（原页面露出来），独立模式照旧跳页。
+// 第 ② 块的整体设计（2026-10 用户拍板、第四轮定稿）：
+//   动作：「声明页面中两部分整体从右往左出现，而不是先用背景盖起来然后组件再从右往左
+//   走」；退场：「左半边组件先从左往右露出下面将要跳转到的页面，然后声明栏再从左往右
+//   退出，然后跳转完成」。浮层模式下原页面垫在下面，入场时被整页盖住、退场时先随左半边
+//   滑走而露出来。
+//   入场：站名 / 「关于作者」被父页面拦下（普通左键）→ 父页面显示 iframe 并给里面加
+//         is-staging → 法律页**整体**（背衬 + 两栏同一个动画）从右往左滑入落位，420ms。
+//         独立打开（?from=logo / ?from=about，书签 / 无 JS 原生跳转）时 is-staging 由
+//         index.html 头的内联脚本加，同一套动画。
+//   退场：点「← 返回首页 / 返回个人中心」→ is-leaving → 第一段左半边（背衬 + 左栏同一
+//         像素距离）从左往右滑走、露出下面垫着的页面（340ms），第二段声明栏再从左往右
+//         退出（340ms 起手、300ms）→ 播完（EXIT_TOTAL_MS = 660ms）：浮层模式叫父页面
+//         关掉浮层（原页面已露出来），独立模式照旧跳页。
 //   ⚠️ 两个返回链接是**真链接**，只拦普通左键：带修饰键（Ctrl / Cmd / Shift / Alt）、
-//      非左键、以及系统开了「减少动态效果」时一律放行；JS 挂了就是原来的裸跳。
+//      非左键一律放行；浮层模式下任何情况都不放行原生跳转（iframe 原生跳会把它自己
+//      变成目标页）；减少动态效果时不播动画但浮层照关。
 
 // ---- ① 左栏照片位：点一下、弹一弹、再跳走 ----
 //
@@ -78,15 +79,17 @@
 (function () {
     'use strict';
 
-    // 2026-10 用户拍板的动作：「声明从右往左滑，滑到 3/4 时，下一级（剩余部分）从法律
-    // 声明下面、一样从右往左运动，反之同理」。动画本身全在 legal.css（is-staging /
-    // is-leaving 两类），这里只做两件 CSS 做不了的事：入场播完抹掉地址上的参数；
-    // 退场播完再跳转。两个总数与 CSS 里的时长 / 接力点是一组人工对齐的数（见根
-    // TODO.md 第 4 条）：
-    //   入场：声明 340ms，左栏 255ms 起手 + 400ms → 655ms，留 5ms 余量
-    //   退场：声明 280ms，左栏 210ms 起手 + 300ms → 510ms，留 10ms 余量
-    var ENTER_TOTAL_MS = 660;
-    var EXIT_TOTAL_MS = 520;
+    // 2026-10 用户拍板的动作（第四轮 + 压力测试修订）：「声明页面中两部分整体从右往左
+    // 出现，而不是先用背景盖起来然后组件再从右往左走」；退场：「左半边组件先从左往右
+    // 露出下面将要跳转到的页面，然后声明栏再从左往右退出，然后跳转完成」。动画全在
+    // legal.css（is-staging / is-leaving 两类），这里只做两件 CSS 做不了的事：入场播完
+    // 抹掉地址上的参数；退场播完再跳转。两个总数与 CSS 里的时长是一组人工对齐的数
+    // （见根 TODO.md 第 4 条）：
+    //   入场：整页（背衬 + 两栏同一个动画）420ms → 留 20ms 余量
+    //   退场：第一段左半边 300ms + 第二段声明栏 300ms（CSS 里用 animation-delay 300ms
+    //         排好接力）→ 600ms，留 20ms 余量
+    var ENTER_TOTAL_MS = 440;
+    var EXIT_TOTAL_MS = 620;
 
     function prefersReducedMotion() {
         return !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
@@ -147,18 +150,35 @@
     var links = document.querySelectorAll('.legal-back');
     for (var i = 0; i < links.length; i++) {
         links[i].addEventListener('click', function (e) {
-            if (leaving || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+            if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
             var reduced = prefersReducedMotion();
             // ⚠️ 浮层模式下任何情况都不放行原生跳转：iframe 里原生跳会把它自己变成
             //    目标页（浮层里嵌套显示一页首页 / 个人中心），宿主还被蒙在鼓里 ——
             //    减少动态效果时实测踩过这条。减少动态效果 = 不播退场动画，但浮层照关。
             if (reduced && !inOverlay) return;
+            // ⚠️ preventDefault 必须在 leaving 检查**之前**：双击返回链接时第二次点击
+            //    leaving 已为 true，若在检查里直接 return，浏览器会放行原生跳转 ——
+            //    浮层模式下等于把 iframe 自己变成目标页（压力测试 S2 踩过），独立模式
+            //    下也会让退场动画刚起播就跳走、过场被跳过。
             e.preventDefault();
+            if (leaving) return; // 防重入：退场进行中再点，忽略
             leaving = true;
             var href = this.getAttribute('href');
             if (reduced) {
                 finishExit(href); // 不播退场，直接就关
                 return;
+            }
+            // ⚠️ 入场还没播完就点返回（压力测试 S1 踩过）：is-staging 的 pageSlideIn 还
+            //    停在中间帧（both 填充），此刻加 is-leaving，背衬的 animation 简写被
+            //    层叠成 backdropHalfOut（源码序后者胜）→ pageSlideIn 取消、元素瞬移回
+            //    translateX(0) —— 宿主页被「瞬间盖回去」再开始退场，观感是画面跳一下。
+            //    修法：先把入场动画收尾到终帧（finish 后停在落位 0），退场从 0 起手，
+            //    两段无缝衔接。
+            var entering = document.getAnimations().filter(function (a) {
+                return a.animationName === 'pageSlideIn' && a.playState === 'running';
+            });
+            for (var j = 0; j < entering.length; j++) {
+                try { entering[j].finish(); } catch (err) { /* 已结束的不管 */ }
             }
             document.documentElement.classList.add('is-leaving');
             window.setTimeout(function () {
@@ -175,4 +195,13 @@
         document.documentElement.classList.remove('is-leaving');
         leaving = false;
     });
+
+    // 供宿主复位：浮层关掉时本文件不会重跑（iframe 的 src 不变、不重新加载），
+    // leaving 标记会一直留着 —— 第二次打开浮层后两个返回链接就永久失效
+    //（压力测试 S3 实测踩过：连开第二轮后点返回毫无反应、浮层只能靠外部关）。
+    // 两个宿主的 openLegalOverlay() 在显示浮层前调用本函数。
+    window.__legalReset = function () {
+        leaving = false;
+        document.documentElement.classList.remove('is-leaving', 'is-staging');
+    };
 })();

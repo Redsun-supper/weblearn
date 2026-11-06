@@ -44,6 +44,7 @@
 
 body {
     min-height: 100vh;
+    min-height: 100dvh; /* 手机按真实可视区算，与 .acc-layout 那处同一个写法 */
     font-family: Arial, "Microsoft YaHei", sans-serif;
     font-size: 14px;
     line-height: 1.6;

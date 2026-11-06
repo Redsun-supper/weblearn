@@ -1,0 +1,32 @@
+{
+  "_说明": "pr-audit 的项目配置，脚本是 tools/pr-review/review.py。改这里不用改脚本。",
+  "contract": {
+    "mode": "auto",
+    "prefix": "",
+    "clients": ["js", "html"]
+  },
+  "limits": {
+    "pr_lines": 800,
+    "file_lines": 1200,
+    "function_lines": 120,
+    "big_function_lines": 150
+  },
+  "tests": true,
+  "rules": [
+    {
+      "pattern": "=>",
+      "severity": "warn",
+      "title": "ES5 约束：不要用箭头函数",
+      "detail": "与现有前端保持一致，用 function 写法。若这一行是字符串或注释里的示意，忽略即可。",
+      "suffixes": [".js"]
+    }
+  ],
+  "headers": {
+    "required": [
+      "SPDX-License-Identifier: AGPL-3.0-or-later",
+      "Redsun-supper"
+    ],
+    "suffixes": [".js", ".mjs", ".rs", ".go", ".css", ".html"],
+    "skip": ["engine/pkg/"]
+  }
+}

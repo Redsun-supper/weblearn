@@ -17,12 +17,13 @@
     <title>法律声明 · 广学</title>
     <link rel="stylesheet" href="legal.css">
     <!-- 从两个入口过来时（站名带 ?from=logo、个人中心「关于作者」带 ?from=about）：
-         加 is-staging 让两段式入场从第一帧就起播 —— 声明侧栏与左栏都停在屏幕右缘外，
-         然后声明从右往左滑入、滑到 3/4 时左栏从声明下面同样从右往左滑出（动画在
-         legal.css 的「入场 / 退场」一节）。这段必须内联在 head 里：外链的 legal.js
-         在 body 末尾，来不及摆第一帧，会先闪一下「声明已经在位上」的完整页面再倒回重播。
+         加 is-staging 让整页入场从第一帧就起播 —— 背衬与两栏同一个动画（pageSlideIn），
+         整页从屏幕右缘外滑到落位（动画在 legal.css 的「入场 / 退场」一节）。这段必须
+         内联在 head 里：外链的 legal.js 在 body 末尾，来不及摆第一帧，会先闪一下
+         「页面已经在位上」的完整画面再倒回重播。
          is-overlay：被两个入口以 iframe 浮层打开时加上（window.self !== window.top）——
-         浮层模式下背衬默认透明、靠 backdropIn 淡入，原页面垫在下面看得见。 -->
+         目前只作标记，样式与逻辑都以 legal.js 的 self !== top 判定为准；留着它是为了
+         浮层专属规则将来有处可挂（背衬淡入淡出的旧方案已废，勿再引用）。 -->
     <script>
         (function () {
             var cls = '';
