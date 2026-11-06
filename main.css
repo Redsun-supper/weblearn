@@ -8,6 +8,23 @@
    （放 `:root` 而不是 `html`：与后面用 CSS 变量的写法保持一致。） */
 :root {
     color-scheme: light;
+
+    /* 设计变量：2026-11 界面重构时引入，只管「颜色 / 圆角 / 投影」三组，
+       尺寸与间距仍写在各自规则里（全站有 100px 导航、192px 导航起点这类
+       由几何推导出来的硬数字，抽成变量反而看不清来历）。
+       ⚠️ 新写规则用变量，老规则没动到的保持字面值 —— 两种写法会短期并存，
+       改色时以这里的令牌为准，别再往规则里散落新的十六进制。 */
+    --ink: #1f2328;          /* 正文墨色，比原来的 #333 冷一点，和品牌蓝同温 */
+    --ink-soft: #4b5563;     /* 次要文字：导航未选中、说明段落 */
+    --ink-muted: #8a94a3;    /* 弱化文字：提示、空态副文案 */
+    --line: #e8eaee;         /* 分隔线 / 卡片描边 */
+    --brand: #1565c0;        /* 品牌蓝，全站唯一强调色 */
+    --brand-deep: #0f4c94;   /* 蓝底上的文字色，比 --brand 深一档保证对比度 */
+    --brand-soft: #eaf2fc;   /* 选中态底色：蓝的 8% 浓度，白底上不刺眼 */
+    --radius-sm: 10px;
+    --radius-md: 14px;
+    --radius-lg: 20px;
+    --shadow-rest: 0 1px 2px rgba(16, 24, 40, 0.04), 0 8px 24px rgba(16, 24, 40, 0.06);
 }
 
 /* 全站重置：清掉浏览器给 h1 / p 等元素的默认 margin、padding，
@@ -29,6 +46,13 @@ body {
     background-color: #ffffff;
 }
 
+/* 选中文字：默认的系统高亮是另一种蓝，与本站的 #1565c0 不同源，
+   在导航项、正文里划过时显得脏。统一成品牌蓝的低饱和版本，字色保持 #1a1a1a 不变深。 */
+::selection {
+    background-color: rgba(21, 101, 192, 0.18);
+    color: #1a1a1a;
+}
+
 /* 顶部导航栏：固定定位，滚动时不动。
    高度 100px 是全站基准值 —— .content-container 的上外边距、
    .rounded-square 的垂直居中换算都依赖它。
@@ -42,7 +66,12 @@ body {
     width: 100%;
     height: 100px;
     background-color: #ffffff;
-    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.15);
+    /* 原来是一道 0 4px 15px / 15% 的重投影，白底上看像给导航条垫了块灰砖。
+       换成「1px 描边 + 极淡的环境影」：边界靠线交代，层次靠影，界面立刻干净一档。
+       ⚠️ 不要改成半透明 + 毛玻璃（backdrop-filter）：filter 类属性会给 fixed 子元素
+          造新的包含块，.avatar-zoom / .legal-frame 的定位口径会跟着变。 */
+    border-bottom: 1px solid var(--line);
+    box-shadow: 0 1px 0 rgba(16, 24, 40, 0.03);
     z-index: 100;
     /* 进出沉浸模式时导航栏「上滑淡出」，与内容区的上移合成同一段动作
        （见文件末尾的沉浸模式规则）。
@@ -74,9 +103,17 @@ body {
            两边一旦不一致，换页那一刻就会看到头像跳一下（已经没有形变兜着了）。 */
     border-radius: 9px;
     border: 3px solid #ffffff;
+    /* 头像素材目前是 1×1 透明占位图（见 index.html 的说明），底下原来填纯白 ——
+       实机上就是一个「飘着的空白方块」，看着像加载失败。
+       这里垫一层品牌渐变：占位图透明时露出来是有意为之的色块，把真头像（不透明）
+       换回来时又会被照片完全盖住，两种情况都不用改代码。
+       渐变角度与 .avatar-zoom 的过场底色同向（160deg），换页那一下不打架。 */
+    background-image: linear-gradient(160deg, #2b7ad1 0%, #1565c0 55%, #0f4c94 100%);
     background-color: #ffffff;
-    box-shadow: 4px 4px 10px rgba(0, 0, 0, 0.5),
-                0 0 8px rgba(0, 0, 0, 0.15);
+    /* 投影原来是 4px 4px 10px 50% 黑 —— 白底上等于给头像垫了一块硬灰边。
+       改成两层：一层贴边的 1px 定形，一层大范围低透明度的环境影。 */
+    box-shadow: 0 1px 3px rgba(16, 24, 40, 0.16),
+                0 10px 24px rgba(16, 24, 40, 0.12);
     /* 登录态小圆点要挂在圆角外面，所以不能在容器上裁剪。
        图片自己的圆角由 .avatar 的 border-radius 负责（跟容器是同一个比例） */
     overflow: visible;
@@ -90,11 +127,12 @@ body {
     transition: transform 0.18s ease, box-shadow 0.18s ease;
 }
 
-/* 悬停：头像轻微顶起来一点，并加强外发光 */
+/* 悬停：头像轻微顶起来一点，外圈亮起一圈品牌蓝（比原来的重投影更轻） */
 .rounded-square:hover {
     transform: translateY(-50%) scale(1.04);
-    box-shadow: 4px 4px 14px rgba(0, 0, 0, 0.55),
-                0 0 0 3px rgba(21, 101, 192, 0.25);
+    box-shadow: 0 2px 6px rgba(16, 24, 40, 0.18),
+                0 14px 28px rgba(16, 24, 40, 0.16),
+                0 0 0 3px rgba(21, 101, 192, 0.22);
 }
 
 /* 键盘聚焦：给一个清晰的焦点圈（鼠标点击不会触发 :focus-visible） */
@@ -147,13 +185,16 @@ body {
     left: 5px;
     transform: translateY(-50%);
     width: 52px;
-    padding: 4px 0;
+    padding: 5px 0;
     font-family: "Songti SC", "STSong", "Source Han Serif SC", "Noto Serif SC", "SimSun", serif;
-    font-size: 18px;
-    line-height: 1.08;
-    letter-spacing: 1px;
+    font-size: 19px;
+    /* 1.12 是「三个字竖排刚好占 64px」的上限：19 × 1.12 × 3 ≈ 64，加 padding 后 74px，
+       仍在 100px 的导航栏里留得住上下呼吸；再大就要动 65px 那个头像落点了 */
+    line-height: 1.12;
+    /* 字距从 1px 加到 2px：竖排时字与字的空隙全靠它，1px 看起来像挤在一起 */
+    letter-spacing: 2px;
     text-align: center;
-    color: #2b2b2b;
+    color: var(--ink);
     user-select: none;
 }
 
@@ -212,38 +253,53 @@ body {
     align-items: center;
 }
 
-/* 单个导航项：基准宽 120px，空间不够时允许收缩（flex-shrink: 1）；
-   文字靠 flex 居中；悬停与 .active 用同一档底色表示选中。
+/* 单个导航项：2026-11 从「整条高度的灰块 + 蓝下划线」改成**圆角胶囊**。
+   · 原来 height:100% 是为了让整条 100px 都能点，代价是选中时半屏灰、像块砖；
+     现在高度收到 54px，垂直居中，点击区域仍远大于文字本身（约 118×54）。
+   · 底色透明，状态全靠 :hover / .active 上色 —— 未选中项不再有「白色块」的分界感。
+   · 字色用 --ink-soft 而不是纯墨：一排 9 个词都顶格黑会抢内容。
    cursor / user-select：它是可点击的「标签」，鼠标要变手型，双击不该选中文字。 */
 .nav-rect {
-    height: 100%;
-    width: 120px;
-    flex: 0 1 120px;
+    height: 54px;
+    width: 112px;
+    flex: 0 1 112px;
     min-width: 0;
-    background-color: #ffffff;
-    /* border-right: 1px solid #ffffff; */
+    margin: 0 3px;
+    border-radius: var(--radius-md);
+    background-color: transparent;
     display: flex;
     justify-content: center;
     align-items: center;
     font-size: 16px;
-    color: #333;
+    letter-spacing: 0.01em;
+    color: var(--ink-soft);
     white-space: nowrap;
     cursor: pointer;
     user-select: none;
-    transition: background-color 0.2s ease, color 0.2s ease;
+    transition: background-color 0.18s cubic-bezier(0.33, 0, 0.2, 1),
+                color 0.18s cubic-bezier(0.33, 0, 0.2, 1),
+                box-shadow 0.18s cubic-bezier(0.33, 0, 0.2, 1);
 }
 
-/* 悬停 / 选中：都用同一档灰色。两条规则选择器权重相同，.active 写在后面，
+/* 悬停 / 选中：两条规则选择器权重相同，.active 写在后面，
    所以选中状态不会被悬停覆盖。
-   hover 只在真有指针的设备上生效：触屏点完会「粘住」悬停态，看起来像多选了一个。 */
+   hover 只在真有指针的设备上生效：触屏点完会「粘住」悬停态，看起来像多选了一个。
+   两者仍然必须一眼可分（2026-10 踩过：都是同一档灰，看不出停在哪一科）：
+   悬停是**中性浅灰**（只表示「鼠标在这」），选中是**品牌蓝的淡底 + 深蓝字 + 一圈内描边**
+   （表示「就在这一科」）—— 颜色本身就把两种语义分开了，不靠深浅差别去猜。
+   内描边用 inset 阴影而不是 border：不占布局，54px 的高度不会被撑成 56px。 */
 @media (hover: hover) {
     .nav-rect:hover {
-        background-color: #e0e0e0;
+        background-color: #f3f5f8;
+        color: var(--ink);
     }
 }
 
 .nav-rect.active {
-    background-color: #e0e0e0;
+    background-color: var(--brand-soft);
+    color: var(--brand-deep);
+    font-weight: 600;
+    box-shadow: inset 0 0 0 1px rgba(21, 101, 192, 0.14);
 }
 
 /* 键盘聚焦：与头像、站名同款焦点圈（鼠标点击不会触发 :focus-visible）。
@@ -255,18 +311,44 @@ body {
     color: #1565c0;
 }
 
+/* 占位头像的印记：透明占位图下露出一个「冬」字（渐变底 + 白字），
+   真头像换回来后照片是不透明的，会把它整个盖住 —— 同一套代码两种情况都成立。
+   z-index 分工：这层在图片**下面**（图片 position:relative + z-index:1），
+   所以它只是「照片没到位时的底纹」，不会叠在人脸上。 */
+.rounded-square::before {
+    content: "冬";
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: "Songti SC", "STSong", "Source Han Serif SC", "Noto Serif SC", "SimSun", serif;
+    font-size: 26px;
+    font-weight: 700;
+    color: rgba(255, 255, 255, 0.92);
+    z-index: 0;
+    pointer-events: none;
+}
+
 /* 头像照片：填满容器，object-fit: cover 保持比例裁切。
    圆角必须由图片自己裁：容器的 overflow 是 visible（要给登录态圆点留位置），
    9px 与容器 .rounded-square 同款 —— 两边的圆角比例一致，所以过场里照片不用单独换。
    这里的 opacity 过渡是过场里照片的淡入淡出（0.28s，比 460ms 的形变快一点，
-   看起来是「照片先到位、白边随后收拢」） */
+   看起来是「照片先到位、白边随后收拢」）。
+   缓动从 linear 换成与遮罩同一条曲线：透明度等速变化在暗底上是「一路匀速变实」，
+   收尾没有落定感；同曲线之后照片与那块圆形遮罩是同一个节奏，换页那一下才像一件事。 */
 .avatar {
+    position: relative;
+    z-index: 1;
     width: 100%;
     height: 100%;
     object-fit: cover;
     display: block;
     border-radius: 9px;
-    transition: opacity 0.28s linear;
+    transition: opacity 0.28s cubic-bezier(0.33, 0, 0.2, 1);
 }
 
 /* ===================== 头像 → 个人中心的过场遮罩 ===================== *
@@ -358,11 +440,19 @@ html.is-returning body > *:not(.avatar-zoom) {
     margin-top: 100px;
     padding: 20px;
     min-height: calc(100vh - 100px);
+    /* 手机上地址栏收起/展开时 100vh 不会跟着变（它永远按「收起后」那一屏算），
+       底部会多出一截空白。dvh 跟可视区走 —— 与 account.css 里那处同一个写法：
+       先写 vh 兜底，再写 dvh 覆盖，认不出的浏览器自动忽略第二行。 */
+    min-height: calc(100dvh - 100px);
     /* 沉浸模式会把上边距与内边距清零（内容整体上移 120px），这里让它平滑过渡 ——
        和导航栏的上滑一起构成「整屏往上顶」的动作，而不是瞬移。
+       ⚠️ 只过渡 margin-top，**不要再把 padding 加回来**：padding 是四向简写，
+       挂在过渡里等于每帧重算四遍内边距，长列表上切沉浸会掉帧；摘掉之后那 20px
+       留白是瞬间归零的，但整屏正在上移，肉眼基本看不出来。
+       ⚠️ 也不能改用 transform 做这件事：容器里可能有 position: fixed 的全屏元素
+       （英语复习页），祖先一旦有 transform 就成了新的包含块，会把它们带偏。
        ⚠️ 时长/缓动与 .rectangle 一致，改一处就要改另一处（见文件末尾的沉浸模式规则）。 */
-    transition: margin-top 460ms cubic-bezier(0.33, 0, 0.2, 1),
-                padding 460ms cubic-bezier(0.33, 0, 0.2, 1);
+    transition: margin-top 460ms cubic-bezier(0.33, 0, 0.2, 1);
 }
 
 /* 学科切换：内容淡入。
@@ -379,10 +469,69 @@ html.is-returning body > *:not(.avatar-zoom) {
 
 /* 占位 / 加载提示文字 */
 .placeholder-text {
-    color: #999;
-    font-size: 18px;
+    color: var(--ink-muted);
+    font-size: 16px;
+    letter-spacing: 0.02em;
     text-align: center;
-    padding-top: 100px;
+    padding-top: 120px;
+}
+
+/* 加载失败的空状态：与 .page-stub 同一套居中节奏（留白、字号、灰度一致），
+   失败看起来像「这一页暂时是空的」，而不是一个报错页。
+   为什么要有：原来失败只丢一句「请检查文件是否存在」——用户既不知道发生了什么，
+   也没有下一步（整页刷新会丢掉其他学科的状态）。这里给一句话 + 一个能自救的按钮。 */
+.load-error {
+    max-width: 520px;
+    margin: 0 auto;
+    padding: 96px 24px;
+    text-align: center;
+}
+
+.load-error-title {
+    font-size: 19px;
+    font-weight: 600;
+    color: var(--ink);
+}
+
+.load-error-hint {
+    margin-top: 8px;
+    font-size: 14px;
+    color: var(--ink-muted);
+}
+
+/* 失败态的主按钮：全站「主操作」统一成实心胶囊（原来这里是描边按钮，
+   和旁边一片灰字放在一起，看着像第二个次要选项）。
+   描边款留给次要操作，主操作一律实心 —— 一屏里只能有一处实心。 */
+.load-error-retry {
+    margin-top: 22px;
+    padding: 10px 24px;
+    border: 1px solid var(--brand);
+    border-radius: 999px;
+    background-color: var(--brand);
+    font-family: inherit;
+    font-size: 14px;
+    color: #ffffff;
+    cursor: pointer;
+    box-shadow: 0 6px 16px rgba(21, 101, 192, 0.24);
+    transition: background-color 0.18s ease, box-shadow 0.18s ease,
+                transform 0.18s cubic-bezier(0.33, 0, 0.2, 1);
+}
+
+.load-error-retry:hover {
+    background-color: var(--brand-deep);
+    border-color: var(--brand-deep);
+    box-shadow: 0 8px 20px rgba(21, 101, 192, 0.3);
+    transform: translateY(-1px);
+}
+
+.load-error-retry:active {
+    transform: translateY(0);
+    box-shadow: 0 4px 12px rgba(21, 101, 192, 0.22);
+}
+
+.load-error-retry:focus-visible {
+    outline: 3px solid #1565c0;
+    outline-offset: 3px;
 }
 
 /* 占位学科页（pages/*.html）：原文只有裸 <h1> + <p>，会紧贴左上角。
@@ -394,16 +543,29 @@ html.is-returning body > *:not(.avatar-zoom) {
     text-align: center;
 }
 
+/* 标题上方一小段品牌蓝短线：七个学科的占位页内容完全一样，
+   没有这个「落款」它们就只是一块居中文字；加一条线成本最低，
+   又不会让人以为这里本该有插图（那是以后真做内容时的事） */
+.page-stub::before {
+    content: "";
+    display: block;
+    width: 28px;
+    height: 2px;
+    margin: 0 auto 18px;
+    border-radius: 2px;
+    background-color: var(--brand);
+}
+
 .page-stub h1 {
-    font-size: 28px;
+    font-size: 30px;
     font-weight: 600;
-    color: #2b2b2b;
-    letter-spacing: 1px;
+    color: var(--ink);
+    letter-spacing: 0.02em;
 }
 
 .page-stub p {
-    margin-top: 10px;
-    color: #8a94a3;
+    margin-top: 12px;
+    color: var(--ink-muted);
     font-size: 15px;
 }
 
@@ -438,6 +600,7 @@ body.is-immersive .content-container {
     margin-top: 0;
     padding: 0;
     min-height: 100vh;
+    min-height: 100dvh; /* 同 .content-container：手机上按真实可视区算 */
 }
 
 /* 无障碍：系统开启「减少动态效果」时不做上滑/上移过渡，进出沉浸都是瞬间完成
@@ -490,6 +653,10 @@ body.is-immersive .content-container {
         overflow-y: hidden;
         scrollbar-width: none;
         -webkit-overflow-scrolling: touch;
+        /* 右缘 20px 渐隐：这一条是横向滚动的，没有提示的话用户不会知道后面还有科目。
+           盖住的是「还没滚出来」的那部分，滚到底时最后一科会完整露出来。 */
+        -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 20px), transparent 100%);
+        mask-image: linear-gradient(to right, #000 calc(100% - 20px), transparent 100%);
     }
     .nav-items::-webkit-scrollbar {
         display: none;

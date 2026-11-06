@@ -112,6 +112,7 @@ body {
 .admin-layout {
     display: flex;
     min-height: 100vh;
+    min-height: 100dvh; /* 手机按真实可视区算，见 main.css 同名说明 */
 }
 
 /* 左侧栏 */

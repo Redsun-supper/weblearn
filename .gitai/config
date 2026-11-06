@@ -5,3 +5,4 @@
 # 查看生效值与来源：git ai config
 protected = main,master
 base = main
+verify = python tools/pr-review/review.py --no-ai

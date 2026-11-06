@@ -36,101 +36,83 @@ body {
     background-image: linear-gradient(135deg, #cfd8dc 0%, rgba(207, 216, 220, 0) 100%);
 }
 
-/* ===================== 入场 / 退场：声明先滑入，剩余部分从它下面同向跟出 ======================
- * 2026-10 用户拍板的动作（第二轮细化）：「声明从右往左滑，滑到 3/4 时，下一级（剩余部分）
- * 从法律声明下面、一样从右往左运动，反之同理」。落在本页两块内容上：
- *   入场（?from=logo / ?from=about，由 legal/index.html 头的内联脚本加 is-staging）：
- *     · 第一段：.legal-right（法律声明侧栏，右 1/3）从屏幕右缘外滑到落位 —— 340ms、
- *       收尾带一点回弹（cubic-bezier(0.3, 1.25, 0.55, 1)）；
- *     · 第二段：声明滑到 3/4 时（255ms = 340 × 0.75）,.legal-left（左 2/3：照片位 +
- *       链接区）**同样从右往左**滑出来 —— 起点 translateX(100%)（整块躲在屏幕右缘外，
- *       被声明面板与窗口边缘一起挡住），滑到 translateX(0) 落位，400ms、同一条回弹曲线。
- *       「从声明下面出来」靠 DOM 顺序保证：.legal-right 排在 .legal-left 之后，两块都带
- *       transform（都是合成层）时仍按 DOM 顺序绘制，声明天然盖在左栏上，不用 z-index。
- *   退场（点两个返回链接，legal.js 加 is-leaving）：「同理」反向 ——
- *     声明先向右滑出（280ms、加速离开），滑到 3/4 时（210ms = 280 × 0.75）左栏同步向右
- *     收回、缩回声明下面（300ms）。播完 legal.js 才跳转。
- * ⚠️ translateX 的百分比相对**各自**的宽度：声明约 1/3 屏（1440 下 480px），左栏约
- *    2/3 屏（960px）—— 两块都是「整整一块」进出，观感是第二块从第一块后面整段抽出。
- * ⚠️ 两段之间的接力点是人工对齐的数：255 ≈ 340×0.75、210 ≈ 280×0.75，改一段时长要
- *    顺手改另一段的 animation-delay，还要改 legal.js 的 ENTER_TOTAL_MS / EXIT_TOTAL_MS
- *    （见根 TODO.md 第 4 条）。
- * ⚠️ transform 只加在本页两个直接子元素上：本页没有 position:fixed 的全屏元素，
- *    不存在「祖先 transform 变成包含块」那个坑（那是英语复习页的顾虑，见 main.css）。
- * ⚠️ .legal-layout 的 overflow: hidden 当裁剪刀：左栏起点在屏幕右缘外、回弹时会掠过
- *    左边缘，都裁在页面内，不会拉出滚动条。 */
-html.is-staging .legal-right {
-    animation: slideInFromRight 340ms cubic-bezier(0.3, 1.25, 0.55, 1) both;
+/* ===================== 入场 / 退场（2026-10 用户第四轮拍板 + 压力测试修订） ======================
+ * 入场：法律页**整体**从右往左滑进来盖住原页面 —— 背衬与两栏同一个动画、同一时刻起播
+ *   （translateX(100%) → 0）。不是「先铺背衬、组件再动」：背衬就是整页的一部分，跟着
+ *   内容一起滑。420ms。浮层模式下原页面垫在下面，滑入过程中从左边一点点被盖住，
+ *   最后一刻整页盖满。
+ * 退场（点两个返回链接，legal.js 加 is-leaving）：两段，先左半、后声明栏 ——
+ *   · 第一段（0 → 300ms）：左半边 = .legal-backdrop + .legal-left **同一个像素距离**
+ *     从左往右滑走，下面垫着的页面（浮层模式下就是宿主页）被露出来；声明栏原位不动。
+ *   · 第二段（300ms 起手、300ms）：.legal-right 声明栏再从左往右退出屏幕外。
+ *   · 播完（EXIT_TOTAL_MS = 620ms）legal.js 才关浮层 / 跳转 —— 「跳转完成」。
+ * ⚠️ 退场两段的接力靠 animation-delay（300ms）在 CSS 里排好，JS 只等总数。
+ * ⚠️ translateX 百分比相对**各自**宽度：左栏 100% 与背衬 66.667% 在 1/3–2/3 分栏下是
+ *    同一个像素距离（1440 下都 = 960px）—— 两块必须走一样远，否则背衬和左栏会错开、
+ *    左栏会有一截浮在宿主页上。改分栏比例要顺手改这两个数。
+ * ⚠️ 左栏滑出时被 .legal-right 盖住（DOM 顺序：right 在后）+ .legal-layout 的
+ *    overflow: hidden 裁掉出窗部分，观感是左半边「缩到声明栏后面消失」。
+ * ⚠️ transform 只加在本页元素上：本页没有 position:fixed 的全屏元素（fixed 的背衬
+ *    自己就是变换对象），不存在「祖先 transform 变成包含块」那个坑。
+ *
+ * 曲线选型（2026-10 压力测试后修订，都为了「符合人类认识常理」）：
+ *   · 入场用**极轻微回弹** cubic-bezier(0.22, 0.88, 0.32, 1.03)：过冲约 5px（1440 宽），
+ *     保留「弹出」的一点手感，又不会像上一版 cubic-bezier(0.3, 1.25, 0.55, 1) 那样
+ *     整页文档越过落位点 29px、在左边缘「嘭」地撞一下 —— 一页纸滑入不该撞墙。
+ *   · 退场第一段用**近似 ease-in-out** 的 cubic-bezier(0.42, 0, 0.58, 1)：上一版
+ *     cubic-bezier(0.4, 0, 1, 1) 前 2/3 时间几乎不动（肉）、后 1/3 猛冲，观感是
+ *     「卡一下再窜出去」；新曲线全程都有可见行程，300ms 利落收尾。
+ *   · 退场第二段（声明栏退出）用标准 ease-in cubic-bezier(0.42, 0, 1, 1)：东西离开
+ *     视线本就该加速走，保持「走远了」的方向感。 */
+html.is-staging .legal-backdrop,
+html.is-staging .legal-layout {
+    animation: pageSlideIn 420ms cubic-bezier(0.22, 0.88, 0.32, 1.03) both;
 }
 
-html.is-staging .legal-left {
-    animation: slideInFromRight 400ms cubic-bezier(0.3, 1.25, 0.55, 1) 255ms both;
-}
-
-@keyframes slideInFromRight {
+@keyframes pageSlideIn {
     from { transform: translateX(100%); }
     to   { transform: none; }
 }
 
-html.is-leaving .legal-right {
-    animation: slideOutToRight 280ms cubic-bezier(0.4, 0, 1, 1) both;
+html.is-leaving .legal-backdrop {
+    animation: backdropHalfOut 300ms cubic-bezier(0.42, 0, 0.58, 1) both;
 }
 
 html.is-leaving .legal-left {
-    animation: slideOutToRight 300ms cubic-bezier(0.4, 0, 1, 1) 210ms both;
+    animation: leftHalfOut 300ms cubic-bezier(0.42, 0, 0.58, 1) both;
 }
 
-@keyframes slideOutToRight {
+html.is-leaving .legal-right {
+    animation: statementOut 300ms cubic-bezier(0.42, 0, 1, 1) 300ms both;
+}
+
+/* 左半边出场：两个元素各自的百分比，但像素距离相同（见上面的 ⚠️） */
+@keyframes backdropHalfOut {
+    from { transform: none; }
+    to   { transform: translateX(66.667%); }
+}
+
+@keyframes leftHalfOut {
     from { transform: none; }
     to   { transform: translateX(100%); }
 }
 
-/* ===================== 浮层模式：背衬淡入淡出 ======================
- * 被两个入口以 iframe 浮层打开时（legal/index.html 头的内联脚本加 is-overlay），
- * 整页是「盖」在原来页面上的：背衬从透明淡入到不透明（原页面一点点被盖住），
- * 两栏在背衬上滑入；退场时背衬再淡出去（原页面一点点露出来）。
- * 时长取约整个入场的长（560ms）：原页面在整段过场里都看得见，不是一闪就没了。
- * 退场背衬晚 210ms 起手（= 左栏收回的接力点）、300ms 淡完，和两栏退场同收尾。 */
-html.is-overlay .legal-backdrop {
-    opacity: 0;
+@keyframes statementOut {
+    from { transform: none; }
+    to   { transform: translateX(100%); }
 }
 
-html.is-overlay.is-staging .legal-backdrop {
-    animation: backdropIn 560ms ease-out both;
-}
-
-html.is-overlay.is-leaving .legal-backdrop {
-    animation: backdropOut 300ms cubic-bezier(0.4, 0, 1, 1) 210ms both;
-}
-
-@keyframes backdropIn {
-    from { opacity: 0; }
-    to   { opacity: 1; }
-}
-
-@keyframes backdropOut {
-    from { opacity: 1; }
-    to   { opacity: 0; }
-}
-
-/* 无障碍：系统开启「减少动态效果」时两段都不播，面板直接就位（退场那侧由 legal.js
-   直接放行原生跳转，根本不拦）—— 与 main.css 的同名媒体查询同一用意。
+/* 无障碍：系统开启「减少动态效果」时入场退场都不播，整页直接就位（退场那侧由 legal.js
+   直接放行原生跳转 / 关浮层，根本不拦）—— 与 main.css 的同名媒体查询同一用意。
    ⚠️ 必须写成 animation: none 而不是只撤时长：关键帧的 from 帧带着位移，只改时长的
-   话面板会停在起点上。
-   ⚠️ 浮层背衬要单独放行 opacity: 1：is-overlay 的默认态是透明（等着淡入），不补这
-   句的话减少动态效果的用户打开浮层会看到一页透明内容。 */
+   话页面会停在起点上（整页在屏幕外）。 */
 @media (prefers-reduced-motion: reduce) {
-    html.is-staging .legal-right,
-    html.is-staging .legal-left,
-    html.is-leaving .legal-right,
+    html.is-staging .legal-backdrop,
+    html.is-staging .legal-layout,
+    html.is-leaving .legal-backdrop,
     html.is-leaving .legal-left,
-    html.is-overlay.is-staging .legal-backdrop,
-    html.is-overlay.is-leaving .legal-backdrop {
+    html.is-leaving .legal-right {
         animation: none;
-    }
-
-    html.is-overlay .legal-backdrop {
-        opacity: 1;
     }
 }
 
@@ -139,6 +121,9 @@ html.is-overlay.is-leaving .legal-backdrop {
 .legal-layout {
     display: flex;
     height: 100vh;
+    /* 手机地址栏收起/展开时 100vh 不跟着变，两栏会短一截或长一截；
+       dvh 跟真实可视区走，认不出的老浏览器继续用上面那句 */
+    height: 100dvh;
     overflow: hidden;
     position: relative;
     z-index: 1;

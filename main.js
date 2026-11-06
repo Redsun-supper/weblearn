@@ -279,7 +279,22 @@ document.addEventListener('DOMContentLoaded', function() {
                 if (seq !== pageSeq) return;
                 console.error('加载错误:', error);
                 contentContainer.removeAttribute('aria-busy');
-                contentContainer.innerHTML = '<p class="placeholder-text">内容加载失败，请检查文件是否存在</p>';
+                // 失败时给一条能自救的出路。原来只丢一句「请检查文件是否存在」：
+                // 用户既看不懂，也没有下一步（整页刷新会把其他学科的状态一起丢掉），
+                // 而且错误对象只该进控制台，不该出现在界面上。
+                contentContainer.innerHTML =
+                    '<div class="load-error">' +
+                        '<p class="load-error-title">这个科目的内容没能加载出来</p>' +
+                        '<p class="load-error-hint">可能是网络断了，或者文件被移动过。稍等再试一次，通常就好了。</p>' +
+                        '<button type="button" class="load-error-retry">重新加载</button>' +
+                    '</div>';
+                var retryBtn = contentContainer.querySelector('.load-error-retry');
+                if (retryBtn) {
+                    // force=true：绕过「目标页 = 当前页」的早退，否则重试会被当成重复点击吞掉
+                    retryBtn.addEventListener('click', function() {
+                        loadPage(pageName, true);
+                    });
+                }
             });
     }
 
@@ -577,6 +592,14 @@ document.addEventListener('DOMContentLoaded', function() {
         // 复位上次退场留下的类：is-staging 摘掉再加重播入场；is-leaving 不摘会停在
         // 退场终帧（声明滑走、左栏透明）—— 上次关闭时已清，这里双保险
         doc.documentElement.classList.remove('is-staging', 'is-leaving');
+        // 复位 iframe 内 legal.js 的防重入标记：iframe 不重新加载，它的 IIFE 状态会
+        // 一直留着 —— 不复位的话第二次打开浮层后两个返回链接永久失效（压力测试 S3
+        // 踩过：连开第二轮点返回毫无反应，浮层只能靠外部关）
+        try {
+            if (doc.defaultView && typeof doc.defaultView.__legalReset === 'function') {
+                doc.defaultView.__legalReset();
+            }
+        } catch (e) { /* 跨域 / 老浏览器：忽略 */ }
         setHostInert(true);
         legalFrame.classList.add('is-open');
         // 加 is-staging 触发两段式入场（与 legal/index.html 头里的内联脚本同一个类）

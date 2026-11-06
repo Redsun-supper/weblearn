@@ -1236,6 +1236,13 @@
             if (!doc || !doc.documentElement) return false;
             // 复位上次退场留下的类（原因同 main.js：is-staging 摘掉再加重播入场）
             doc.documentElement.classList.remove('is-staging', 'is-leaving');
+            // 复位 iframe 内 legal.js 的防重入标记（原因同 main.js：iframe 不重新
+            // 加载，leaving 不复位会让第二次打开后的返回链接永久失效）
+            try {
+                if (doc.defaultView && typeof doc.defaultView.__legalReset === 'function') {
+                    doc.defaultView.__legalReset();
+                }
+            } catch (e) { /* 跨域 / 老浏览器：忽略 */ }
             setHostInert(true);
             legalFrame.classList.add('is-open');
             doc.documentElement.classList.add('is-staging');
