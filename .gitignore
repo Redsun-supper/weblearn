@@ -51,3 +51,10 @@ Thumbs.db
 .tmp-cargo/
 .tmp-test/
 .tmp-e2e/
+
+# pr-audit 的审查报告（tools/pr-review/review.py 的输出，本地生成，不入库）
+# 只忽略仓库根下的报告目录：不加前导斜杠会连 tools/pr-review/ 里的脚本一起忽略
+/pr-review/
+
+# git-ai 维护者本地简报，不入库
+.gitai/local/

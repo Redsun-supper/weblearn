@@ -1,0 +1,9 @@
+
+# git-ai: 符号级合并
+*.go merge=gitai
+*.py merge=gitai
+*.js merge=gitai
+*.jsx merge=gitai
+*.ts merge=gitai
+*.tsx merge=gitai
+*.rs merge=gitai

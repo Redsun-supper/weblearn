@@ -1,0 +1,7 @@
+# git-ai 仓库级配置（随 clone 同步，可 review）
+#
+# 本机要临时覆盖：git config --local gitai.<键> <值>
+# 本机专属（不入库）：identity / brief-path / merge driver 路径
+# 查看生效值与来源：git ai config
+protected = main,master
+base = main
