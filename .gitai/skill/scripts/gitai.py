@@ -84,9 +84,15 @@ def changed_files(base):
     if rc != 0 or not files:
         rc2, out2, _ = git("status", "--porcelain")
         for line in out2.split("\n"):
-            line = line.strip()
-            if len(line) > 3:
-                files.append(line[3:].strip().strip('"'))
+            # 不能按固定列切：run() 对整段输出做了 strip()，首行开头的状态位空格会被吃掉
+            m = re.match(r"^[ MADRCU?!]{1,2}\s+(.+)$", line.strip())
+            if not m:
+                continue
+            path = m.group(1).strip().strip('"')
+            if " -> " in path:
+                path = path.split(" -> ")[-1].strip().strip('"')
+            if path:
+                files.append(path)
     return sorted(set(files))
 
 
@@ -127,8 +133,8 @@ def check(base="main"):
         checks.append({"name": name, "status": status, "detail": detail,
                        "actions": actions or []})
 
-    # 1. 冲突标记
-    rc, out, _ = git("grep", "-n", "-E", r"^(<<<<<<< |=======|>>>>>>> )", "--", ".")
+    # 1. 冲突标记（分隔线必须是整行恰好 7 个 =，否则 NOTICE/LICENSE 里的 ==== 长横线会误报）
+    rc, out, _ = git("grep", "-n", "-E", r"^(<<<<<<< |=======$|>>>>>>> )", "--", ".")
     if rc == 0 and out:
         lines = [l for l in out.split("\n") if l.strip()][:5]
         add("conflict_markers", "fail", "工作区仍有冲突标记：" + "; ".join(lines),
