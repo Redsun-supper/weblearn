@@ -93,45 +93,163 @@
 
 /* ===================== 起始页 ===================== */
 
-/* 进英语页的第一屏：中间一颗「开始复习单词」，复习界面在这之前完全不加载（见 english.js）。
+/* 进英语页的第一屏：一屏文字 + 一颗按钮，复习界面在这之前完全不加载（见 english.js）。
  * min-height 与 .study 用同一套算法（减掉导航栏 100px 与内容容器上下各 20px），
  * 这样点按钮从起始页切到复习界面时页面高度不会跳一下。
- * 第一屏刻意保持导航栏可见（不套沉浸），用户还能正常切学科、点头像。 */
+ * 第一屏刻意保持导航栏可见（不套沉浸），用户还能正常切学科、点头像。
+ *
+ * 2026-11 重排：原来只有「一行 14px 灰字 + 一颗黑按钮」，整屏留白没有落点，
+ * 看着像页面没加载完。现在按「科目眉标 → 一句话标题 → 提示 → 主按钮」四层立起来：
+ * 眉标给归属（哪一科），标题给意图（来这干什么），提示给状态，按钮给下一步。
+ * 四层只用字号、灰度、字距拉开差别 —— 不加卡片、不加色块，与复习界面的极简语汇一致。 */
 .study-start {
     display: flex;
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    gap: 26px;
+    /* gap 归零，四层的间距各写各的（见下面各自的 margin）：
+       眉标贴标题要紧、标题到提示要松、提示到按钮再松一档，用一个 gap 表达不了这三级节奏 */
+    gap: 0;
     min-height: calc(100vh - 140px);
     min-height: calc(100dvh - 140px); /* 手机上按真实可视区算，见 main.css 同名说明 */
     text-align: center;
+    /* 左右各留 20px：窄屏下标题是这一屏最宽的元素，不留内边距会直接顶到屏幕边缘
+       （实机 390px 宽时「今天，从一个词开始」被切掉半句）。 */
+    padding: 0 20px;
+}
+
+/* 眉标：小字号 + 大字距 + 品牌蓝，前面缀一小段横线（用伪元素，不占语义）。
+   横线的作用是给这行小字一个「起点」，否则居中的孤零零一行很容易被当成正文 */
+.study-start-eyebrow {
+    margin: 0;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.18em;
+    /* 字距会把最后一个字的右边距也算进去，视觉上偏左 —— 补等量的左内边距把它推回中心 */
+    padding-left: 0.18em;
+    color: #1565c0;
+}
+
+/* 眉标前面那 18px 的短线：颜色继承 currentColor，改眉标颜色时它自动跟着变；
+   vertical-align: middle 让它对齐汉字的中腰，而不是西文的基线 */
+.study-start-eyebrow::before {
+    content: "";
+    display: inline-block;
+    width: 18px;
+    height: 1px;
+    margin-right: 10px;
+    vertical-align: middle;
+    background-color: currentColor;
+    opacity: 0.55;
+}
+
+/* 标题：全站最大的一档字号，只在这一屏用。
+   line-height 1.4 是给中文留的（英文标题 1.2 就够，中文行高小了会挤） */
+.study-start-title {
+    margin: 14px 0 0;
+    font-size: 34px;
+    font-weight: 600;
+    line-height: 1.4;
+    letter-spacing: 0.01em;
+    color: #1f2328;
 }
 
 .study-start-hint {
-    margin: 0;
-    font-size: 14px;
-    color: #9ca3af;
+    margin: 14px 0 0;
+    font-size: 15px;
+    /* 不用 #8a94a3：那句提示是要被读的（尤其加载失败时会被换成错误原因），
+       4.5:1 的对比度在浅灰底上不够，改用深一档的 #6b7280（约 4.8:1） */
+    color: #6b7280;
+    color: #8a94a3;
 }
 
 /* 起始页主按钮：沿用复习界面「显示答案」那颗黑色胶囊的语汇，但放大一档 ——
  * 这一屏只有它一个可点的东西，得撑得住整片留白。
- * font-family 必须显式 inherit：button 默认不继承页面字体。 */
+ * font-family 必须显式 inherit：button 默认不继承页面字体。
+ *
+ * 2026-11：加了两层「实心按钮」的通用手感 —— 静态时一层下投影（把它从纸面抬起来），
+ * 悬停再抬 1px 并加深投影，按下落回原位。位移只走 transform，不碰 margin（不引起重排）。
+ * ⚠️ 悬停位移与 :disabled 的「不变形」要能共存：disabled 规则在后面，显式写死 transform。 */
 .study-start-btn {
-    padding: 16px 44px;
+    margin-top: 30px;
+    padding: 16px 42px;
     border: none;
     border-radius: 999px;
     background-color: #111827;
     color: #ffffff;
     font-family: inherit;
-    font-size: 17px;
+    font-size: 16px;
     letter-spacing: 0.02em;
     cursor: pointer;
-    transition: background-color 0.2s, transform 0.15s, opacity 0.2s;
+    box-shadow: 0 8px 20px rgba(17, 24, 39, 0.18);
+    transition: background-color 0.18s ease,
+                box-shadow 0.18s ease,
+                transform 0.18s cubic-bezier(0.33, 0, 0.2, 1),
+                opacity 0.2s ease;
 }
 
-.study-start-btn:hover { background-color: #1f2937; }
-.study-start-btn:active { transform: translateY(1px); }
+.study-start-btn:hover {
+    background-color: #1f2937;
+    box-shadow: 0 12px 26px rgba(17, 24, 39, 0.24);
+    transform: translateY(-1px);
+}
+
+.study-start-btn:active {
+    transform: translateY(0);
+    box-shadow: 0 6px 14px rgba(17, 24, 39, 0.2);
+}
+
+/* 键盘聚焦圈：与全站同款环色，offset 给足 —— 它四周是纯留白，圈不会被别的东西挡住 */
+.study-start-btn:focus-visible {
+    outline: 3px solid #1565c0;
+    outline-offset: 4px;
+}
+
+/* 入场：四层从下往上依次落位（每层 420ms，间隔 60ms）。
+ * 只动 opacity 与 translateY —— 这一屏没有 position:fixed 的子元素，
+ * 用 transform 是安全的（复习界面那边才不能碰 transform，见 main.css 的同名警告）。
+ * ⚠️ fill-mode 必须是 backwards 不能是 both：both 会把最后一帧的
+ *    transform: none 永久挂在元素上，按钮的悬停位移和按压缩放就全被它压住了。 */
+@keyframes startRise {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: none; }
+}
+
+.study-start-eyebrow,
+.study-start-title,
+.study-start-hint,
+.study-start-btn {
+    animation: startRise 420ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
+}
+
+.study-start-eyebrow { animation-delay: 40ms; }
+.study-start-title { animation-delay: 100ms; }
+.study-start-hint { animation-delay: 160ms; }
+.study-start-btn { animation-delay: 220ms; }
+
+@media (prefers-reduced-motion: reduce) {
+    .study-start-eyebrow,
+    .study-start-title,
+    .study-start-hint,
+    .study-start-btn {
+        animation: none;
+    }
+}
+
+/* 窄屏：标题从 34px 收到 26px。
+   34px 下「今天，从一个词开始」一行约 306px，加上左右各 20px 内边距，
+   比 390px 屏的可用宽度只差一口气 —— 与其让它贴着边缘，不如整档降下来；
+   34 → 26 仍是这一屏的最大字号，层级不变。 */
+@media (max-width: 620px) {
+    .study-start-title {
+        font-size: 26px;
+    }
+
+    .study-start-eyebrow {
+        font-size: 11px;
+        letter-spacing: 0.14em;
+    }
+}
 
 /* 「准备中」：点了开始之后、第一张卡还没建好之前的这段（引擎 + 四个接口）。
  * 刻意只有「变淡 + 换文案」两件事 —— 这段时间通常几百毫秒，加动效反而显得页面在躁动。
@@ -139,9 +257,16 @@
 .study-start-btn:disabled {
     opacity: 0.5;
     cursor: default;
+    /* 准备中不该有「按得下去」的手感：位移与投影一起收掉（悬停规则会命中 disabled 元素） */
+    transform: none;
+    box-shadow: none;
 }
 
-.study-start-btn:disabled:hover { background-color: #111827; }
+.study-start-btn:disabled:hover {
+    background-color: #111827;
+    transform: none;
+    box-shadow: none;
+}
 
 /* ===================== 起始页 → 复习界面 的过场 ===================== */
 

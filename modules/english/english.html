@@ -14,6 +14,13 @@
      朗读就只发生在一次真实交互之后：既不重复，也不会被浏览器拦截。
      附带好处：只是路过英语页的用户不用下载 WASM、也不用发那几个接口请求。 -->
 <div class="study-start" id="studyStart">
+    <!-- 三行文案 + 一颗按钮，是这一屏的全部。层次靠字号与灰度拉开，不靠加框：
+         复习界面本身是「极简、无卡片」的语汇（见下方注释），起始页套个卡片会打架。
+         eyebrow 那行小字用字距 + 品牌蓝点出「哪一科」，标题给出这一屏在干什么，
+         hint 才是原来那句「准备好就开始今天的复习」——它同时被 english.js 的
+         setStartHint() 复用（加载失败时改成错误提示），所以类名与位置都不能挪。 -->
+    <p class="study-start-eyebrow">英语 · 单词复习</p>
+    <h1 class="study-start-title">今天，从一个词开始</h1>
     <p class="study-start-hint">准备好就开始今天的复习</p>
     <button class="study-start-btn" id="studyStartBtn" type="button">开始复习单词</button>
 </div>
